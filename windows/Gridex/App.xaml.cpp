@@ -2,6 +2,7 @@
 #include "xaml-includes.h"
 #include "App.xaml.h"
 #include "MainWindow.xaml.h"
+#include "UpdateService.h"
 #include <shellapi.h>
 #include <string>
 #include <cwchar>
@@ -13,57 +14,6 @@ using namespace Microsoft::UI::Xaml;
 
 namespace winrt::Gridex::implementation
 {
-    // Handle Velopack lifecycle hook flags passed by Setup.exe / Update.exe.
-    //
-    // When the Velopack installer runs, it launches the main app exe with
-    // one of these flags and expects the process to exit cleanly within
-    // 30 seconds. Without this handler the app tries to launch its full
-    // WinUI main window instead, which:
-    //   - Shows a visible Gridex window while Setup.exe is still running
-    //   - Never exits the hook process
-    //   - Causes Velopack to display the error:
-    //       "Installation has completed, but the application install
-    //        hook failed. It may not have installed correctly."
-    //
-    // Hook flags that MUST exit-on-sight:
-    //   --veloapp-install    first-time install, after files extracted
-    //   --veloapp-updated    after auto-update applied (new version)
-    //   --veloapp-obsolete   before old version is removed post-update
-    //   --veloapp-uninstall  user uninstalling via Add/Remove Programs
-    //
-    // --veloapp-firstrun is a normal launch (just with a flag) and must
-    // NOT exit -- the app should start as usual.
-    //
-    // We avoid linking the full Velopack C++ SDK for v1 and just probe
-    // argv directly via CommandLineToArgvW. This is enough to silence
-    // the install-hook error dialog; full update orchestration would
-    // require the real SDK (phase 02 of the installer plan).
-    static void HandleVelopackLifecycleFlags()
-    {
-        int argc = 0;
-        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        if (!argv) return;
-
-        bool exitNow = false;
-        for (int i = 1; i < argc; ++i)
-        {
-            if (wcscmp(argv[i], L"--veloapp-install")   == 0 ||
-                wcscmp(argv[i], L"--veloapp-updated")   == 0 ||
-                wcscmp(argv[i], L"--veloapp-obsolete")  == 0 ||
-                wcscmp(argv[i], L"--veloapp-uninstall") == 0)
-            {
-                exitNow = true;
-                break;
-            }
-        }
-        LocalFree(argv);
-
-        if (exitNow)
-        {
-            ::ExitProcess(0);
-        }
-    }
-
     // Detect whether the Microsoft Edge WebView2 Runtime is installed.
     // Gridex bundles Microsoft.Web.WebView2.Core.dll (the projection) but
     // the actual WebView2 runtime is a separate system component. On
@@ -140,11 +90,12 @@ namespace winrt::Gridex::implementation
     /// </summary>
     App::App()
     {
-        // CRITICAL: run BEFORE anything else. If the process was launched
-        // by Velopack as an install/uninstall/updated/obsolete hook, exit
-        // immediately so the installer's hook wait completes successfully
-        // and the full WinUI main window never opens during an install.
-        HandleVelopackLifecycleFlags();
+        // CRITICAL: run BEFORE anything else. VelopackApp::Build().Run()
+        // handles --veloapp-install / --veloapp-updated / --veloapp-obsolete
+        // / --veloapp-uninstall lifecycle hooks and may call ExitProcess
+        // itself so the installer's hook wait completes successfully and
+        // the full WinUI main window never opens during an install.
+        ::Gridex::InitVelopackApp();
 
         // Bootstrap the WebView2 Runtime before any XAML / WinAppSDK code
         // touches WebView2. Fast no-op (single registry probe) once the

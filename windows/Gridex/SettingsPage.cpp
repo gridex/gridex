@@ -5,6 +5,7 @@
 #include "SettingsPage.h"
 #include "Models/AppSettings.h"
 #include "GridexVersion.h"
+#include "UpdateService.h"
 #if __has_include("SettingsPage.g.cpp")
 #include "SettingsPage.g.cpp"
 #endif
@@ -70,6 +71,86 @@ namespace winrt::Gridex::implementation
                     std::wstring noticesPath = exeDir + L"\\Assets\\THIRD-PARTY-NOTICES.txt";
                     ShellExecuteW(nullptr, L"open", noticesPath.c_str(),
                                   nullptr, nullptr, SW_SHOWNORMAL);
+                });
+
+            // Check for Updates — hit the R2 feed via Velopack SDK. Runs
+            // on a background thread; results are marshalled back to the
+            // UI via the page's DispatcherQueue.
+            CheckUpdateButton().Click(
+                [this](winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
+                {
+                    CheckUpdateButton().IsEnabled(false);
+                    UpdateStatusText().Text(L"Checking...");
+
+                    auto dispatcher = this->DispatcherQueue();
+                    auto xamlRoot   = this->XamlRoot();
+
+                    ::Gridex::CheckForUpdateAsync(
+                        [this, dispatcher, xamlRoot](::Gridex::UpdateCheckResult r)
+                        {
+                            dispatcher.TryEnqueue([this, r, xamlRoot, dispatcher]()
+                            {
+                                CheckUpdateButton().IsEnabled(true);
+
+                                if (!r.errorMessage.empty())
+                                {
+                                    UpdateStatusText().Text(winrt::hstring(L"Error: " + r.errorMessage));
+                                    return;
+                                }
+                                if (!r.hasUpdate)
+                                {
+                                    UpdateStatusText().Text(
+                                        winrt::hstring(L"You're on the latest version (" + r.currentVersion + L")."));
+                                    return;
+                                }
+
+                                // Confirm with user before downloading.
+                                std::wstring msg = L"Current: " + r.currentVersion +
+                                                   L"\nNew:     " + r.newVersion +
+                                                   L"\n\nDownload and install now? The app will restart.";
+                                UpdateStatusText().Text(
+                                    winrt::hstring(L"Update available: " + r.newVersion));
+
+                                muxc::ContentDialog dlg;
+                                dlg.Title(winrt::box_value(winrt::hstring(L"Update Available")));
+                                dlg.Content(winrt::box_value(winrt::hstring(msg)));
+                                dlg.PrimaryButtonText(L"Install");
+                                dlg.CloseButtonText(L"Later");
+                                dlg.DefaultButton(muxc::ContentDialogButton::Primary);
+                                dlg.XamlRoot(xamlRoot);
+
+                                auto op = dlg.ShowAsync();
+                                op.Completed([this, dispatcher](
+                                    winrt::Windows::Foundation::IAsyncOperation<muxc::ContentDialogResult> const& asyncOp,
+                                    winrt::Windows::Foundation::AsyncStatus)
+                                {
+                                    if (asyncOp.GetResults() != muxc::ContentDialogResult::Primary) return;
+
+                                    dispatcher.TryEnqueue([this]()
+                                    {
+                                        CheckUpdateButton().IsEnabled(false);
+                                        UpdateStatusText().Text(L"Downloading update...");
+                                    });
+
+                                    ::Gridex::DownloadAndApplyAsync(
+                                        [this, dispatcher](std::wstring status)
+                                        {
+                                            dispatcher.TryEnqueue([this, status]()
+                                            {
+                                                UpdateStatusText().Text(winrt::hstring(status));
+                                            });
+                                        },
+                                        [this, dispatcher](std::wstring err)
+                                        {
+                                            dispatcher.TryEnqueue([this, err]()
+                                            {
+                                                CheckUpdateButton().IsEnabled(true);
+                                                UpdateStatusText().Text(winrt::hstring(L"Update failed: " + err));
+                                            });
+                                        });
+                                });
+                            });
+                        });
                 });
 
             // Back button — navigate back to the page user came from

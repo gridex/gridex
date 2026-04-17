@@ -97,14 +97,14 @@
       <LanguageStandard Condition="'$(VisualStudioVersion)' &gt;= '18.0'">stdcpp20</LanguageStandard>
       <LanguageStandard Condition="'$(VisualStudioVersion)' &lt; '18.0'">stdcpp17</LanguageStandard>
       <AdditionalOptions>%(AdditionalOptions) /bigobj /Zm500</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir);C:\vcpkg\installed\x64-windows\include;C:\vcpkg\installed\x64-windows\include\mongocxx\v_noabi;C:\vcpkg\installed\x64-windows\include\bsoncxx\v_noabi;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\vendor\velopack\include;C:\vcpkg\installed\x64-windows\include;C:\vcpkg\installed\x64-windows\include\mongocxx\v_noabi;C:\vcpkg\installed\x64-windows\include\bsoncxx\v_noabi;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <!-- Shared libs — names that are the same in both Debug and Release vcpkg.
            hiredis and mongocxx/bsoncxx have different names per config
            and are added in the config-specific ItemDefinitionGroup below. -->
-      <AdditionalDependencies>Shell32.lib;Comdlg32.lib;Advapi32.lib;libpq.lib;libmariadb.lib;sqlite3.lib;libssl.lib;libcrypto.lib;crypt32.lib;ws2_32.lib;odbc32.lib;libssh2.lib;mongoc2.dll.lib;bson2.dll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Shell32.lib;Comdlg32.lib;Advapi32.lib;libpq.lib;libmariadb.lib;sqlite3.lib;libssl.lib;libcrypto.lib;crypt32.lib;ws2_32.lib;odbc32.lib;libssh2.lib;mongoc2.dll.lib;bson2.dll.lib;velopack_libc_win_x64_msvc.lib;userenv.lib;ntdll.lib;bcrypt.lib;Dbghelp.lib;Propsys.lib;Ole32.lib;OleAut32.lib;RuntimeObject.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- Debug: link against vcpkg debug libs + mongocxx debug variant -->
@@ -113,7 +113,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\debug\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\debug\lib;$(ProjectDir)..\vendor\velopack\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>mongocxx-v_noabi-dhi-mdd.lib;bsoncxx-v_noabi-dhi-mdd.lib;hiredisd.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -123,7 +123,7 @@
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\lib;$(ProjectDir)..\vendor\velopack\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>mongocxx-v_noabi-rhi-md.lib;bsoncxx-v_noabi-rhi-md.lib;hiredis.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Link>
@@ -169,6 +169,7 @@
     <ClInclude Include="Models\ExportService.h" />
     <ClInclude Include="Models\ImportService.h" />
     <ClInclude Include="xaml-includes.h" />
+    <ClInclude Include="UpdateService.h" />
     <ClInclude Include="SettingsPage.h">
       <DependentUpon>SettingsPage.xaml</DependentUpon>
       <SubType>Code</SubType>
@@ -397,6 +398,9 @@
     <ClCompile Include="SettingsPage.cpp">
       <DependentUpon>SettingsPage.xaml</DependentUpon>
       <SubType>Code</SubType>
+    </ClCompile>
+    <ClCompile Include="UpdateService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

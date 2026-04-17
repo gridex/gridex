@@ -12,6 +12,9 @@
 #include "HomePage.h"
 #include "WorkspacePage.h"
 #include "Models/AppSettings.h"
+#include "UpdateService.h"
+#include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.h>
 
 namespace winrt::Gridex::implementation
 {
@@ -81,8 +84,101 @@ namespace winrt::Gridex::implementation
                 content.KeyboardAccelerators().Append(homeAccel);
             }
 
-            NavigateTo(L"Gridex.HomePage");
+            // Blocking update check BEFORE navigating to HomePage.
+            //
+            // The UpdateCheckOverlay from MainWindow.xaml is visible until
+            // we call DismissUpdateOverlayAndEnterApp(). Flow:
+            //   1. Run CheckForUpdateAsync on a background thread.
+            //   2. On the UI thread, if an update is available, show a
+            //      ContentDialog. Primary -> DownloadAndApplyAsync (process
+            //      exits). Close / error / no-update -> proceed to HomePage.
+            // Errors (no network, running uninstalled from dev, etc.) are
+            // treated as "no update" so the user still enters the app.
+            //
+            // This replaces the previous 5-second silent-check timer --
+            // no more background auto-check once the user is inside. Manual
+            // check remains available via Settings > Check Now.
+            auto dispatcher = this->DispatcherQueue();
+            ::Gridex::CheckForUpdateAsync(
+                [this, dispatcher](::Gridex::UpdateCheckResult r)
+                {
+                    dispatcher.TryEnqueue([this, r]()
+                    {
+                        if (!r.hasUpdate)
+                        {
+                            EnterAppAfterUpdateCheck();
+                            return;
+                        }
+
+                        auto content = this->Content().try_as<mux::FrameworkElement>();
+                        auto xamlRoot = content ? content.XamlRoot() : nullptr;
+                        if (!xamlRoot)
+                        {
+                            EnterAppAfterUpdateCheck();
+                            return;
+                        }
+
+                        std::wstring msg = L"Current: " + r.currentVersion +
+                                           L"\nNew:     " + r.newVersion +
+                                           L"\n\nDownload and install now? The app will restart.";
+                        winrt::Microsoft::UI::Xaml::Controls::ContentDialog dlg;
+                        dlg.Title(winrt::box_value(winrt::hstring(
+                            L"Gridex " + r.newVersion + L" is available")));
+                        dlg.Content(winrt::box_value(winrt::hstring(msg)));
+                        dlg.PrimaryButtonText(L"Install");
+                        dlg.CloseButtonText(L"Later");
+                        dlg.DefaultButton(
+                            winrt::Microsoft::UI::Xaml::Controls::ContentDialogButton::Primary);
+                        dlg.XamlRoot(xamlRoot);
+
+                        try
+                        {
+                            auto op = dlg.ShowAsync();
+                            op.Completed([this](auto const& asyncOp,
+                                                winrt::Windows::Foundation::AsyncStatus status)
+                            {
+                                bool install = false;
+                                if (status == winrt::Windows::Foundation::AsyncStatus::Completed)
+                                {
+                                    try
+                                    {
+                                        install = asyncOp.GetResults() ==
+                                            winrt::Microsoft::UI::Xaml::Controls::ContentDialogResult::Primary;
+                                    }
+                                    catch (...) {}
+                                }
+                                if (install)
+                                {
+                                    // Status text on overlay while the download
+                                    // runs; process exits from inside the worker.
+                                    UpdateCheckStatusText().Text(L"Downloading update...");
+                                    ::Gridex::DownloadAndApplyAsync(
+                                        [](std::wstring) {},
+                                        [](std::wstring) {});
+                                    // Do NOT call EnterAppAfterUpdateCheck --
+                                    // the worker will ExitProcess and Velopack
+                                    // restarts us on the new version.
+                                    return;
+                                }
+                                EnterAppAfterUpdateCheck();
+                            });
+                        }
+                        catch (...)
+                        {
+                            EnterAppAfterUpdateCheck();
+                        }
+                    });
+                });
         });
+    }
+
+    // Hide the update-check overlay and navigate ContentFrame to HomePage.
+    // Called exactly once, either after a completed check with no update,
+    // or after the user dismisses the update dialog with "Later".
+    void MainWindow::EnterAppAfterUpdateCheck()
+    {
+        UpdateCheckOverlay().Visibility(mux::Visibility::Collapsed);
+        NavigateTo(L"Gridex.HomePage");
     }
 
     void MainWindow::NavigateTo(const wchar_t* pageTypeName)

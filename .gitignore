@@ -91,9 +91,12 @@ screenshot_mac/
 # Velopack release artifacts (Setup.exe, *.nupkg, releases.*.json, RELEASES)
 windows/Releases/
 
-# Cached vendor binaries (WebView2 bootstrap, etc.) — downloaded on demand
-# by build-unpackaged.ps1, refreshed by CI on each run.
-windows/vendor/
+# Cached vendor binaries downloaded on demand by build-unpackaged.ps1.
+# The Velopack C++ SDK is vendored in windows/vendor/velopack/ and must
+# be tracked (header files + static lib) so clones can build without a
+# separate fetch step. WebView2 bootstrap is fetched at build time.
+windows/vendor/webview2/
+!windows/vendor/velopack/lib/velopack_libc_win_x64_msvc.lib
 
 # Generated version header — written by build-unpackaged.ps1 -Version
 # from the CI tag, falls back to 0.0.0-dev locally via __has_include.

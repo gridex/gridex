@@ -582,8 +582,12 @@ namespace winrt::Gridex::implementation
 
         if (result.columnNames.empty()) return;
 
-        size_t nCols = result.columnNames.size();
-        double colWidth = 150.0;
+        // Initialize per-column widths: distribute the container width evenly,
+        // clamped to [RESULT_COL_MIN_WIDTH, RESULT_COL_MAX_WIDTH]. Stored in
+        // resultColumnWidths_ so resize drags can mutate them without
+        // recomputing the initial layout.
+        const size_t nCols = result.columnNames.size();
+        double colWidth = RESULT_COL_DEFAULT_WIDTH;
         double availWidth = this->ActualWidth() - 20.0;
         if (availWidth > 0 && nCols > 0)
         {
@@ -591,30 +595,164 @@ namespace winrt::Gridex::implementation
             if (colWidth < 80.0) colWidth = 80.0;
             if (colWidth > 400.0) colWidth = 400.0;
         }
+        resultColumnWidths_.assign(nCols, colWidth);
 
+        BuildResultHeaders(result);
+        BuildResultRows(result);
+    }
+
+    // ── Result-grid headers with drag-to-resize grip ──────────────
+    //
+    // Mirrors DataGridView::BuildHeaders but without sort / row-number
+    // column. Each header cell is a 2-column Grid: [label *] [grip 8px].
+    // The grip captures pointer events, updates its own header Grid.Width
+    // on PointerMoved for immediate visual feedback, and rebuilds the row
+    // StackPanels once on PointerReleased.
+    void QueryEditorView::BuildResultHeaders(const DBModels::QueryResult& result)
+    {
         muxc::StackPanel headerRow;
         headerRow.Orientation(muxc::Orientation::Horizontal);
         headerRow.Background(muxm::SolidColorBrush(
             winrt::Windows::UI::ColorHelper::FromArgb(15, 128, 128, 128)));
-        for (auto& col : result.columnNames)
+
+        for (size_t ci = 0; ci < result.columnNames.size(); ++ci)
         {
-            muxc::Border cell;
-            cell.Width(colWidth);
-            cell.Padding(mux::Thickness{ 8, 4, 8, 4 });
-            cell.BorderBrush(muxm::SolidColorBrush(
+            const double w = (ci < resultColumnWidths_.size())
+                ? resultColumnWidths_[ci] : RESULT_COL_DEFAULT_WIDTH;
+
+            muxc::Grid cellGrid;
+            cellGrid.Width(w);
+
+            muxc::ColumnDefinition contentCd, gripCd;
+            contentCd.Width(mux::GridLength{ 1.0, mux::GridUnitType::Star });
+            gripCd.Width(mux::GridLength{ 8.0, mux::GridUnitType::Pixel });
+            cellGrid.ColumnDefinitions().Append(contentCd);
+            cellGrid.ColumnDefinitions().Append(gripCd);
+
+            // Header label
+            muxc::Border labelWrap;
+            labelWrap.Padding(mux::Thickness{ 8, 4, 4, 4 });
+            labelWrap.BorderBrush(muxm::SolidColorBrush(
                 winrt::Windows::UI::ColorHelper::FromArgb(40, 128, 128, 128)));
-            cell.BorderThickness(mux::Thickness{ 0, 0, 1, 1 });
+            labelWrap.BorderThickness(mux::Thickness{ 0, 0, 0, 1 });
+            muxc::Grid::SetColumn(labelWrap, 0);
+
             muxc::TextBlock lbl;
-            lbl.Text(winrt::hstring(col));
+            lbl.Text(winrt::hstring(result.columnNames[ci]));
             lbl.FontSize(11.0);
             lbl.FontWeight(winrt::Windows::UI::Text::FontWeights::SemiBold());
             lbl.TextTrimming(mux::TextTrimming::CharacterEllipsis);
-            cell.Child(lbl);
-            headerRow.Children().Append(cell);
-        }
-        ResultsContainer().Children().Append(headerRow);
+            lbl.TextWrapping(mux::TextWrapping::NoWrap);
+            labelWrap.Child(lbl);
+            cellGrid.Children().Append(labelWrap);
 
-        for (int i = 0; i < static_cast<int>(result.rows.size()); i++)
+            // Resize grip (transparent 8px hit area with 1px centered line).
+            muxc::Grid resizeGrip;
+            resizeGrip.Background(muxm::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
+            muxc::Grid::SetColumn(resizeGrip, 1);
+
+            muxc::Border gripLine;
+            gripLine.Width(1.0);
+            gripLine.HorizontalAlignment(mux::HorizontalAlignment::Center);
+            gripLine.Background(muxm::SolidColorBrush(
+                winrt::Windows::UI::ColorHelper::FromArgb(50, 128, 128, 128)));
+            gripLine.IsHitTestVisible(false);
+            resizeGrip.Children().Append(gripLine);
+
+            // Cursor via ProtectedCursor (same rationale as DataGridView).
+            resizeGrip.Loaded(
+                [](winrt::Windows::Foundation::IInspectable const& sender,
+                   mux::RoutedEventArgs const&)
+                {
+                    static auto sizeWECursor =
+                        winrt::Microsoft::UI::Input::InputSystemCursor::Create(
+                            winrt::Microsoft::UI::Input::InputSystemCursorShape::SizeWestEast);
+                    if (auto el = sender.try_as<mux::UIElement>())
+                        el.as<winrt::Microsoft::UI::Xaml::IUIElementProtected>()
+                          .ProtectedCursor(sizeWECursor);
+                });
+
+            const int colIndex = static_cast<int>(ci);
+            // Capture result by value so PointerReleased can rebuild rows
+            // even if the outer ShowResult stack frame is long gone.
+            DBModels::QueryResult resultCopy = result;
+
+            resizeGrip.PointerPressed(
+                [this, colIndex](winrt::Windows::Foundation::IInspectable const& sender,
+                                 mux::Input::PointerRoutedEventArgs const& e)
+                {
+                    resizingResultCol_ = colIndex;
+                    auto point = e.GetCurrentPoint(this->try_as<mux::UIElement>());
+                    resizeResultStartX_ = point.Position().X;
+                    resizeResultStartWidth_ = (colIndex < static_cast<int>(resultColumnWidths_.size()))
+                        ? resultColumnWidths_[colIndex] : RESULT_COL_DEFAULT_WIDTH;
+                    if (auto el = sender.try_as<mux::UIElement>()) el.CapturePointer(e.Pointer());
+                    e.Handled(true);
+                });
+
+            resizeGrip.PointerMoved(
+                [this](winrt::Windows::Foundation::IInspectable const&,
+                       mux::Input::PointerRoutedEventArgs const& e)
+                {
+                    if (resizingResultCol_ < 0) return;
+                    auto point = e.GetCurrentPoint(this->try_as<mux::UIElement>());
+                    double delta = point.Position().X - resizeResultStartX_;
+                    double newWidth = resizeResultStartWidth_ + delta;
+                    if (newWidth < RESULT_COL_MIN_WIDTH) newWidth = RESULT_COL_MIN_WIDTH;
+                    if (newWidth > RESULT_COL_MAX_WIDTH) newWidth = RESULT_COL_MAX_WIDTH;
+                    if (resizingResultCol_ < static_cast<int>(resultColumnWidths_.size()))
+                    {
+                        resultColumnWidths_[resizingResultCol_] = newWidth;
+                        // Live-update the header cell width. Row #0 inside
+                        // ResultsContainer is the header StackPanel; its
+                        // child ci is this column's cell Grid.
+                        auto container = ResultsContainer();
+                        if (container.Children().Size() > 0)
+                        {
+                            auto hdr = container.Children().GetAt(0)
+                                .try_as<muxc::StackPanel>();
+                            if (hdr && static_cast<uint32_t>(resizingResultCol_) < hdr.Children().Size())
+                            {
+                                auto cell = hdr.Children().GetAt(resizingResultCol_)
+                                    .try_as<muxc::Grid>();
+                                if (cell) cell.Width(newWidth);
+                            }
+                        }
+                    }
+                    e.Handled(true);
+                });
+
+            resizeGrip.PointerReleased(
+                [this, resultCopy](winrt::Windows::Foundation::IInspectable const& sender,
+                                   mux::Input::PointerRoutedEventArgs const& e)
+                {
+                    if (resizingResultCol_ >= 0)
+                    {
+                        if (auto el = sender.try_as<mux::UIElement>())
+                            el.ReleasePointerCapture(e.Pointer());
+                        resizingResultCol_ = -1;
+                        // Rebuild rows only -- keeping the header avoids
+                        // rewiring every grip's pointer handlers.
+                        BuildResultRows(resultCopy);
+                    }
+                    e.Handled(true);
+                });
+
+            cellGrid.Children().Append(resizeGrip);
+            headerRow.Children().Append(cellGrid);
+        }
+
+        ResultsContainer().Children().Append(headerRow);
+    }
+
+    // ── Result-grid rows (header-independent, rebuilt on resize end) ──
+    void QueryEditorView::BuildResultRows(const DBModels::QueryResult& result)
+    {
+        // Remove any existing row StackPanels but keep the header (index 0).
+        auto children = ResultsContainer().Children();
+        while (children.Size() > 1) children.RemoveAt(1);
+
+        for (int i = 0; i < static_cast<int>(result.rows.size()); ++i)
         {
             auto& row = result.rows[i];
             muxc::StackPanel rowPanel;
@@ -623,17 +761,20 @@ namespace winrt::Gridex::implementation
                 rowPanel.Background(muxm::SolidColorBrush(
                     winrt::Windows::UI::ColorHelper::FromArgb(8, 128, 128, 128)));
 
-            for (auto& col : result.columnNames)
+            for (size_t ci = 0; ci < result.columnNames.size(); ++ci)
             {
+                const auto& col = result.columnNames[ci];
+                const double w = (ci < resultColumnWidths_.size())
+                    ? resultColumnWidths_[ci] : RESULT_COL_DEFAULT_WIDTH;
+
                 std::wstring val;
                 auto it = row.find(col);
                 if (it != row.end()) val = it->second;
-                // Render NULL sentinel as visible "NULL" with dim opacity
                 const bool isNull = DBModels::isNullCell(val);
                 const std::wstring display = isNull ? std::wstring(L"NULL") : val;
 
                 muxc::Border cell;
-                cell.Width(colWidth);
+                cell.Width(w);
                 cell.Padding(mux::Thickness{ 8, 4, 8, 4 });
                 cell.BorderBrush(muxm::SolidColorBrush(
                     winrt::Windows::UI::ColorHelper::FromArgb(20, 128, 128, 128)));

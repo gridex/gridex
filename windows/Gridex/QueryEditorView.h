@@ -50,10 +50,26 @@ namespace winrt::Gridex::implementation
         // SQL keywords for suggestion
         static const std::vector<std::wstring>& SqlKeywords();
 
+        // Result grid column-width state (drag-to-resize, same pattern as
+        // DataGridView). `resultColumnWidths_` is the source of truth; header
+        // cells are updated live on PointerMoved and rows are rebuilt on
+        // PointerReleased so we only pay the per-row re-render cost once per
+        // drag gesture.
+        std::vector<double> resultColumnWidths_;
+        int resizingResultCol_ = -1;
+        double resizeResultStartX_ = 0.0;
+        double resizeResultStartWidth_ = 0.0;
+
+        static constexpr double RESULT_COL_MIN_WIDTH     = 60.0;
+        static constexpr double RESULT_COL_MAX_WIDTH     = 600.0;
+        static constexpr double RESULT_COL_DEFAULT_WIDTH = 150.0;
+
         void EnsureEditorCreated();
         void ExecuteCurrentQuery();
         void ShowResult(const DBModels::QueryResult& result);
         void ShowError(const std::wstring& message);
+        void BuildResultHeaders(const DBModels::QueryResult& result);
+        void BuildResultRows(const DBModels::QueryResult& result);
         void OnEditorTextChanged();
         void ForceShowSuggestions();
         void ShowSuggestions(const std::vector<std::wstring>& items);

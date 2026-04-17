@@ -12,5 +12,23 @@
 
     <Grid Background="Transparent">
         <Frame x:Name="ContentFrame" />
+
+        <!-- Startup update-check overlay. Shown before the ContentFrame
+             navigates so the main app never appears while the network
+             check is in flight. Hidden by MainWindow once the check
+             completes (with or without an update). -->
+        <Grid x:Name="UpdateCheckOverlay"
+              Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+            <StackPanel VerticalAlignment="Center"
+                        HorizontalAlignment="Center"
+                        Spacing="16">
+                <ProgressRing IsActive="True" Width="48" Height="48" />
+                <TextBlock x:Name="UpdateCheckStatusText"
+                           Text="Checking for updates..."
+                           HorizontalAlignment="Center"
+                           FontSize="13"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

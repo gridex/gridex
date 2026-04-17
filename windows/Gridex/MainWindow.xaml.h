@@ -23,6 +23,7 @@ namespace winrt::Gridex::implementation
 
     private:
         void NavigateTo(const wchar_t* pageTypeName);
+        void EnterAppAfterUpdateCheck();
     };
 }
 

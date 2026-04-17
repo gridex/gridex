@@ -149,6 +149,36 @@
                 </Grid>
             </StackPanel>
 
+            <!-- Updates -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="Updates" FontSize="16" FontWeight="SemiBold" />
+
+                <Grid Padding="16"
+                      Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                      CornerRadius="8"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                      BorderThickness="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <StackPanel Grid.Column="0" Spacing="2">
+                        <TextBlock Text="Check for updates" FontSize="14" />
+                        <TextBlock x:Name="UpdateStatusText"
+                                   Text="Click the button to check."
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                    <Button x:Name="CheckUpdateButton"
+                            Grid.Column="1"
+                            Content="Check Now"
+                            Padding="16,6"
+                            VerticalAlignment="Center" />
+                </Grid>
+            </StackPanel>
+
             <!-- About -->
             <StackPanel Spacing="8">
                 <TextBlock Text="About" FontSize="16" FontWeight="SemiBold" />
