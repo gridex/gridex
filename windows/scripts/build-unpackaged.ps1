@@ -197,6 +197,33 @@ if (Test-Path $vcpkgBin) {
 } else {
     Write-Warning "vcpkg bin missing: $vcpkgBin -- Setup.exe will be missing libpq/libmariadb/etc."
 }
+
+# --- Bundle libmariadb auth plugins ------------------------------------
+#
+# libmariadb ships each auth plugin as a separate DLL (caching_sha2_password,
+# client_ed25519, sha256_password, dialog, mysql_clear_password). The
+# built-in mysql_native_password auth works without these — everything
+# else requires the matching DLL to be loadable from MYSQL_PLUGIN_DIR.
+# vcpkg installs them under plugins/libmariadb/ on the build machine,
+# but that path obviously doesn't exist on customer machines. Copy them
+# next to Gridex.exe so the code in MySQLAdapter.cpp can point
+# MYSQL_PLUGIN_DIR at <app>/plugins/mariadb/ and real MySQL 8 servers
+# (caching_sha2_password by default) will auth without requiring the
+# admin to --default-authentication-plugin=mysql_native_password.
+#
+$mariadbPluginSrc = 'C:\vcpkg\installed\x64-windows\plugins\libmariadb'
+$mariadbPluginDst = Join-Path $outDir 'plugins\mariadb'
+if (Test-Path $mariadbPluginSrc) {
+    New-Item -ItemType Directory -Force -Path $mariadbPluginDst | Out-Null
+    $pluginCount = 0
+    Get-ChildItem (Join-Path $mariadbPluginSrc '*.dll') | ForEach-Object {
+        Copy-Item $_.FullName -Destination $mariadbPluginDst -Force
+        $pluginCount++
+    }
+    Write-Host "Copied $pluginCount libmariadb auth plugin(s) to $mariadbPluginDst" -ForegroundColor Cyan
+} else {
+    Write-Warning "libmariadb plugin dir missing: $mariadbPluginSrc -- MySQL 8 caching_sha2_password auth will fail at runtime."
+}
 # -----------------------------------------------------------------------
 
 # --- Bundle Microsoft Edge WebView2 Runtime bootstrap ------------------

@@ -83,6 +83,28 @@ namespace DBModels
         // Set UTF-8
         mysql_options(conn_, MYSQL_SET_CHARSET_NAME, "utf8mb4");
 
+        // Point libmariadb at the bundled auth plugin DLLs. Without this
+        // the library looks for plugins in a compile-time vcpkg path
+        // that doesn't exist on customer machines → any auth method
+        // beyond the built-in mysql_native_password (e.g. MySQL 8's
+        // default caching_sha2_password, MariaDB's client_ed25519)
+        // fails with "Authentication plugin '...' cannot be loaded".
+        // Plugins are copied to <exe_dir>/plugins/mariadb/ by
+        // build-unpackaged.ps1.
+        {
+            wchar_t exePath[MAX_PATH] = {};
+            DWORD len = ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            if (len > 0 && len < MAX_PATH)
+            {
+                std::wstring dir(exePath);
+                auto slash = dir.find_last_of(L"\\/");
+                if (slash != std::wstring::npos) dir.resize(slash);
+                std::wstring pluginDirW = dir + L"\\plugins\\mariadb";
+                auto pluginDir = toUtf8(pluginDirW);
+                mysql_options(conn_, MYSQL_PLUGIN_DIR, pluginDir.c_str());
+            }
+        }
+
         // SSL policy.
         //
         // MariaDB Connector/C 3.4 (vcpkg build) auto-upgrades the
