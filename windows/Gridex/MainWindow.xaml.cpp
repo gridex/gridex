@@ -12,6 +12,7 @@
 #include "HomePage.h"
 #include "WorkspacePage.h"
 #include "Models/AppSettings.h"
+#include "Models/ShortcutsCatalog.h"
 #include "UpdateService.h"
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
@@ -82,6 +83,32 @@ namespace winrt::Gridex::implementation
                     args.Handled(true);
                 });
                 content.KeyboardAccelerators().Append(homeAccel);
+
+                // Ctrl+/ → Keyboard Shortcuts dialog. Uses VK_OEM_2 (0xBF)
+                // for the main-keyboard "/" key; the named VirtualKey enum
+                // only covers Divide (numpad) which would miss the usual
+                // convention. F1 is also registered below as a fallback
+                // because some keyboard layouts remap Oem2 (e.g. German
+                // uses "-" on that key).
+                auto shortcutsAccel = mux::Input::KeyboardAccelerator();
+                shortcutsAccel.Key(static_cast<winrt::Windows::System::VirtualKey>(0xBF));
+                shortcutsAccel.Modifiers(winrt::Windows::System::VirtualKeyModifiers::Control);
+                shortcutsAccel.Invoked([this](auto&&, mux::Input::KeyboardAcceleratorInvokedEventArgs const& args)
+                {
+                    ShowShortcutsDialog();
+                    args.Handled(true);
+                });
+                content.KeyboardAccelerators().Append(shortcutsAccel);
+
+                // F1 → same dialog. Universal Help key, layout-safe fallback.
+                auto helpAccel = mux::Input::KeyboardAccelerator();
+                helpAccel.Key(winrt::Windows::System::VirtualKey::F1);
+                helpAccel.Invoked([this](auto&&, mux::Input::KeyboardAcceleratorInvokedEventArgs const& args)
+                {
+                    ShowShortcutsDialog();
+                    args.Handled(true);
+                });
+                content.KeyboardAccelerators().Append(helpAccel);
             }
 
             // Blocking update check BEFORE navigating to HomePage.
@@ -217,5 +244,45 @@ namespace winrt::Gridex::implementation
     {
         NavigateTo(L"Gridex.HomePage");
         args.Handled(true);
+    }
+
+    // Triggered by Ctrl+/ or F1 — shows a ContentDialog with the full
+    // list of hotkeys grouped by category. Markup is built entirely in
+    // code via DBModels::BuildShortcutsView() so the Settings page and
+    // this dialog render the same view from one source of truth.
+    void MainWindow::ShowShortcutsDialog()
+    {
+        auto content = this->Content().try_as<mux::FrameworkElement>();
+        if (!content) return;
+        auto xamlRoot = content.XamlRoot();
+        if (!xamlRoot) return;
+
+        mux::Controls::ContentDialog dlg;
+        dlg.Title(winrt::box_value(winrt::hstring(L"Keyboard Shortcuts")));
+        dlg.CloseButtonText(L"Close");
+        dlg.DefaultButton(mux::Controls::ContentDialogButton::Close);
+        dlg.XamlRoot(xamlRoot);
+
+        // Scroll wrapper — list may grow beyond the default dialog height
+        // as more shortcuts get registered. MaxHeight keeps the dialog
+        // itself constrained so it never spans the full window height.
+        mux::Controls::ScrollViewer scroller;
+        scroller.MaxHeight(520.0);
+        scroller.HorizontalScrollBarVisibility(mux::Controls::ScrollBarVisibility::Disabled);
+        scroller.VerticalScrollBarVisibility(mux::Controls::ScrollBarVisibility::Auto);
+        scroller.Content(DBModels::BuildShortcutsView());
+        dlg.Content(scroller);
+
+        // Widen the default 456px ContentDialog so the action label and
+        // key cap fit on one line without aggressive truncation.
+        dlg.Resources().Insert(
+            winrt::box_value(L"ContentDialogMaxWidth"),
+            winrt::box_value(640.0));
+        dlg.Resources().Insert(
+            winrt::box_value(L"ContentDialogMinWidth"),
+            winrt::box_value(520.0));
+
+        try { dlg.ShowAsync(); }
+        catch (...) { /* best effort; never block app on dialog failures */ }
     }
 }

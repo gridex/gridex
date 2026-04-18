@@ -145,6 +145,7 @@
     <ClInclude Include="Models\SidebarItem.h" />
     <ClInclude Include="Models\ContentTab.h" />
     <ClInclude Include="Models\ColumnInfo.h" />
+    <ClInclude Include="Models\ShortcutsCatalog.h" />
     <ClInclude Include="Models\TableRow.h" />
     <ClInclude Include="Models\QueryResult.h" />
     <ClInclude Include="Models\WorkspaceState.h" />

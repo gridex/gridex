@@ -179,6 +179,27 @@
                 </Grid>
             </StackPanel>
 
+            <!-- Keyboard Shortcuts — populated in SettingsPage.cpp from
+                 DBModels::BuildShortcutsView() so this section and the
+                 Ctrl+/ dialog stay visually identical. -->
+            <StackPanel Spacing="12">
+                <TextBlock Text="Keyboard Shortcuts" FontSize="16" FontWeight="SemiBold" />
+                <Border Padding="16"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        CornerRadius="8"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1">
+                    <StackPanel Spacing="8">
+                        <TextBlock FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"
+                                   Text="Press Ctrl+/ or F1 anywhere in the app to open this reference." />
+                        <ContentControl x:Name="ShortcutsHost"
+                                        HorizontalContentAlignment="Stretch" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
             <!-- About -->
             <StackPanel Spacing="8">
                 <TextBlock Text="About" FontSize="16" FontWeight="SemiBold" />

@@ -935,26 +935,19 @@ namespace winrt::Gridex::implementation
             OnCellEdited(rowIndex, colName, oldValue, newValue);
     }
 
-    // ── Key shortcuts: Ctrl+C copy, Delete mark-deleted ───
+    // ── Key shortcuts: Delete mark-deleted ───
+    //
+    // Ctrl+C used to copy the whole row TSV, but it fought the natural
+    // cell-level copy users expect — selecting text inside a cell and
+    // hitting Ctrl+C was dumping every column instead of the selection.
+    // Row-copy stays available via CopySelectedRowToClipboard() for a
+    // future context-menu wiring; the hotkey itself is gone so the
+    // built-in TextBox Ctrl+C behaviour during inline edit wins.
     void DataGridView::Grid_KeyDown(
         winrt::Windows::Foundation::IInspectable const&,
         winrt::Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e)
     {
         auto key = e.Key();
-
-        if (key == winrt::Windows::System::VirtualKey::C)
-        {
-            auto ctrlState = winrt::Microsoft::UI::Input::InputKeyboardSource::GetKeyStateForCurrentThread(
-                winrt::Windows::System::VirtualKey::Control);
-            bool ctrlDown = (static_cast<int>(ctrlState) &
-                static_cast<int>(winrt::Windows::UI::Core::CoreVirtualKeyStates::Down)) != 0;
-            if (ctrlDown)
-            {
-                CopySelectedRowToClipboard();
-                e.Handled(true);
-            }
-            return;
-        }
 
         // Delete key → mark selected row as deleted (pending commit).
         // No-op when read-only (e.g. Redis) or when nothing is selected.

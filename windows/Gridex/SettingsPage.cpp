@@ -4,6 +4,7 @@
 #include <shellapi.h>
 #include "SettingsPage.h"
 #include "Models/AppSettings.h"
+#include "Models/ShortcutsCatalog.h"
 #include "GridexVersion.h"
 #include "UpdateService.h"
 #if __has_include("SettingsPage.g.cpp")
@@ -25,6 +26,11 @@ namespace winrt::Gridex::implementation
             // comes from GridexVersion.h which pulls the CI-generated header
             // when present (release builds) or falls back to "0.0.0-dev".
             VersionText().Text(winrt::hstring(L"Version " GRIDEX_VERSION));
+
+            // Populate the Keyboard Shortcuts section from the shared
+            // catalog — same builder feeds the Ctrl+/ dialog, so edits
+            // to ShortcutsCatalog.h propagate to both surfaces.
+            ShortcutsHost().Content(DBModels::BuildShortcutsView());
 
             // Load persisted settings into UI
             auto s = DBModels::AppSettings::Load();
