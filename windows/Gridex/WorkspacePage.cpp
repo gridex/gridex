@@ -1868,6 +1868,14 @@ namespace winrt::Gridex::implementation
 
     void WorkspacePage::CommitChanges()
     {
+        // Flush any in-flight inline cell edit before reading the
+        // change tracker. Without this, pressing Ctrl+S while a TextBox
+        // still holds the newly-typed text would ship the pre-edit
+        // value (often NULL for a freshly-inserted row) because the
+        // commit only fires on Enter / LostFocus and the accelerator
+        // doesn't move focus away from the TextBox.
+        if (auto g = DataGrid().try_as<DataGridView>()) g->FlushEdit();
+
         if (!changeTracker_.hasChanges()) return;
         if (!connMgr_.isConnected()) return;
 

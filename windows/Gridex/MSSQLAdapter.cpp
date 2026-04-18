@@ -652,13 +652,20 @@ namespace DBModels
         bool first = true;
         for (auto& [col, val] : values)
         {
-            if (isNullCell(val)) continue;
+            // Skip SQL NULL (already the case) and blank cells — blank
+            // means "use IDENTITY / DEFAULT / nullable default"; emitting
+            // '' would bomb on INT columns and fight IDENTITY_INSERT.
+            if (isNullCell(val) || val.empty()) continue;
             if (!first) { sql += ", "; vals += ", "; }
             sql += quoteIdentifier(col);
             vals += quoteLiteral(val);
             first = false;
         }
-        sql += ") " + vals + ")";
+        if (first)
+            sql = "INSERT INTO " + quoteIdentifier(sch) + "." +
+                  quoteIdentifier(table) + " DEFAULT VALUES";
+        else
+            sql += ") " + vals + ")";
         return executeInternal(sql);
     }
 

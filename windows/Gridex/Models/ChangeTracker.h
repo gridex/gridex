@@ -204,10 +204,28 @@ namespace DBModels
             bool first = true;
             for (auto& [col, val] : edit.insertValues)
             {
+                // Blank cell (user left it empty in the new-row UI) →
+                // omit the column so AUTO_INCREMENT / SERIAL / column
+                // DEFAULT fire. Otherwise we emit '' which bombs on INT
+                // columns and fights auto-increment. Explicit SQL NULL
+                // still travels via the null sentinel (quoteLit → NULL).
+                if (!isNullCell(val) && val.empty()) continue;
                 if (!first) { sql += L", "; vals += L", "; }
                 sql += quoteId(col, dbType);
                 vals += quoteLit(val);
                 first = false;
+            }
+            // All columns blank — use each dialect's all-defaults insert
+            // form so we don't produce invalid "INSERT INTO t () VALUES()".
+            // MySQL accepts "() VALUES ()"; PostgreSQL/SQLite/MSSQL want
+            // "DEFAULT VALUES".
+            if (first)
+            {
+                if (dbType == DatabaseType::MySQL)
+                    return L"INSERT INTO " + qualifiedTable(table, schema, dbType) +
+                           L" () VALUES ()";
+                return L"INSERT INTO " + qualifiedTable(table, schema, dbType) +
+                       L" DEFAULT VALUES";
             }
             sql += L") VALUES (" + vals + L")";
             return sql;

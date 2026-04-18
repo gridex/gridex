@@ -59,6 +59,31 @@ namespace winrt::Gridex::implementation
             Grid_KeyDown(sender, e);
         });
 
+        // Pointer pressed anywhere in the grid → flush any in-flight
+        // cell edit. Bubbles from children, so clicking a row, the empty
+        // area below rows, or the scroll background all funnel here.
+        // Skip flush when the press originates inside a TextBox so the
+        // user can reposition the caret in the cell they're editing.
+        this->AddHandler(
+            mux::UIElement::PointerPressedEvent(),
+            winrt::box_value(
+                mux::Input::PointerEventHandler(
+                    [this](winrt::Windows::Foundation::IInspectable const&,
+                           mux::Input::PointerRoutedEventArgs const& e)
+                    {
+                        // Walk up from the hit target; bail if any
+                        // ancestor is a TextBox (click landed inside
+                        // the active edit, not outside it).
+                        auto src = e.OriginalSource().try_as<mux::DependencyObject>();
+                        while (src)
+                        {
+                            if (src.try_as<muxc::TextBox>()) return;
+                            src = muxm::VisualTreeHelper::GetParent(src);
+                        }
+                        FlushEdit();
+                    })),
+            true /* handledEventsToo */);
+
         // Right-click context menu. Host wires OnRefreshRequested /
         // OnDeleteRequested in WorkspacePage; unset = no-op. Delete is
         // disabled for read-only grids (e.g. Redis projections) and when
@@ -852,6 +877,13 @@ namespace winrt::Gridex::implementation
         rowPanel.Children().InsertAt(targetIdx, editBox);
         editBox.Focus(mux::FocusState::Programmatic);
 
+        // Track which cell is editing so FlushEdit() can locate the
+        // TextBox and commit its text on Ctrl+S without waiting for
+        // LostFocus (which doesn't fire when a keyboard accelerator
+        // handles the key at the page level).
+        editingRowIndex_ = rowIndex;
+        editingColIndex_ = static_cast<int>(colIndex);
+
         // Save on Enter key. Empty input -> SQL NULL sentinel.
         editBox.KeyDown([this, rowIndex, colIndex, oldValue]
             (winrt::Windows::Foundation::IInspectable const& sender,
@@ -897,6 +929,11 @@ namespace winrt::Gridex::implementation
         // call (Enter / LostFocus) already committed — bail out.
         if (!rowPanel.Children().GetAt(targetIdx).try_as<muxc::TextBox>()) return;
 
+        // Clear in-flight edit tracking — FlushEdit() relies on this to
+        // know when nothing is being edited.
+        editingRowIndex_ = -1;
+        editingColIndex_ = -1;
+
         auto& colName = data_.columnNames[colIndex];
         data_.rows[rowIndex][colName] = newValue;
 
@@ -933,6 +970,39 @@ namespace winrt::Gridex::implementation
 
         if (newValue != oldValue && OnCellEdited)
             OnCellEdited(rowIndex, colName, oldValue, newValue);
+    }
+
+    // Locate the TextBox for the currently-edited cell and commit its
+    // text synchronously. No-op if nothing is being edited. Used on
+    // Ctrl+S and on "click outside the TextBox" so the user's in-flight
+    // text always lands in ChangeTracker before SQL generation — Enter
+    // is still the dedicated accept key but no longer the only one.
+    void DataGridView::FlushEdit()
+    {
+        if (editingRowIndex_ < 0 || editingColIndex_ < 0) return;
+        const int rowIdx = editingRowIndex_;
+        const int colIdx = editingColIndex_;
+
+        auto rowPanel = GetRowPanel(rowIdx);
+        if (!rowPanel) { editingRowIndex_ = -1; editingColIndex_ = -1; return; }
+        const uint32_t targetIdx = static_cast<uint32_t>(colIdx) + 1u;
+        if (targetIdx >= rowPanel.Children().Size()) { editingRowIndex_ = -1; editingColIndex_ = -1; return; }
+        auto tb = rowPanel.Children().GetAt(targetIdx).try_as<muxc::TextBox>();
+        if (!tb) { editingRowIndex_ = -1; editingColIndex_ = -1; return; }
+
+        std::wstring newValue(tb.Text());
+        // Match existing Enter / LostFocus semantics: an empty TextBox
+        // means "SQL NULL". User who wanted literal empty string still
+        // has to set NULL explicitly elsewhere (same as before).
+        if (newValue.empty()) newValue = DBModels::nullValue();
+
+        if (colIdx >= static_cast<int>(data_.columnNames.size())) return;
+        const auto& colName = data_.columnNames[colIdx];
+        std::wstring oldValue;
+        auto it = data_.rows[rowIdx].find(colName);
+        if (it != data_.rows[rowIdx].end()) oldValue = it->second;
+
+        CommitCellEdit(rowIdx, colIdx, oldValue, newValue);
     }
 
     // ── Key shortcuts: Delete mark-deleted ───

@@ -397,12 +397,19 @@ namespace DBModels
         bool first = true;
         for (auto& [col, val] : values)
         {
+            // Blank cell → omit so INTEGER PRIMARY KEY autoincrement and
+            // column DEFAULT expressions fire. Explicit SQL NULL still
+            // travels via the null sentinel.
+            if (!isNullCell(val) && val.empty()) continue;
             if (!first) { sql += ", "; valsSql += ", "; }
             sql += quoteIdentifier(col);
             valsSql += isNullCell(val) ? "NULL" : quoteLiteral(val);
             first = false;
         }
-        sql += ") VALUES (" + valsSql + ")";
+        if (first)
+            sql = "INSERT INTO " + quoteIdentifier(table) + " DEFAULT VALUES";
+        else
+            sql += ") VALUES (" + valsSql + ")";
         return executeInternal(sql);
     }
 

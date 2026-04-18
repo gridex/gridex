@@ -478,12 +478,23 @@ namespace DBModels
         bool first = true;
         for (auto& [col, val] : values)
         {
+            // Blank cell (user left it empty in the new-row UI) → omit the
+            // column so DB defaults / AUTO_INCREMENT / NULL-by-default kick
+            // in. MySQL otherwise rejects '' for INT columns. Users who
+            // actually want SQL NULL get the null sentinel, which is kept
+            // below and emitted as NULL.
+            if (!isNullCell(val) && val.empty()) continue;
             if (!first) { sql += ", "; valsSql += ", "; }
             sql += quoteIdentifier(col);
             valsSql += isNullCell(val) ? "NULL" : quoteLiteral(val);
             first = false;
         }
-        sql += ") VALUES (" + valsSql + ")";
+        // All columns blank → use MySQL's all-defaults insert form so we
+        // don't produce invalid "INSERT INTO t () VALUES ()".
+        if (first)
+            sql = "INSERT INTO " + quoteIdentifier(schema) + "." + quoteIdentifier(table) + " () VALUES ()";
+        else
+            sql += ") VALUES (" + valsSql + ")";
         return executeInternal(sql);
     }
 

@@ -57,6 +57,13 @@ namespace winrt::Gridex::implementation
         // Expose selected row index for CRUD operations
         int GetSelectedRowIndex() const { return selectedRow_; }
 
+        // Flush any in-flight inline cell edit synchronously. Call this
+        // right before committing pending changes (Ctrl+S / Commit button)
+        // so the value still sitting in an unfocused TextBox lands in the
+        // ChangeTracker before SQL is generated. No-op when nothing is
+        // being edited.
+        void FlushEdit();
+
         // Mark a row as deleted (red bg, dimmed text)
         void MarkRowDeleted(int index);
 
@@ -75,6 +82,14 @@ namespace winrt::Gridex::implementation
         DBModels::QueryResult data_;
         std::vector<DBModels::ColumnInfo> columnMetadata_;
         int selectedRow_ = -1;
+
+        // Tracks the (row, col) that is currently in inline-edit mode
+        // (TextBox swapped in place of TextBlock). -1/-1 when nothing is
+        // being edited. Set by BeginCellEdit, cleared by CommitCellEdit;
+        // read by FlushEdit to locate the TextBox and commit its text
+        // without relying on LostFocus timing.
+        int editingRowIndex_ = -1;
+        int editingColIndex_ = -1;
         std::wstring sortColumn_;
         bool sortAscending_ = true;
         bool readOnly_ = false;

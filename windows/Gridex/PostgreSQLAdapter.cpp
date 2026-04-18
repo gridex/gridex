@@ -573,12 +573,20 @@ namespace DBModels
         bool first = true;
         for (auto& [col, val] : values)
         {
+            // Blank cell → omit so SERIAL / DEFAULT / NOT NULL DEFAULT
+            // apply. Users wanting explicit SQL NULL still get the null
+            // sentinel path which emits NULL below.
+            if (!isNullCell(val) && val.empty()) continue;
             if (!first) { sql += ", "; valsSql += ", "; }
             sql     += quoteIdentifier(col);
             valsSql += isNullCell(val) ? "NULL" : quoteLiteral(val);
             first = false;
         }
-        sql += ") VALUES (" + valsSql + ")";
+        // All columns blank → PostgreSQL's canonical all-defaults form.
+        if (first)
+            sql = "INSERT INTO " + quoteIdentifier(schema) + "." + quoteIdentifier(table) + " DEFAULT VALUES";
+        else
+            sql += ") VALUES (" + valsSql + ")";
         return executeInternal(sql);
     }
 
