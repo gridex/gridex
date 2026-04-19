@@ -11,6 +11,7 @@
 
 import Foundation
 import MongoKitten
+import MongoClient
 import NIOCore
 
 final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
@@ -33,7 +34,7 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
             self.connectionConfig = config
             self.isConnected = true
         } catch {
-            throw GridexError.connectionFailed(underlying: error)
+            throw GridexError.connectionFailed(underlying: Self.wrap(mongoError: error))
         }
     }
 
@@ -50,6 +51,7 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
 
         let port = config.port ?? 27017
         let dbName = config.database ?? "admin"
+        let hasCredentials = !(config.username?.isEmpty ?? true)
 
         var uri = "mongodb://"
         if let user = config.username, !user.isEmpty {
@@ -60,8 +62,19 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
             uri += "@"
         }
         uri += "\(hostField):\(port)/\(dbName)"
+
+        // Most MongoDB deployments store users in the `admin` database. Without
+        // an explicit authSource, MongoKitten authenticates against the URI's
+        // database and the server returns a generic auth failure.
+        var params: [String] = []
+        if hasCredentials {
+            params.append("authSource=admin")
+        }
         if config.sslEnabled {
-            uri += "?tls=true"
+            params.append("tls=true")
+        }
+        if !params.isEmpty {
+            uri += "?" + params.joined(separator: "&")
         }
         return uri
     }
@@ -107,6 +120,33 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
             // No database in URI — append it
             return prefix + pathPart + "/" + newDB + query
         }
+    }
+
+    /// MongoKitten error types lack NSError bridging, so the default
+    /// `localizedDescription` is the unhelpful "operation couldn't be completed
+    /// (… error 1.)". Extract `errmsg`/`codeName` from the server reply when
+    /// available so the user sees the real failure reason.
+    private static func wrap(mongoError error: Error) -> NSError {
+        let message: String
+        if let serverError = error as? MongoServerError {
+            let doc = serverError.document
+            let msg = (doc["errmsg"] as? String) ?? "MongoDB server returned an error"
+            let codeName = (doc["codeName"] as? String).map { " (\($0))" } ?? ""
+            message = msg + codeName
+        } else if let reply = error as? MongoGenericErrorReply {
+            let msg = reply.errorMessage ?? "MongoDB server returned an error"
+            let codeName = reply.codeName.map { " (\($0))" } ?? ""
+            message = msg + codeName
+        } else if let described = error as? CustomStringConvertible {
+            message = described.description
+        } else {
+            message = error.localizedDescription
+        }
+        return NSError(
+            domain: "MongoDB",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 
     func disconnect() async throws {

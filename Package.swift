@@ -36,6 +36,7 @@ let package = Package(
                 .product(name: "MySQLNIO", package: "mysql-nio"),
                 .product(name: "RediStack", package: "RediStack"),
                 .product(name: "MongoKitten", package: "MongoKitten"),
+                .product(name: "MongoClient", package: "MongoKitten"),
                 .product(name: "CosmoMSSQL", package: "CosmoSQLClient-Swift"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
