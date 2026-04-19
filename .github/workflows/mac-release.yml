@@ -1,151 +1,151 @@
-# macOS Release pipeline for Gridex
-# ---------------------------------------------------------------------
-# Triggers on push to main branch or manually via workflow_dispatch.
-# Produces a notarized universal DMG (arm64 + x86_64) uploaded to
-# Cloudflare R2 and a Sparkle appcast.xml updated at the same prefix.
-#
-# Required GitHub Secrets:
-#   MACOS_CERT_P12_BASE64   Developer ID Application cert (.p12, base64-encoded)
-#   MACOS_CERT_PASSWORD     Password for the .p12 archive
-#   SIGN_IDENTITY           Cert common name or SHA-1 fingerprint
-#   NOTARY_APPLE_ID         Apple ID used for notarization
-#   NOTARY_PASSWORD         App-specific password for that Apple ID
-#   NOTARY_TEAM_ID          Apple Developer Team ID
-#   CLOUDFLARE_API_TOKEN    R2 write-capable Cloudflare API token
-#   CLOUDFLARE_ACCOUNT_ID   Cloudflare account ID
-# ---------------------------------------------------------------------
+# # macOS Release pipeline for Gridex
+# # ---------------------------------------------------------------------
+# # Triggers on push to main branch or manually via workflow_dispatch.
+# # Produces a notarized universal DMG (arm64 + x86_64) uploaded to
+# # Cloudflare R2 and a Sparkle appcast.xml updated at the same prefix.
+# #
+# # Required GitHub Secrets:
+# #   MACOS_CERT_P12_BASE64   Developer ID Application cert (.p12, base64-encoded)
+# #   MACOS_CERT_PASSWORD     Password for the .p12 archive
+# #   SIGN_IDENTITY           Cert common name or SHA-1 fingerprint
+# #   NOTARY_APPLE_ID         Apple ID used for notarization
+# #   NOTARY_PASSWORD         App-specific password for that Apple ID
+# #   NOTARY_TEAM_ID          Apple Developer Team ID
+# #   CLOUDFLARE_API_TOKEN    R2 write-capable Cloudflare API token
+# #   CLOUDFLARE_ACCOUNT_ID   Cloudflare account ID
+# # ---------------------------------------------------------------------
 
-name: macOS Release
+# name: macOS Release
 
-on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release (e.g. 0.1.0). Only used for manual runs."
-        required: false
-        default: "0.0.0-manual"
+# on:
+#   push:
+#     branches:
+#       - main
+#   workflow_dispatch:
+#     inputs:
+#       version:
+#         description: "Version to release (e.g. 0.1.0). Only used for manual runs."
+#         required: false
+#         default: "0.0.0-manual"
 
-permissions:
-  contents: write   # needed to attach artifacts to GitHub Releases
+# permissions:
+#   contents: write   # needed to attach artifacts to GitHub Releases
 
-jobs:
-  release:
-    runs-on: macos-14   # Apple Silicon — arm64 native, x86_64 cross-compiled
-    timeout-minutes: 90
+# jobs:
+#   release:
+#     runs-on: macos-14   # Apple Silicon — arm64 native, x86_64 cross-compiled
+#     timeout-minutes: 90
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
 
-      - name: Select Xcode 16
-        run: |
-          XCODE=$(ls /Applications | grep "^Xcode_16" | sort -V | tail -1)
-          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
-          swift --version
+#       - name: Select Xcode 16
+#         run: |
+#           XCODE=$(ls /Applications | grep "^Xcode_16" | sort -V | tail -1)
+#           sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+#           swift --version
 
-      - name: Read version from Info.plist
-        id: ver
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.version }}" != "0.0.0-manual" ]]; then
-            VERSION="${{ github.event.inputs.version }}"
-          else
-            VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" macos/Resources/Info.plist)
-          fi
-          TAG="v${VERSION}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
-          echo "Version: $VERSION / Tag: $TAG"
+#       - name: Read version from Info.plist
+#         id: ver
+#         run: |
+#           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ github.event.inputs.version }}" != "0.0.0-manual" ]]; then
+#             VERSION="${{ github.event.inputs.version }}"
+#           else
+#             VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" macos/Resources/Info.plist)
+#           fi
+#           TAG="v${VERSION}"
+#           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+#           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+#           echo "Version: $VERSION / Tag: $TAG"
 
-      - name: Bump version in Info.plist (workflow_dispatch override)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-          BUILD=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
-            macos/Resources/Info.plist
-          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" \
-            macos/Resources/Info.plist
-          echo "Set version $VERSION (build $BUILD)"
+#       - name: Bump version in Info.plist (workflow_dispatch override)
+#         if: github.event_name == 'workflow_dispatch'
+#         run: |
+#           VERSION="${{ steps.ver.outputs.version }}"
+#           IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+#           BUILD=$(( MAJOR * 10000 + MINOR * 100 + PATCH ))
+#           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+#             macos/Resources/Info.plist
+#           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD" \
+#             macos/Resources/Info.plist
+#           echo "Set version $VERSION (build $BUILD)"
 
-      - name: Import Developer ID certificate
-        env:
-          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
-          CERT_PASSWORD:   ${{ secrets.MACOS_CERT_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
-          KEYCHAIN_PASS="ci-$(uuidgen)"
+#       - name: Import Developer ID certificate
+#         env:
+#           CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+#           CERT_PASSWORD:   ${{ secrets.MACOS_CERT_PASSWORD }}
+#         run: |
+#           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+#           KEYCHAIN_PASS="ci-$(uuidgen)"
 
-          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+#           echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
 
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-          security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+#           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+#           security set-keychain-settings -t 3600 -u "$KEYCHAIN_PATH"
+#           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-          security import "$RUNNER_TEMP/cert.p12" \
-            -k "$KEYCHAIN_PATH" \
-            -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign
+#           security import "$RUNNER_TEMP/cert.p12" \
+#             -k "$KEYCHAIN_PATH" \
+#             -P "$CERT_PASSWORD" \
+#             -T /usr/bin/codesign
 
-          # Allow codesign to access the key without a password prompt
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+#           # Allow codesign to access the key without a password prompt
+#           security set-key-partition-list \
+#             -S apple-tool:,apple:,codesign: \
+#             -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
 
-          # Add to search list so codesign can find the cert
-          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+#           # Add to search list so codesign can find the cert
+#           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
 
-          rm "$RUNNER_TEMP/cert.p12"
+#           rm "$RUNNER_TEMP/cert.p12"
 
-      - name: Store notarytool credentials
-        env:
-          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
-          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
-          NOTARY_TEAM_ID:  ${{ secrets.NOTARY_TEAM_ID }}
-        run: |
-          xcrun notarytool store-credentials gridex-notarize \
-            --apple-id  "$NOTARY_APPLE_ID" \
-            --password  "$NOTARY_PASSWORD" \
-            --team-id   "$NOTARY_TEAM_ID"
+#       - name: Store notarytool credentials
+#         env:
+#           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+#           NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+#           NOTARY_TEAM_ID:  ${{ secrets.NOTARY_TEAM_ID }}
+#         run: |
+#           xcrun notarytool store-credentials gridex-notarize \
+#             --apple-id  "$NOTARY_APPLE_ID" \
+#             --password  "$NOTARY_PASSWORD" \
+#             --team-id   "$NOTARY_TEAM_ID"
 
-      - name: Build universal release (arm64 + x86_64)
-        env:
-          SIGN_IDENTITY:  ${{ secrets.SIGN_IDENTITY }}
-          NOTARY_PROFILE: gridex-notarize
-        run: ./scripts/release-all.sh
+#       - name: Build universal release (arm64 + x86_64)
+#         env:
+#           SIGN_IDENTITY:  ${{ secrets.SIGN_IDENTITY }}
+#           NOTARY_PROFILE: gridex-notarize
+#         run: ./scripts/release-all.sh
 
-      - name: Import Sparkle EdDSA private key
-        env:
-          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
-        run: |
-          security add-generic-password \
-            -s "https://sparkle-project.org" \
-            -a "ed25519" \
-            -p "$SPARKLE_PRIVATE_KEY" \
-            -U
+#       - name: Import Sparkle EdDSA private key
+#         env:
+#           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+#         run: |
+#           security add-generic-password \
+#             -s "https://sparkle-project.org" \
+#             -a "ed25519" \
+#             -p "$SPARKLE_PRIVATE_KEY" \
+#             -U
 
-      - name: Install Wrangler CLI
-        run: npm install -g wrangler
+#       - name: Install Wrangler CLI
+#         run: npm install -g wrangler
 
-      - name: Publish DMG + appcast to Cloudflare R2
-        env:
-          CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ./scripts/publish.sh
+#       - name: Publish DMG + appcast to Cloudflare R2
+#         env:
+#           CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+#           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+#         run: ./scripts/publish.sh
 
-      - name: Attach DMG to GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ steps.ver.outputs.tag }}"
-          DMG=$(ls dist/Gridex-*.dmg | head -1)
-          gh release create "$TAG" "$DMG" \
-            --title "Gridex $TAG" \
-            --notes "Gridex $TAG — universal macOS build (Apple Silicon + Intel)" \
-            --latest 2>/dev/null || \
-          gh release upload "$TAG" "$DMG" --clobber
+#       - name: Attach DMG to GitHub Release
+#         env:
+#           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#         run: |
+#           TAG="${{ steps.ver.outputs.tag }}"
+#           DMG=$(ls dist/Gridex-*.dmg | head -1)
+#           gh release create "$TAG" "$DMG" \
+#             --title "Gridex $TAG" \
+#             --notes "Gridex $TAG — universal macOS build (Apple Silicon + Intel)" \
+#             --latest 2>/dev/null || \
+#           gh release upload "$TAG" "$DMG" --clobber

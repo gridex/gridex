@@ -24,6 +24,10 @@ final class ChatDisplayMessage: ObservableObject, Identifiable {
 
 struct AIChatView: View {
     @EnvironmentObject private var appState: AppState
+    @AppStorage("ai.activeProviderID") private var activeProviderID: String = ""
+    @AppStorage("ai.activeModel")      private var activeModel: String = ""
+    // Legacy single-provider settings — kept for backward compat until user
+    // migrates to the multi-provider list in Settings → AI.
     @AppStorage("ai.provider") private var providerType = "gemini"
     @AppStorage("ai.provider.baseURL") private var baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
     @AppStorage("ai.provider.enabled") private var isEnabled = true
@@ -34,6 +38,7 @@ struct AIChatView: View {
     @State private var apiKeyLoaded = false
     @State private var attachedTables: Set<String> = []
     @State private var showTablePicker = false
+    @State private var providers: [ProviderConfig] = []
 
     private var messages: [ChatDisplayMessage] {
         get {
@@ -80,7 +85,11 @@ struct AIChatView: View {
         } message: {
             Text(errorMessage ?? "")
         }
-        .onAppear { refreshAPIKeyState() }
+        .onAppear {
+            refreshAPIKeyState()
+            Task { await loadProviders() }
+        }
+        .onChange(of: activeProviderID) { _, _ in refreshAPIKeyState() }
         .onChange(of: providerType) { _, _ in refreshAPIKeyState() }
         .onChange(of: isEnabled) { _, _ in refreshAPIKeyState() }
     }
@@ -106,15 +115,7 @@ struct AIChatView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("AI Assistant")
                     .font(.system(size: 13, weight: .semibold))
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(apiKeyLoaded ? Color.green : Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(apiKeyLoaded ? selectedModel : "Not configured")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                providerPicker
             }
 
             Spacer()
@@ -147,6 +148,93 @@ struct AIChatView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .bottom) {
             Divider().opacity(0.5)
+        }
+    }
+
+    // MARK: - Provider / model picker (inline switcher)
+
+    /// Status pill under "AI Assistant" — tapping opens a Menu to switch provider
+    /// and model without leaving the chat.
+    private var providerPicker: some View {
+        Menu {
+            if providers.isEmpty {
+                Text("No providers configured — open Settings → AI")
+                Divider()
+                SettingsLink { Text("Open Settings") }
+            } else {
+                ForEach(providers) { p in
+                    Section(p.name) {
+                        ForEach(modelOptions(for: p), id: \.self) { modelID in
+                            Button(action: { select(provider: p, model: modelID) }) {
+                                if p.id.uuidString == activeProviderID &&
+                                   (activeModel.isEmpty ? p.model : activeModel) == modelID {
+                                    Label(modelID, systemImage: "checkmark")
+                                } else {
+                                    Label(modelID, systemImage: p.type.iconName)
+                                }
+                            }
+                        }
+                    }
+                }
+                Divider()
+                SettingsLink { Label("Manage providers…", systemImage: "gearshape") }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(apiKeyLoaded ? Color.green : Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(currentProviderLabel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+
+    private var currentProviderLabel: String {
+        if !activeProviderID.isEmpty {
+            if let p = providers.first(where: { $0.id.uuidString == activeProviderID }) {
+                let m = activeModel.isEmpty ? p.model : activeModel
+                return "\(p.name) · \(m)"
+            }
+            // Provider ID set but list not loaded yet
+            if providers.isEmpty {
+                return "Loading…"
+            }
+            // Provider ID doesn't match any — stale reference
+            return "Not configured"
+        }
+        // Legacy single-provider mode
+        return apiKeyLoaded ? selectedModel : "Not configured"
+    }
+
+    /// Models to show under a provider in the menu: fetched list union with the
+    /// configured default so the user-set model is always visible.
+    private func modelOptions(for p: ProviderConfig) -> [String] {
+        var ids = p.type.fallbackModelIDs
+        if !p.model.isEmpty, !ids.contains(p.model) {
+            ids.insert(p.model, at: 0)
+        }
+        return ids
+    }
+
+    private func select(provider: ProviderConfig, model: String) {
+        activeProviderID = provider.id.uuidString
+        activeModel = model
+        refreshAPIKeyState()
+    }
+
+    @MainActor
+    private func loadProviders() async {
+        if let list = try? await DependencyContainer.shared.llmProviderRepository.fetchAll() {
+            providers = list.filter(\.enabled)
         }
     }
 
@@ -512,9 +600,54 @@ struct AIChatView: View {
     // MARK: - Logic
 
     private func refreshAPIKeyState() {
+        // Multi-provider path: an active provider ID is set.
+        if !activeProviderID.isEmpty, let uuid = UUID(uuidString: activeProviderID) {
+            let key = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(uuid.uuidString)")
+            // Ollama has no key but is still usable → treat presence of an active ID as ready
+            // unless we can verify the config requires a key and none is set.
+            Task {
+                let config = try? await DependencyContainer.shared.llmProviderRepository.fetchByID(uuid)
+                await MainActor.run {
+                    if let config, config.enabled {
+                        apiKeyLoaded = !config.type.requiresAPIKey || (key != nil && !key!.isEmpty)
+                    } else {
+                        apiKeyLoaded = false
+                    }
+                }
+            }
+            return
+        }
+        // Legacy path.
         guard isEnabled else { apiKeyLoaded = false; return }
         let key = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(providerType)")
         apiKeyLoaded = key != nil && !key!.isEmpty
+    }
+
+    /// Resolve the LLMService + model to use for the next request.
+    /// Prefers the multi-provider registry; falls back to legacy @AppStorage.
+    /// If the user picked a different model from the header menu (stored in
+    /// `activeModel`), it overrides the config's default.
+    private func resolveLLMService() async -> (service: any LLMService, model: String)? {
+        if !activeProviderID.isEmpty, let uuid = UUID(uuidString: activeProviderID),
+           let config = try? await DependencyContainer.shared.llmProviderRepository.fetchByID(uuid),
+           config.enabled {
+            let apiKey = (try? DependencyContainer.shared.keychainService.load(
+                key: ProviderEditSheet.keychainKey(id: uuid)
+            )) ?? ""
+            if config.type.requiresAPIKey, apiKey.isEmpty { return nil }
+            let service = ProviderFactory.make(config: config, apiKey: apiKey)
+            let modelToUse = activeModel.isEmpty ? config.model : activeModel
+            return (service, modelToUse)
+        }
+        // Legacy
+        guard let apiKey = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(providerType)"),
+              !apiKey.isEmpty else { return nil }
+        let service = DependencyContainer.shared.makeLLMService(
+            provider: providerType,
+            apiKey: apiKey,
+            baseURL: baseURL
+        )
+        return (service, selectedModel)
     }
 
     private func sendMessage() {
@@ -530,18 +663,13 @@ struct AIChatView: View {
         let currentAttached = attachedTables
 
         Task {
-            guard let apiKey = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(providerType)"),
-                  !apiKey.isEmpty else {
-                errorMessage = "API key not configured"
+            guard let resolved = await resolveLLMService() else {
+                errorMessage = "No active AI provider configured. Open Settings → AI to add one."
                 isStreaming = false
                 return
             }
-
-            let service = DependencyContainer.shared.makeLLMService(
-                provider: providerType,
-                apiKey: apiKey,
-                baseURL: baseURL
-            )
+            let service = resolved.service
+            let modelID = resolved.model
 
             // Build system prompt — general rules only
             var systemPrompt = "You are a helpful database assistant. Answer concisely."
@@ -602,7 +730,7 @@ struct AIChatView: View {
                 let stream = service.stream(
                     messages: llmMessages,
                     systemPrompt: systemPrompt,
-                    model: selectedModel,
+                    model: modelID,
                     maxTokens: AppConstants.AI.defaultMaxTokens,
                     temperature: AppConstants.AI.defaultTemperature
                 )

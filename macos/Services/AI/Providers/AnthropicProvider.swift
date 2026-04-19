@@ -8,9 +8,13 @@ import Foundation
 final class AnthropicProvider: LLMService, @unchecked Sendable {
     let providerName = "Anthropic"
     private let apiKey: String
+    private let baseURL: String
+    private let anthropicVersion = "2023-06-01"
 
-    init(apiKey: String) {
-        self.apiKey = apiKey
+    init(apiKey: String, baseURL: String = "https://api.anthropic.com/v1") {
+        self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.baseURL = trimmedURL.hasSuffix("/") ? String(trimmedURL.dropLast()) : trimmedURL
     }
 
     func stream(
@@ -23,11 +27,11 @@ final class AnthropicProvider: LLMService, @unchecked Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
+                    var request = URLRequest(url: URL(string: "\(baseURL)/messages")!)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "content-type")
                     request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
-                    request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                    request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
 
                     let body: [String: Any] = [
                         "model": model,
@@ -35,14 +39,14 @@ final class AnthropicProvider: LLMService, @unchecked Sendable {
                         "temperature": temperature,
                         "stream": true,
                         "system": systemPrompt,
-                        "messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] }
+                        "messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] },
                     ]
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (stream, response) = try await URLSession.shared.bytes(for: request)
-
-                    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                        continuation.finish(throwing: GridexError.aiProviderError("HTTP error"))
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        continuation.finish(throwing: GridexError.aiProviderError("Anthropic HTTP \(code)"))
                         return
                     }
 
@@ -65,15 +69,46 @@ final class AnthropicProvider: LLMService, @unchecked Sendable {
     }
 
     func availableModels() async throws -> [LLMModel] {
-        [
-            LLMModel(id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: providerName, contextWindow: 200000, supportsStreaming: true),
-            LLMModel(id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5", provider: providerName, contextWindow: 200000, supportsStreaming: true),
-            LLMModel(id: "claude-opus-4-6", name: "Claude Opus 4.6", provider: providerName, contextWindow: 200000, supportsStreaming: true),
-        ]
+        // Use Anthropic's official models endpoint. Auth is x-api-key (NOT Bearer).
+        // Response: {"data":[{"id":"...","display_name":"..."}]}
+        var request = URLRequest(url: URL(string: "\(baseURL)/models")!)
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
+
+        let (data, http) = try await LLMRetry.perform(request)
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw GridexError.aiProviderError("HTTP \(http.statusCode): check API key")
+        }
+        guard http.statusCode == 200 else {
+            throw GridexError.aiProviderError("HTTP \(http.statusCode)")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = json["data"] as? [[String: Any]] else {
+            return []
+        }
+        return arr.compactMap { m -> LLMModel? in
+            guard let id = m["id"] as? String else { return nil }
+            let display = (m["display_name"] as? String) ?? id
+            return LLMModel(id: id, name: display, provider: providerName, contextWindow: 200000, supportsStreaming: true)
+        }
     }
 
     func validateAPIKey() async throws -> Bool {
-        // TODO: Make a minimal API call to validate
-        return !apiKey.isEmpty
+        // Minimal, cheap probe: 1-token message. 200 → valid, 401/403 → invalid.
+        var request = URLRequest(url: URL(string: "\(baseURL)/messages")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue(anthropicVersion, forHTTPHeaderField: "anthropic-version")
+        let body: [String: Any] = [
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1,
+            "messages": [["role": "user", "content": "."]],
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (_, http) = try await LLMRetry.perform(request, policy: .none)
+        return http.statusCode == 200
     }
 }

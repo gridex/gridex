@@ -19,6 +19,7 @@ final class DependencyContainer {
         let schema = Schema([
             SavedConnectionEntity.self,
             QueryHistoryEntity.self,
+            LLMProviderEntity.self,
         ])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
@@ -38,6 +39,7 @@ final class DependencyContainer {
 
     lazy var connectionRepository: any ConnectionRepository = SwiftDataConnectionRepository(modelContainer: modelContainer)
     lazy var queryHistoryRepository: any QueryHistoryRepository = SwiftDataQueryHistoryRepository(modelContainer: modelContainer)
+    lazy var llmProviderRepository: any LLMProviderRepository = SwiftDataLLMProviderRepository(modelContainer: modelContainer)
 
     // MARK: - Services
 
@@ -52,13 +54,23 @@ final class DependencyContainer {
 
     // MARK: - AI
 
-    func makeLLMService(provider: String, apiKey: String, baseURL: String? = nil) -> any LLMService {
-        switch provider {
-        case "anthropic": return AnthropicProvider(apiKey: apiKey)
-        case "openai": return OpenAIProvider(apiKey: apiKey)
-        case "ollama": return OllamaProvider()
-        case "gemini": return GeminiProvider(apiKey: apiKey, baseURL: baseURL ?? "https://generativelanguage.googleapis.com/v1beta/openai")
-        default: return AnthropicProvider(apiKey: apiKey)
+    lazy var providerRegistry = ProviderRegistry()
+
+    /// Load all enabled providers from persistence and register them with the registry.
+    /// Call once at app startup. Safe to call again after config changes.
+    func bootstrapProviderRegistry() async {
+        await providerRegistry.removeAll()
+        let configs = (try? await llmProviderRepository.fetchAll()) ?? []
+        for config in configs where config.enabled {
+            let apiKey = (try? keychainService.load(key: "ai.apikey.\(config.id.uuidString)")) ?? ""
+            await providerRegistry.register(config, apiKey: apiKey)
         }
+    }
+
+    /// Build a one-off LLMService. Primary path for the single-active-provider UI;
+    /// multi-provider callers should go through `providerRegistry`.
+    func makeLLMService(provider: String, apiKey: String, baseURL: String? = nil) -> any LLMService {
+        let type = ProviderType(rawValue: provider) ?? .anthropic
+        return ProviderFactory.make(type: type, apiKey: apiKey, baseURL: baseURL)
     }
 }

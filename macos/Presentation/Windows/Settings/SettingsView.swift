@@ -68,199 +68,210 @@ struct GeneralSettingsView: View {
 }
 
 struct AISettingsView: View {
-    private let keychainService: KeychainServiceProtocol = DependencyContainer.shared.keychainService
+    private let keychain: KeychainServiceProtocol = DependencyContainer.shared.keychainService
+    private let repository: any LLMProviderRepository = DependencyContainer.shared.llmProviderRepository
 
-    @AppStorage("ai.provider") private var providerType = "gemini"
-    @AppStorage("ai.provider.baseURL") private var baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-    @AppStorage("ai.provider.enabled") private var isEnabled = true
-    @AppStorage("ai.provider.model") private var selectedModel = "gemini-2.5-flash"
+    @AppStorage("ai.activeProviderID") private var activeProviderID: String = ""
 
-    @State private var apiKey = ""
-    @State private var isValidating = false
-    @State private var validationResult: ValidationResult?
-    @State private var availableModels: [LLMModel] = []
-    @State private var isLoadingModels = false
+    @State private var providers: [ProviderConfig] = []
+    @State private var editing: EditingTarget?
+    @State private var loadError: String?
 
-    private enum ValidationResult {
-        case success, failure(String)
+    private enum EditingTarget: Identifiable {
+        case add
+        case edit(ProviderConfig)
+
+        var id: String {
+            switch self {
+            case .add:            return "__add__"
+            case .edit(let c):    return c.id.uuidString
+            }
+        }
     }
 
-    private let providerTypes = [
-        ("gemini", "Google Gemini"),
-        ("anthropic", "Anthropic"),
-        ("openai", "OpenAI"),
-        ("ollama", "Ollama"),
-    ]
-
     var body: some View {
+        VStack(spacing: 0) {
+            activeSection
+            Divider()
+            providersList
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear(perform: reload)
+        .sheet(item: $editing) { target in
+            switch target {
+            case .add:
+                ProviderEditSheet(editing: nil) { _ in reload() }
+            case .edit(let config):
+                ProviderEditSheet(editing: config) { _ in reload() }
+            }
+        }
+    }
+
+    // MARK: - Active picker
+
+    private var activeSection: some View {
         Form {
-            Picker("Provider", selection: $providerType) {
-                ForEach(providerTypes, id: \.0) { value, label in
-                    Text(label).tag(value)
-                }
-            }
-            .onChange(of: providerType) { _, newValue in
-                applyProviderDefaults(newValue)
-            }
-
-            if providerType != "ollama" {
-                TextField("API Base URL", text: $baseURL)
-                SecureField("API Key", text: $apiKey)
-            }
-
-            HStack {
-                Picker("Model", selection: $selectedModel) {
-                    if availableModels.isEmpty {
-                        ForEach(fallbackModels, id: \.self) { model in
-                            Text(model).tag(model)
+            Section("Active Provider") {
+                if enabledProviders.isEmpty {
+                    Text("No provider configured yet. Click + to add one.")
+                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
+                } else {
+                    Picker("Used by AI chat", selection: $activeProviderID) {
+                        ForEach(enabledProviders) { p in
+                            Label("\(p.name) — \(p.type.displayName)", systemImage: p.type.iconName)
+                                .tag(p.id.uuidString)
                         }
-                    } else {
-                        ForEach(availableModels) { model in
-                            Text(model.name).tag(model.id)
-                        }
-                    }
-                }
-                Button(action: fetchModels) {
-                    if isLoadingModels {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(isLoadingModels || (providerType != "ollama" && apiKey.isEmpty))
-                .help("Fetch models from API")
-            }
-
-            Toggle("Enabled", isOn: $isEnabled)
-
-            HStack {
-                Button(action: validateConnection) {
-                    HStack(spacing: 6) {
-                        if isValidating {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
-                        Text("Validate")
-                    }
-                }
-                .disabled(isValidating || (providerType != "ollama" && apiKey.isEmpty))
-
-                if let result = validationResult {
-                    switch result {
-                    case .success:
-                        Label("Connected", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.system(size: 12))
-                    case .failure(let msg):
-                        Label(msg, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .font(.system(size: 12))
-                            .lineLimit(1)
                     }
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            loadAPIKey()
-            fetchModels()
-        }
-        .onChange(of: apiKey) { _, newValue in saveAPIKey(newValue) }
+        .frame(height: 100)
     }
 
-    private var fallbackModels: [String] {
-        switch providerType {
-        case "gemini": return ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
-        case "anthropic": return ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"]
-        case "openai": return ["gpt-4o", "gpt-4o-mini"]
-        case "ollama": return ["llama3", "codellama", "mistral"]
-        default: return []
-        }
-    }
+    // MARK: - Providers list
 
-    private func fetchModels() {
-        isLoadingModels = true
-        Task {
-            let service = DependencyContainer.shared.makeLLMService(
-                provider: providerType,
-                apiKey: apiKey,
-                baseURL: baseURL
-            )
-            do {
-                let models = try await service.availableModels()
-                await MainActor.run {
-                    availableModels = models
-                    if !models.isEmpty && !models.contains(where: { $0.id == selectedModel }) {
-                        selectedModel = models[0].id
+    private var providersList: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Providers").font(.headline)
+                Spacer()
+                Button(action: { editing = .add }) {
+                    Label("Add Provider", systemImage: "plus")
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 8)
+
+            if providers.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary)
+                    Text("No providers yet")
+                        .foregroundStyle(.secondary)
+                    Text("Add Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek and more.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(providers) { p in
+                        providerRow(p)
                     }
-                    isLoadingModels = false
                 }
-            } catch {
-                await MainActor.run {
-                    availableModels = []
-                    isLoadingModels = false
-                }
+                .listStyle(.inset(alternatesRowBackgrounds: true))
+            }
+
+            if let loadError {
+                Text(loadError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 8)
             }
         }
     }
 
-    private func applyProviderDefaults(_ provider: String) {
-        switch provider {
-        case "gemini":
-            baseURL = "https://generativelanguage.googleapis.com/v1beta/openai"
-            selectedModel = "gemini-2.5-flash"
-        case "anthropic":
-            baseURL = "https://api.anthropic.com/v1"
-            selectedModel = "claude-sonnet-4-6"
-        case "openai":
-            baseURL = "https://api.openai.com/v1"
-            selectedModel = "gpt-4o"
-        case "ollama":
-            baseURL = "http://localhost:11434"
-            selectedModel = "llama3"
-        default: break
+    private func providerRow(_ p: ProviderConfig) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: p.type.iconName)
+                .font(.system(size: 16))
+                .foregroundStyle(.tint)
+                .frame(width: 24)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(p.name).font(.system(size: 13, weight: .medium))
+                    if p.id.uuidString == activeProviderID {
+                        Text("ACTIVE")
+                            .font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.18))
+                            .foregroundStyle(.tint)
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                }
+                Text("\(p.type.displayName) · \(p.model)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { p.enabled },
+                set: { toggleEnabled(p, $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            Button(action: { editing = .edit(p) }) {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.plain)
+            .help("Edit")
+
+            Button(action: { delete(p) }) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+            .help("Delete")
         }
-        loadAPIKey()
-        availableModels = []
-        fetchModels()
+        .padding(.vertical, 4)
     }
 
-    private func loadAPIKey() {
-        apiKey = (try? keychainService.load(key: "ai.apikey.\(providerType)")) ?? ""
+    // MARK: - Data
+
+    private var enabledProviders: [ProviderConfig] {
+        providers.filter(\.enabled)
     }
 
-    private func saveAPIKey(_ key: String) {
-        if key.isEmpty {
-            try? keychainService.delete(key: "ai.apikey.\(providerType)")
-        } else {
-            try? keychainService.save(key: "ai.apikey.\(providerType)", value: key)
-        }
-    }
-
-    private func validateConnection() {
-        isValidating = true
-        validationResult = nil
+    private func reload() {
         Task {
             do {
-                let service = DependencyContainer.shared.makeLLMService(
-                    provider: providerType,
-                    apiKey: apiKey,
-                    baseURL: baseURL
-                )
-                let valid = try await service.validateAPIKey()
+                let list = try await repository.fetchAll()
                 await MainActor.run {
-                    validationResult = valid ? .success : .failure("Invalid API key")
-                    isValidating = false
+                    providers = list
+                    loadError = nil
+                    // Ensure activeProviderID points at a valid enabled entry
+                    if !list.contains(where: { $0.id.uuidString == activeProviderID && $0.enabled }),
+                       let first = list.first(where: { $0.enabled }) {
+                        activeProviderID = first.id.uuidString
+                    }
                 }
             } catch {
-                await MainActor.run {
-                    validationResult = .failure(error.localizedDescription)
-                    isValidating = false
-                }
+                await MainActor.run { loadError = error.localizedDescription }
             }
+        }
+    }
+
+    private func toggleEnabled(_ p: ProviderConfig, _ enabled: Bool) {
+        var updated = p
+        updated.enabled = enabled
+        Task {
+            try? await repository.update(updated)
+            let apiKey = (try? keychain.load(key: ProviderEditSheet.keychainKey(id: p.id))) ?? ""
+            if enabled {
+                await DependencyContainer.shared.providerRegistry.register(updated, apiKey: apiKey)
+            } else {
+                await DependencyContainer.shared.providerRegistry.unregister(updated.name)
+            }
+            await MainActor.run { reload() }
+        }
+    }
+
+    private func delete(_ p: ProviderConfig) {
+        Task {
+            try? await repository.delete(p.id)
+            try? keychain.delete(key: ProviderEditSheet.keychainKey(id: p.id))
+            await DependencyContainer.shared.providerRegistry.unregister(p.name)
+            await MainActor.run { reload() }
         }
     }
 }

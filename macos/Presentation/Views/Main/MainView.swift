@@ -121,6 +121,8 @@ struct HomeView: View {
     @State private var renameGroupName = ""
     @State private var editingConnection: ConnectionConfig?
     @State private var showConnectionError = false
+    @State private var showTablePlusImport = false
+    @ObservedObject private var updater = UpdaterService.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -210,6 +212,9 @@ struct HomeView: View {
                 appState: appState
             )
         }
+        .sheet(isPresented: $showTablePlusImport) {
+            ImportConnectionsSheet()
+        }
     }
 
     // MARK: - Left Branding Panel
@@ -228,12 +233,34 @@ struct HomeView: View {
                     Text("AI-Native Database IDE")
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
+
+                    // Version + Check for Updates
+                    HStack(spacing: 6) {
+                        Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0")")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.quaternary)
+
+                        Button {
+                            updater.checkForUpdates()
+                        } label: {
+                            Text("Check for Updates")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.blue)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!updater.canCheckForUpdates)
+                    }
+                    .padding(.top, 2)
                 }
             }
 
             Spacer()
 
             VStack(spacing: 2) {
+                HomeActionButton(icon: "square.and.arrow.down.fill", title: "Import Connections") {
+                    showTablePlusImport = true
+                }
+
                 HomeActionButton(icon: "arrow.up.doc.fill", title: "Backup database…") {
                     BackupRestorePanel.openBackupWizard(appState: appState)
                 }
@@ -2165,5 +2192,408 @@ final class ResizeHandleView: NSView {
         // Drag right (positive delta) → panel shrinks
         let newWidth = dragStartWidth - deltaX
         setWidth?(newWidth)
+    }
+}
+
+// MARK: - TablePlus Import Sheet
+
+struct ImportConnectionsSheet: View {
+    @EnvironmentObject private var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedSource: ImportSource?
+    @State private var connections: [ImportedConnection] = []
+    @State private var selected: Set<String> = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var isImporting = false
+    @State private var navicatFileURL: URL?
+
+    private var availableSources: [ImportSource] {
+        ImportSource.allCases
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Import Connections")
+                .font(.system(size: 15, weight: .semibold))
+                .padding(.top, 20)
+                .padding(.bottom, 4)
+
+            Text(selectedSource == nil ? "Select a source to import from" : "Select connections to import")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 16)
+
+            if selectedSource == nil {
+                sourceSelectionView
+            } else if isLoading {
+                ProgressView()
+                    .padding(40)
+            } else if let error = errorMessage {
+                errorView(error)
+            } else if connections.isEmpty {
+                emptyView
+            } else {
+                connectionsList
+            }
+
+            Divider()
+            bottomBar
+        }
+        .frame(width: 520, height: 450)
+    }
+
+    private var sourceSelectionView: some View {
+        VStack(spacing: 12) {
+            ForEach(availableSources, id: \.self) { source in
+                SourceRow(source: source) {
+                    if source == .navicat {
+                        pickNavicatFile()
+                    } else {
+                        selectedSource = source
+                        loadConnections(from: source)
+                    }
+                }
+            }
+
+            if availableSources.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "app.dashed")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.tertiary)
+                    Text("No supported database tools detected")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(40)
+            }
+        }
+        .padding(.horizontal, 20)
+        .frame(maxHeight: .infinity)
+    }
+
+    private func errorView(_ error: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 32))
+                .foregroundStyle(.orange)
+            Text(error)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(40)
+    }
+
+    private var emptyView: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tray")
+                .font(.system(size: 32))
+                .foregroundStyle(.tertiary)
+            Text("No connections found")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .padding(40)
+    }
+
+    private var connectionsList: some View {
+        List(connections, id: \.id) { conn in
+            HStack(spacing: 12) {
+                Image(systemName: selected.contains(conn.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(selected.contains(conn.id) ? Color.blue : Color.secondary.opacity(0.4))
+
+                DatabaseTypeIcon(type: conn.databaseType, size: 28)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(conn.name)
+                            .font(.system(size: 13, weight: .medium))
+
+                        if let group = conn.group {
+                            Text(group)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.1))
+                                .clipShape(RoundedRectangle(cornerRadius: 3))
+                        }
+                    }
+
+                    Text(connectionSubtitle(conn))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text(conn.databaseType.displayName)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if selected.contains(conn.id) {
+                    selected.remove(conn.id)
+                } else {
+                    selected.insert(conn.id)
+                }
+            }
+        }
+        .listStyle(.plain)
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            if selectedSource != nil {
+                Button {
+                    selectedSource = nil
+                    connections = []
+                    selected = []
+                    errorMessage = nil
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Back")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+            }
+
+            if !connections.isEmpty && errorMessage == nil {
+                Button(selected.count == connections.count ? "Deselect All" : "Select All") {
+                    if selected.count == connections.count {
+                        selected.removeAll()
+                    } else {
+                        selected = Set(connections.map(\.id))
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+            }
+
+            Spacer()
+
+            Button("Cancel") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+
+            if selectedSource != nil && !connections.isEmpty {
+                Button {
+                    Task { await importSelected() }
+                } label: {
+                    if isImporting {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text("Import \(selected.count)")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selected.isEmpty || isImporting)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private func connectionSubtitle(_ conn: ImportedConnection) -> String {
+        if conn.databaseType == .sqlite {
+            return conn.filePath ?? "No file"
+        }
+        var parts: [String] = []
+        if let host = conn.host {
+            parts.append(host)
+            if let port = conn.port {
+                parts.append(":\(port)")
+            }
+        }
+        if let db = conn.database, !db.isEmpty {
+            parts.append(" / \(db)")
+        }
+        return parts.joined()
+    }
+
+    private func pickNavicatFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Select Navicat Export File (.ncx)"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.xml, .data]
+
+        if panel.runModal() == .OK, let url = panel.url {
+            selectedSource = .navicat
+            loadNavicatConnections(from: url)
+        }
+    }
+
+    private func loadNavicatConnections(from url: URL) {
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            connections = try NavicatImporter.importFromNCX(at: url)
+            selected = Set(connections.map(\.id))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    private func loadConnections(from source: ImportSource) {
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            switch source {
+            case .tableplus:
+                connections = try TablePlusImporter.importConnections()
+            case .dbeaver:
+                connections = try DBeaverImporter.importConnections()
+            case .datagrip:
+                connections = try DataGripImporter.importConnections()
+            case .navicat:
+                break
+            }
+            selected = Set(connections.map(\.id))
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    private func importSelected() async {
+        isImporting = true
+
+        let toImport = connections.filter { selected.contains($0.id) }
+        let keychain = appState.container.keychainService
+
+        for imported in toImport {
+            let config = imported.toConnectionConfig()
+
+            do {
+                try await appState.container.connectionRepository.save(config)
+
+                if let pw = imported.password, !pw.isEmpty {
+                    try? keychain.save(key: "db.password.\(config.id.uuidString)", value: pw)
+                }
+
+                if let group = imported.group {
+                    appState.connectionGroups.insert(group)
+                }
+            } catch {
+                // Continue importing others
+            }
+        }
+
+        await appState.loadSavedConnections()
+        isImporting = false
+        dismiss()
+    }
+}
+
+struct SourceRow: View {
+    let source: ImportSource
+    let action: () -> Void
+    @State private var isHovered = false
+
+    private var isEnabled: Bool {
+        source.isInstalled || source == .navicat
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(sourceGradient)
+                        .frame(width: 40, height: 40)
+                    Text(source.iconLetter)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.rawValue)
+                        .font(.system(size: 14, weight: .medium))
+                    Text(sourceDescription)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if source.isInstalled {
+                    Text("Installed")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.green.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else if source == .navicat {
+                    Text("Select .ncx")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.blue)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.blue.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                } else {
+                    Text("Not Found")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isHovered && isEnabled ? Color.primary.opacity(0.05) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .disabled(!isEnabled)
+        .opacity(source.isInstalled || source == .navicat ? 1 : 0.5)
+    }
+
+    private var sourceGradient: LinearGradient {
+        switch source {
+        case .tableplus:
+            return LinearGradient(colors: [Color(red: 0.95, green: 0.55, blue: 0.15), Color(red: 0.85, green: 0.40, blue: 0.10)], startPoint: .top, endPoint: .bottom)
+        case .dbeaver:
+            return LinearGradient(colors: [Color(red: 0.55, green: 0.45, blue: 0.35), Color(red: 0.40, green: 0.30, blue: 0.25)], startPoint: .top, endPoint: .bottom)
+        case .datagrip:
+            return LinearGradient(colors: [Color(red: 0.20, green: 0.75, blue: 0.60), Color(red: 0.10, green: 0.55, blue: 0.45)], startPoint: .top, endPoint: .bottom)
+        case .navicat:
+            return LinearGradient(colors: [Color(red: 0.0, green: 0.65, blue: 0.85), Color(red: 0.0, green: 0.50, blue: 0.70)], startPoint: .top, endPoint: .bottom)
+        }
+    }
+
+    private var sourceDescription: String {
+        switch source {
+        case .tableplus: return "Import from TablePlus favorites"
+        case .dbeaver: return "Import from DBeaver workspace"
+        case .datagrip: return "Import from JetBrains DataGrip"
+        case .navicat: return "Import from Navicat .ncx export file"
+        }
     }
 }

@@ -20,6 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
 
+        // Load persisted LLM provider configs into the in-memory registry so
+        // AIChatView / other callers can resolve them by name without waiting.
+        Task { await DependencyContainer.shared.bootstrapProviderRegistry() }
+
         // Thin scrollbars app-wide; horizontal always visible
         UserDefaults.standard.set("Always", forKey: "AppleShowScrollBars")
 

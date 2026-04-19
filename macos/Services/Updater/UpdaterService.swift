@@ -19,12 +19,6 @@ final class UpdaterService: ObservableObject {
     @Published var canCheckForUpdates: Bool = false
 
     private init() {
-        let os = ProcessInfo.processInfo.operatingSystemVersion
-        guard os.majorVersion < 26 else {
-            controller = nil
-            return
-        }
-
         let c = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,

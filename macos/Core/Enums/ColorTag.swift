@@ -37,4 +37,16 @@ enum ColorTag: String, Codable, Sendable, CaseIterable {
         case .gray: return "Other"
         }
     }
+
+    static func fromHex(_ hex: String) -> ColorTag? {
+        let h = hex.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        switch h {
+        case "ff0000", "e74c4a", "dc3545", "ff4d4d": return .red
+        case "ff9500", "ffa500", "f0a028", "ef9f27": return .orange
+        case "28a745", "34c759", "4cd964", "63993d": return .green
+        case "007aff", "378ae5", "0d6efd", "3a8bdd": return .blue
+        case "5856d6", "534ab7", "6f42c1", "534bb8": return .purple
+        default: return .gray
+        }
+    }
 }

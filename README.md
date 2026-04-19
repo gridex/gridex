@@ -7,6 +7,10 @@ A native database IDE for macOS and Windows with built-in AI chat. Connect to Po
 ![Swift 5.10](https://img.shields.io/badge/Swift-5.10-orange)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
+<p align="center">
+  <img src="assets/screenshot.jpg" alt="Gridex Screenshot" width="100%">
+</p>
+
 ## Features
 
 ### Database Support
