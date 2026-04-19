@@ -52,6 +52,36 @@ final class DependencyContainer {
     lazy var sshTunnelService = SSHTunnelService()
     lazy var exportService = ExportService()
 
+    // MARK: - MCP Server
+
+    lazy var mcpServer: MCPServer = {
+        MCPServer(
+            connectionManager: connectionManager,
+            connectionRepository: connectionRepository,
+            serverVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        )
+    }()
+
+    /// Start MCP server if enabled. Call once at app startup.
+    func bootstrapMCPServer() async {
+        let enabled = UserDefaults.standard.bool(forKey: "mcp.enabled")
+        guard enabled else { return }
+
+        // Set start time for uptime tracking
+        let currentStartTime = UserDefaults.standard.double(forKey: "mcp.startTime")
+        if currentStartTime == 0 {
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "mcp.startTime")
+        }
+
+        // Load MCP modes for all connections
+        let configs = (try? await connectionRepository.fetchAll()) ?? []
+        for config in configs {
+            await mcpServer.setConnectionMode(config.mcpMode, for: config.id)
+        }
+
+        await mcpServer.start()
+    }
+
     // MARK: - AI
 
     lazy var providerRegistry = ProviderRegistry()

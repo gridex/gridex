@@ -24,6 +24,11 @@ enum SQLDialect: Sendable {
         }
     }
 
+    func qualifiedIdentifier(_ name: String, schema: String? = nil) -> String {
+        guard let schema else { return quoteIdentifier(name) }
+        return "\(quoteIdentifier(schema)).\(quoteIdentifier(name))"
+    }
+
     var limitClause: String {
         "LIMIT"
     }

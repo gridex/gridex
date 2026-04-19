@@ -63,7 +63,8 @@ final class SwiftDataConnectionRepository: ConnectionRepository, @unchecked Send
             sshKeyPath: config.sshConfig?.keyPath,
             colorTag: config.colorTag?.rawValue,
             group: config.group,
-            filePath: config.filePath
+            filePath: config.filePath,
+            mcpMode: config.mcpMode.rawValue
         )
         context.insert(entity)
         try context.save()
@@ -95,6 +96,7 @@ final class SwiftDataConnectionRepository: ConnectionRepository, @unchecked Send
         entity.sshUsername = config.sshConfig?.username
         entity.sshAuthMethod = config.sshConfig?.authMethod.rawValue
         entity.sshKeyPath = config.sshConfig?.keyPath
+        entity.mcpMode = config.mcpMode.rawValue
 
         try context.save()
     }

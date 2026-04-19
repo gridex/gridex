@@ -376,6 +376,11 @@ struct ConnectionFormView: View {
         colorTag = config.colorTag ?? .blue
         sqliteFilePath = config.filePath ?? ""
 
+        // SSL certificates (for mTLS)
+        sslKeyPath = config.sslKeyPath ?? ""
+        sslCertPath = config.sslCertPath ?? ""
+        sslCACertPath = config.sslCACertPath ?? ""
+
         if let ssh = config.sshConfig {
             sshEnabled = true
             sshHost = ssh.host
@@ -435,6 +440,9 @@ struct ConnectionFormView: View {
             sslEnabled: isFileDB ? false : sslEnabled,
             colorTag: colorTag,
             group: existingConfig?.group,
+            sslKeyPath: sslKeyPath.isEmpty ? nil : sslKeyPath,
+            sslCertPath: sslCertPath.isEmpty ? nil : sslCertPath,
+            sslCACertPath: sslCACertPath.isEmpty ? nil : sslCACertPath,
             filePath: databaseType == .sqlite ? sqliteFilePath : nil,
             sshConfig: sshConfig
         )

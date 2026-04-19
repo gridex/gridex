@@ -6,7 +6,6 @@
 import SwiftUI
 import SwiftData
 
-@main
 struct GridexApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @FocusedObject private var focusedAppState: AppState?
@@ -74,6 +73,13 @@ struct GridexApp: App {
                     currentAppState?.aiPanelVisible.toggle()
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("MCP Server...") {
+                    MCPWindowController.show()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
 
             CommandMenu("Database") {

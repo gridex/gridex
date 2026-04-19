@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-macos:
+    name: Build macOS
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          swift --version
+          xcodebuild -version
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build (Debug)
+        run: swift build
+
+      - name: Build (Release)
+        run: swift build -c release

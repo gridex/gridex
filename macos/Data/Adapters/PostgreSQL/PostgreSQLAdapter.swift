@@ -31,7 +31,24 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let tlsConfig: PostgresClient.Configuration.TLS
         if config.sslEnabled {
             var tls = TLSConfiguration.makeClientConfiguration()
-            tls.certificateVerification = .none
+
+            // Load client certificate and key for mTLS (e.g., Teleport)
+            if let certPath = config.sslCertPath, !certPath.isEmpty,
+               let keyPath = config.sslKeyPath, !keyPath.isEmpty {
+                let cert = try NIOSSLCertificate.fromPEMFile(certPath)
+                let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+                tls.certificateChain = cert.map { .certificate($0) }
+                tls.privateKey = .privateKey(key)
+            }
+
+            // Load CA certificate for server verification
+            if let caPath = config.sslCACertPath, !caPath.isEmpty {
+                tls.trustRoots = .file(caPath)
+                tls.certificateVerification = .fullVerification
+            } else {
+                tls.certificateVerification = .none
+            }
+
             tlsConfig = .prefer(tls)
         } else {
             tlsConfig = .disable

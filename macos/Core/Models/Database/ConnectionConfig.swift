@@ -17,11 +17,19 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
     var colorTag: ColorTag?
     var group: String?
 
+    // SSL/TLS certificates (for mTLS, e.g., Teleport)
+    var sslKeyPath: String?
+    var sslCertPath: String?
+    var sslCACertPath: String?
+
     // SQLite-specific
     var filePath: String?
 
     // SSH Tunnel
     var sshConfig: SSHTunnelConfig?
+
+    // MCP Access
+    var mcpMode: MCPConnectionMode
 
     init(
         id: UUID = UUID(),
@@ -34,8 +42,12 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
         sslEnabled: Bool = false,
         colorTag: ColorTag? = nil,
         group: String? = nil,
+        sslKeyPath: String? = nil,
+        sslCertPath: String? = nil,
+        sslCACertPath: String? = nil,
         filePath: String? = nil,
-        sshConfig: SSHTunnelConfig? = nil
+        sshConfig: SSHTunnelConfig? = nil,
+        mcpMode: MCPConnectionMode = .locked
     ) {
         self.id = id
         self.name = name
@@ -47,8 +59,12 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
         self.sslEnabled = sslEnabled
         self.colorTag = colorTag
         self.group = group
+        self.sslKeyPath = sslKeyPath
+        self.sslCertPath = sslCertPath
+        self.sslCACertPath = sslCACertPath
         self.filePath = filePath
         self.sshConfig = sshConfig
+        self.mcpMode = mcpMode
     }
 
     var displayHost: String {

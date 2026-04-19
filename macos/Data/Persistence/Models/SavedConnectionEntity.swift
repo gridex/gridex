@@ -28,6 +28,7 @@ final class SavedConnectionEntity {
     var lastConnectedAt: Date?
     var createdAt: Date
     var filePath: String?
+    var mcpMode: String?
 
     init(
         id: UUID = UUID(),
@@ -49,7 +50,8 @@ final class SavedConnectionEntity {
         sortOrder: Int = 0,
         lastConnectedAt: Date? = nil,
         createdAt: Date = Date(),
-        filePath: String? = nil
+        filePath: String? = nil,
+        mcpMode: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -71,6 +73,7 @@ final class SavedConnectionEntity {
         self.lastConnectedAt = lastConnectedAt
         self.createdAt = createdAt
         self.filePath = filePath
+        self.mcpMode = mcpMode
     }
 
     func toConfig() -> ConnectionConfig {
@@ -97,7 +100,8 @@ final class SavedConnectionEntity {
             colorTag: colorTag.flatMap { ColorTag(rawValue: $0) },
             group: group,
             filePath: filePath,
-            sshConfig: sshConfig
+            sshConfig: sshConfig,
+            mcpMode: mcpMode.flatMap { MCPConnectionMode(rawValue: $0) } ?? .locked
         )
     }
 }

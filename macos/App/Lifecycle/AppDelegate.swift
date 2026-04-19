@@ -24,6 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // AIChatView / other callers can resolve them by name without waiting.
         Task { await DependencyContainer.shared.bootstrapProviderRegistry() }
 
+        // Initialize MCP status bar icon
+        _ = MCPStatusBarController.shared
+
+        // Bootstrap MCP server if enabled
+        Task { await DependencyContainer.shared.bootstrapMCPServer() }
+
         // Thin scrollbars app-wide; horizontal always visible
         UserDefaults.standard.set("Always", forKey: "AppleShowScrollBars")
 
