@@ -4,9 +4,11 @@
 #include <shellapi.h>
 #include "SettingsPage.h"
 #include "Models/AppSettings.h"
+#include "Models/AiService.h"
 #include "Models/ShortcutsCatalog.h"
 #include "GridexVersion.h"
 #include "UpdateService.h"
+#include <thread>
 #if __has_include("SettingsPage.g.cpp")
 #include "SettingsPage.g.cpp"
 #endif
@@ -37,10 +39,87 @@ namespace winrt::Gridex::implementation
             ThemeCombo().SelectedIndex(s.themeIndex);
             AiProviderCombo().SelectedIndex(s.aiProviderIndex);
             ApiKeyBox().Password(winrt::hstring(s.aiApiKey));
+            // ModelBox is an editable ComboBox. Set .Text so any
+            // previously-saved model (including free-typed custom
+            // names) round-trips, even before Refresh populates the
+            // dropdown from the provider API.
             ModelBox().Text(winrt::hstring(s.aiModel));
             OllamaEndpointBox().Text(winrt::hstring(s.ollamaEndpoint));
             EditorFontSizeBox().Value(static_cast<double>(s.editorFontSize));
             RowLimitBox().Value(static_cast<double>(s.rowLimit));
+
+            // Refresh models: hit the provider's list endpoint on a
+            // worker thread, populate ModelBox items on success. Keep
+            // the user's current text selection after repopulating so
+            // free-typed custom names (for OpenAI-compatible proxies
+            // like DeepSeek, Groq, etc.) survive the round-trip.
+            RefreshModelsBtn().Click(
+                [this](winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
+                {
+                    DBModels::AiConfig cfg;
+                    cfg.provider = static_cast<DBModels::AiProvider>(AiProviderCombo().SelectedIndex());
+                    cfg.apiKey   = std::wstring(ApiKeyBox().Password());
+                    cfg.model    = std::wstring(ModelBox().Text());
+                    cfg.ollamaEndpoint = std::wstring(OllamaEndpointBox().Text());
+
+                    RefreshModelsBtn().IsEnabled(false);
+                    ModelFetchStatusText().Visibility(mux::Visibility::Visible);
+                    ModelFetchStatusText().Text(L"Fetching models…");
+
+                    auto dispatcher = this->DispatcherQueue();
+                    std::thread([cfg, dispatcher,
+                                 weak = get_weak()]()
+                    {
+                        auto res = DBModels::AiService::FetchModels(cfg);
+                        dispatcher.TryEnqueue([weak, res]()
+                        {
+                            auto self = weak.get();
+                            if (!self) return;
+
+                            self->RefreshModelsBtn().IsEnabled(true);
+
+                            if (!res.success)
+                            {
+                                self->ModelFetchStatusText().Text(
+                                    winrt::hstring(L"Fetch failed: " + res.errorMessage));
+                                return;
+                            }
+
+                            // Preserve whatever the user typed / had
+                            // selected before; reassign after populating
+                            // so the TextBox portion of the editable
+                            // ComboBox keeps its value.
+                            auto keep = std::wstring(self->ModelBox().Text());
+
+                            self->ModelBox().Items().Clear();
+                            for (const auto& m : res.models)
+                                self->ModelBox().Items().Append(
+                                    winrt::box_value(winrt::hstring(m)));
+
+                            // If the kept value matches one of the
+                            // freshly-fetched models, select it so the
+                            // ComboBox shows the item highlight; else
+                            // just leave the custom text in place.
+                            bool matched = false;
+                            for (uint32_t i = 0; i < self->ModelBox().Items().Size(); ++i)
+                            {
+                                auto item = winrt::unbox_value<winrt::hstring>(
+                                    self->ModelBox().Items().GetAt(i));
+                                if (std::wstring(item) == keep)
+                                {
+                                    self->ModelBox().SelectedIndex(static_cast<int32_t>(i));
+                                    matched = true;
+                                    break;
+                                }
+                            }
+                            if (!matched) self->ModelBox().Text(winrt::hstring(keep));
+
+                            self->ModelFetchStatusText().Text(
+                                winrt::hstring(L"Loaded " +
+                                    std::to_wstring(res.models.size()) + L" models."));
+                        });
+                    }).detach();
+                });
 
             ThemeCombo().SelectionChanged(
                 [this](winrt::Windows::Foundation::IInspectable const&, muxc::SelectionChangedEventArgs const&)
@@ -195,6 +274,9 @@ namespace winrt::Gridex::implementation
         s.themeIndex         = ThemeCombo().SelectedIndex();
         s.aiProviderIndex    = AiProviderCombo().SelectedIndex();
         s.aiApiKey           = std::wstring(ApiKeyBox().Password());
+        // ModelBox is an editable ComboBox; .Text returns whatever the
+        // user has in the edit field — a picked list item or a freely
+        // typed custom model name, both save the same way.
         s.aiModel            = std::wstring(ModelBox().Text());
         s.ollamaEndpoint     = std::wstring(OllamaEndpointBox().Text());
         s.editorFontSize     = static_cast<int>(EditorFontSizeBox().Value());

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include "Models/AiService.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 
 // cpp-httplib for HTTP client — suppress deprecated SSL API warnings
 #pragma warning(push)
@@ -407,5 +408,213 @@ namespace DBModels
             return fromUtf8(std::string("Parse error: ") + e.what());
         }
         return L"No response content";
+    }
+
+    // ── Fetch available models per provider ────────────
+    //
+    // Each provider exposes a different listing endpoint and response
+    // shape. Normalise everything to a flat vector<wstring> of model IDs
+    // that the Settings ComboBox can display. Keep the existing network
+    // style (cpp-httplib + nlohmann::json) from the chat calls.
+    ModelListResult AiService::FetchModels(const AiConfig& config)
+    {
+        ModelListResult r;
+        auto apiKey = trimWs(config.apiKey);
+
+        try
+        {
+            switch (config.provider)
+            {
+            case AiProvider::Anthropic:
+            {
+                if (apiKey.empty())
+                {
+                    r.errorMessage = L"Anthropic API key is missing.";
+                    return r;
+                }
+                httplib::Client cli("https://api.anthropic.com");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                httplib::Headers headers = {
+                    { "x-api-key",        toUtf8(apiKey) },
+                    { "anthropic-version","2023-06-01" },
+                };
+                auto res = cli.Get("/v1/models?limit=1000", headers);
+                if (!res)
+                {
+                    r.errorMessage = L"Anthropic models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("data") && json["data"].is_array())
+                {
+                    for (auto& m : json["data"])
+                        if (m.contains("id"))
+                            r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::OpenAI:
+            {
+                if (apiKey.empty())
+                {
+                    r.errorMessage = L"OpenAI API key is missing.";
+                    return r;
+                }
+                httplib::Client cli("https://api.openai.com");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                httplib::Headers headers = {
+                    { "Authorization", "Bearer " + toUtf8(apiKey) },
+                };
+                auto res = cli.Get("/v1/models", headers);
+                if (!res)
+                {
+                    r.errorMessage = L"OpenAI models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("data") && json["data"].is_array())
+                {
+                    for (auto& m : json["data"])
+                        if (m.contains("id"))
+                            r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::Ollama:
+            {
+                // Ollama needs the endpoint, not an API key. Default
+                // localhost:11434 when user hasn't customized it.
+                std::wstring endpointW = trimWs(config.ollamaEndpoint);
+                if (endpointW.empty()) endpointW = L"http://localhost:11434";
+                auto endpoint = toUtf8(endpointW);
+                httplib::Client cli(endpoint);
+                cli.set_connection_timeout(10);
+                cli.set_read_timeout(15);
+                auto res = cli.Get("/api/tags");
+                if (!res)
+                {
+                    r.errorMessage = L"Ollama endpoint unreachable: " + endpointW;
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("models") && json["models"].is_array())
+                {
+                    for (auto& m : json["models"])
+                        if (m.contains("name"))
+                            r.models.push_back(fromUtf8(m["name"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::Gemini:
+            {
+                if (apiKey.empty())
+                {
+                    r.errorMessage = L"Gemini API key is missing.";
+                    return r;
+                }
+                httplib::Client cli("https://generativelanguage.googleapis.com");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                std::string path = "/v1beta/models?key=" + toUtf8(apiKey);
+                auto res = cli.Get(path.c_str());
+                if (!res)
+                {
+                    r.errorMessage = L"Gemini models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("models") && json["models"].is_array())
+                {
+                    // Gemini returns "name": "models/gemini-2.0-flash".
+                    // Strip the "models/" prefix so the value matches
+                    // what the chat endpoint expects in its URL path.
+                    for (auto& m : json["models"])
+                    {
+                        if (!m.contains("name")) continue;
+                        std::string id = m["name"].get<std::string>();
+                        const std::string prefix = "models/";
+                        if (id.rfind(prefix, 0) == 0) id = id.substr(prefix.size());
+                        r.models.push_back(fromUtf8(id));
+                    }
+                }
+                break;
+            }
+
+            case AiProvider::OpenRouter:
+            {
+                // OpenRouter /models endpoint is public — no API key
+                // required just to list. If apiKey present we pass it
+                // for completeness / rate-limit attribution.
+                httplib::Client cli("https://openrouter.ai");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                httplib::Headers headers;
+                if (!apiKey.empty())
+                    headers.emplace("Authorization", "Bearer " + toUtf8(apiKey));
+                auto res = cli.Get("/api/v1/models", headers);
+                if (!res)
+                {
+                    r.errorMessage = L"OpenRouter models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("data") && json["data"].is_array())
+                {
+                    for (auto& m : json["data"])
+                        if (m.contains("id"))
+                            r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            default:
+                r.errorMessage = L"Unsupported provider.";
+                return r;
+            }
+
+            // Alphabetize so the dropdown is easy to scan; OpenAI /
+            // OpenRouter lists are unsorted by default.
+            std::sort(r.models.begin(), r.models.end());
+            r.success = true;
+        }
+        catch (const std::exception& e)
+        {
+            r.errorMessage = fromUtf8(std::string("Parse error: ") + e.what());
+        }
+        catch (...)
+        {
+            r.errorMessage = L"Unknown error fetching models.";
+        }
+        return r;
     }
 }

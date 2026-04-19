@@ -32,6 +32,17 @@ namespace DBModels
         std::wstring content;
     };
 
+    // Result of a FetchModels() call. success=false → errorMessage holds
+    // a user-visible reason (network error, bad key, unsupported
+    // endpoint); models may still be empty on success for providers
+    // without any models configured.
+    struct ModelListResult
+    {
+        bool success = false;
+        std::vector<std::wstring> models;
+        std::wstring errorMessage;
+    };
+
     // AI service for text-to-SQL and chat interactions
     class AiService
     {
@@ -49,6 +60,14 @@ namespace DBModels
         std::wstring TextToSql(
             const std::wstring& naturalLanguage,
             const std::wstring& schemaDescription);
+
+        // List available models for the given provider config. BLOCKS on
+        // the provider's HTTP models endpoint — callers on the UI thread
+        // must dispatch to a worker. Used by Settings to populate an
+        // editable ComboBox so users pick from a live list instead of
+        // memorizing model IDs, while still allowing a free-typed name
+        // for custom OpenAI-compatible domains.
+        static ModelListResult FetchModels(const AiConfig& config);
 
     private:
         AiConfig config_;

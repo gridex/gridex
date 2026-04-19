@@ -101,10 +101,27 @@
 
                         <StackPanel Spacing="4">
                             <TextBlock Text="Model" FontSize="14" />
-                            <TextBox x:Name="ModelBox"
-                                     PlaceholderText="e.g. claude-sonnet-4-20250514, gpt-4o, llama3, gemini-2.0-flash, openai/gpt-4o-mini"
-                                     Width="400"
-                                     HorizontalAlignment="Left" />
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <!-- Editable ComboBox: pick from the
+                                     list fetched via Refresh, or type a
+                                     custom model name (custom domains,
+                                     OpenAI-compatible proxies, etc.). -->
+                                <ComboBox x:Name="ModelBox"
+                                          IsEditable="true"
+                                          PlaceholderText="Pick or type a model…"
+                                          Width="400" />
+                                <Button x:Name="RefreshModelsBtn"
+                                        ToolTipService.ToolTip="Fetch available models from the selected provider">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                                        <TextBlock Text="Refresh" FontSize="12" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                            <TextBlock x:Name="ModelFetchStatusText"
+                                       FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       Visibility="Collapsed" />
                         </StackPanel>
 
                         <StackPanel x:Name="OllamaEndpointPanel" Spacing="4">
