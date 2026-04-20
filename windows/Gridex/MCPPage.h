@@ -54,6 +54,12 @@ namespace winrt::Gridex::implementation
             winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
 
+        // Pivot lazy-loads PivotItems; refresh the tab's body when
+        // it first becomes selected so named controls are live.
+        void Tabs_SelectionChanged(
+            winrt::Windows::Foundation::IInspectable const& sender,
+            winrt::Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const& e);
+
     private:
         void RefreshUI();
         void ApplyStartStopButton(bool running);

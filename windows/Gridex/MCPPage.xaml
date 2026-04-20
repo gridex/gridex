@@ -71,7 +71,8 @@
 
         <Pivot Grid.Column="1" x:Name="Tabs"
                HorizontalAlignment="Stretch"
-               HorizontalContentAlignment="Stretch">
+               HorizontalContentAlignment="Stretch"
+               SelectionChanged="Tabs_SelectionChanged">
             <Pivot.Resources>
                 <!-- Shrink + tighten the tab labels so they read
                      more like the mac SegmentedControl (~14pt) and

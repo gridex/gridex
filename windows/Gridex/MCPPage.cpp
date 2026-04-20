@@ -40,94 +40,112 @@ namespace winrt::Gridex::implementation
     {
         InitializeComponent();
 
+        // Only RefreshUI runs on Loaded — it populates controls on
+        // the Overview + Setup + Config tabs, which are all realized
+        // by the initial Pivot render. Connections + Activity tabs
+        // use Pivot's lazy-load, so their controls are nullptr until
+        // the user selects those tabs. Tabs_SelectionChanged handles
+        // the deferred refresh safely.
         this->Loaded([this](auto&&, auto&&) {
-            RefreshUI();
-            RefreshConnectionsTab();
-            RefreshActivityTab();
+            try { RefreshUI(); }
+            catch (...) { /* never block page from showing */ }
         });
     }
 
     void MCPPage::RefreshUI()
     {
+        // Pivot lazy-loads PivotItem content, so any control whose
+        // tab isn't realized yet will be nullptr. We null-guard each
+        // group so Refresh can safely be called when only some of
+        // the tabs have been materialized.
         auto settings = DBModels::AppSettings::Load();
 
-        // Populate controls from persisted settings.
-        HttpToggle().IsOn(settings.mcpHttpEnabled);
-        HttpPortBox().Value(static_cast<double>(settings.mcpHttpPort));
-        HttpPortRow().Visibility(settings.mcpHttpEnabled
-            ? mux::Visibility::Visible : mux::Visibility::Collapsed);
-
-        QpmBox().Value(static_cast<double>(settings.mcpQueriesPerMinute));
-        QphBox().Value(static_cast<double>(settings.mcpQueriesPerHour));
-        WpmBox().Value(static_cast<double>(settings.mcpWritesPerMinute));
-        DdlBox().Value(static_cast<double>(settings.mcpDdlPerMinute));
-        QueryTimeoutBox().Value(static_cast<double>(settings.mcpQueryTimeout));
-        ApprovalTimeoutBox().Value(static_cast<double>(settings.mcpApprovalTimeout));
-        ConnectionTimeoutBox().Value(static_cast<double>(settings.mcpConnectionTimeout));
-        RetentionBox().Value(static_cast<double>(settings.mcpAuditRetentionDays));
-        MaxSizeBox().Value(static_cast<double>(settings.mcpAuditMaxSizeMB));
-        RequireApprovalToggle().IsOn(settings.mcpRequireApprovalForWrites);
-        AllowRemoteHttpToggle().IsOn(settings.mcpAllowRemoteHTTP);
-
-        // Count connections per MCP mode.
-        int locked = 0, ro = 0, rw = 0;
-        auto configs = DBModels::ConnectionStore::Load();
-        for (const auto& c : configs)
+        // ── Overview: Access counts + status + tools ────────────
         {
-            switch (c.mcpMode)
+            int locked = 0, ro = 0, rw = 0;
+            auto configs = DBModels::ConnectionStore::Load();
+            for (const auto& c : configs)
             {
-                case DBModels::MCPConnectionMode::Locked:    ++locked; break;
-                case DBModels::MCPConnectionMode::ReadOnly:  ++ro;     break;
-                case DBModels::MCPConnectionMode::ReadWrite: ++rw;     break;
+                switch (c.mcpMode)
+                {
+                    case DBModels::MCPConnectionMode::Locked:    ++locked; break;
+                    case DBModels::MCPConnectionMode::ReadOnly:  ++ro;     break;
+                    case DBModels::MCPConnectionMode::ReadWrite: ++rw;     break;
+                }
             }
+            if (LockedCount())    LockedCount().Text(winrt::hstring(std::to_wstring(locked)));
+            if (ReadOnlyCount())  ReadOnlyCount().Text(winrt::hstring(std::to_wstring(ro)));
+            if (ReadWriteCount()) ReadWriteCount().Text(winrt::hstring(std::to_wstring(rw)));
         }
-        LockedCount().Text(winrt::hstring(std::to_wstring(locked)));
-        ReadOnlyCount().Text(winrt::hstring(std::to_wstring(ro)));
-        ReadWriteCount().Text(winrt::hstring(std::to_wstring(rw)));
 
-        // Server state.
         auto srv = DBModels::MCPServerHost::instance();
         const bool running = srv && srv->isRunning();
         ApplyStartStopButton(running);
-        if (running)
+        if (ToolsCountText())
         {
-            const auto tools = srv->toolRegistry().definitions().size();
-            ToolsCountText().Text(winrt::hstring(std::to_wstring(tools) + L" tools"));
+            if (running)
+            {
+                const auto tools = srv->toolRegistry().definitions().size();
+                ToolsCountText().Text(winrt::hstring(std::to_wstring(tools) + L" tools"));
+            }
+            else
+            {
+                ToolsCountText().Text(L"0 tools (server stopped)");
+            }
         }
-        else
+
+        // ── Config tab — only touch if realized ─────────────────
+        if (HttpToggle())
         {
-            ToolsCountText().Text(L"0 tools (server stopped)");
+            HttpToggle().IsOn(settings.mcpHttpEnabled);
+            HttpPortBox().Value(static_cast<double>(settings.mcpHttpPort));
+            HttpPortRow().Visibility(settings.mcpHttpEnabled
+                ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+            QpmBox().Value(static_cast<double>(settings.mcpQueriesPerMinute));
+            QphBox().Value(static_cast<double>(settings.mcpQueriesPerHour));
+            WpmBox().Value(static_cast<double>(settings.mcpWritesPerMinute));
+            DdlBox().Value(static_cast<double>(settings.mcpDdlPerMinute));
+            QueryTimeoutBox().Value(static_cast<double>(settings.mcpQueryTimeout));
+            ApprovalTimeoutBox().Value(static_cast<double>(settings.mcpApprovalTimeout));
+            ConnectionTimeoutBox().Value(static_cast<double>(settings.mcpConnectionTimeout));
+            RetentionBox().Value(static_cast<double>(settings.mcpAuditRetentionDays));
+            MaxSizeBox().Value(static_cast<double>(settings.mcpAuditMaxSizeMB));
+            RequireApprovalToggle().IsOn(settings.mcpRequireApprovalForWrites);
+            AllowRemoteHttpToggle().IsOn(settings.mcpAllowRemoteHTTP);
         }
 
-        // Setup tab — show the stdio config snippet for Claude Desktop.
-        wchar_t exePath[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        std::wstring exe(exePath);
-        // Escape backslashes for JSON embedding.
-        std::wstring escaped;
-        escaped.reserve(exe.size() * 2);
-        for (wchar_t c : exe) { if (c == L'\\') escaped += L"\\\\"; else escaped += c; }
+        // ── Setup tab — only touch if realized ──────────────────
+        if (SetupConfigBox())
+        {
+            wchar_t exePath[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            std::wstring exe(exePath);
+            std::wstring escaped;
+            escaped.reserve(exe.size() * 2);
+            for (wchar_t c : exe) { if (c == L'\\') escaped += L"\\\\"; else escaped += c; }
 
-        std::wstring cfg =
-            L"{\n"
-            L"  \"mcpServers\": {\n"
-            L"    \"gridex\": {\n"
-            L"      \"command\": \"" + escaped + L"\",\n"
-            L"      \"args\": [\"--mcp-stdio\"]\n"
-            L"    }\n"
-            L"  }\n"
-            L"}";
-        SetupConfigBox().Text(winrt::hstring(cfg));
-
-        SetupPathText().Text(
-            L"Default Claude Desktop config: %APPDATA%\\Claude\\claude_desktop_config.json");
-        // Activity path text is set in RefreshActivityTab; we used
-        // to set it here but the control moved when Activity got a
-        // real table.
+            std::wstring cfg =
+                L"{\n"
+                L"  \"mcpServers\": {\n"
+                L"    \"gridex\": {\n"
+                L"      \"command\": \"" + escaped + L"\",\n"
+                L"      \"args\": [\"--mcp-stdio\"]\n"
+                L"    }\n"
+                L"  }\n"
+                L"}";
+            SetupConfigBox().Text(winrt::hstring(cfg));
+            if (SetupPathText())
+                SetupPathText().Text(
+                    L"Default Claude Desktop config: %APPDATA%\\Claude\\claude_desktop_config.json");
+        }
     }
 
     void MCPPage::ApplyStartStopButton(bool running)
     {
+        // Overview is the first Pivot tab so StartStopBtn is always
+        // realized at page Loaded — but guard anyway so this helper
+        // stays safe to call from any refresh path.
+        if (!StartStopBtn()) return;
         StartStopBtn().Content(
             winrt::box_value(winrt::hstring(running ? L"Stop Server" : L"Start Server")));
         StatusText().Text(running ? L"Running" : L"Stopped");
@@ -364,6 +382,9 @@ namespace winrt::Gridex::implementation
     void MCPPage::RefreshConnectionsTab()
     {
         auto panel = ConnRowsPanel();
+        // Pivot lazy-load — tab may not be realized yet on Loaded.
+        if (!panel) return;
+        if (!ConnSearchBox() || !ConnFilterCombo()) return;
         panel.Children().Clear();
 
         // Filter state
@@ -564,6 +585,8 @@ namespace winrt::Gridex::implementation
         using namespace winrt::Windows::UI;
 
         auto panel = ActRowsPanel();
+        if (!panel) return;
+        if (!ActSearchBox() || !ActStatusCombo()) return;
         panel.Children().Clear();
 
         wchar_t* ad = nullptr;
@@ -684,5 +707,26 @@ namespace winrt::Gridex::implementation
         winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
     {
         RefreshActivityTab();
+    }
+
+    // Deferred-load refresh — Pivot lazily realizes PivotItem
+    // content, so controls inside non-selected tabs are nullptr at
+    // page Loaded. Refresh the body of whichever tab just became
+    // active; guard with try/catch so a single tab's error can't
+    // kill navigation.
+    void MCPPage::Tabs_SelectionChanged(
+        winrt::Windows::Foundation::IInspectable const&,
+        winrt::Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
+    {
+        const int idx = Tabs().SelectedIndex();
+        try
+        {
+            if (idx == 0)      RefreshUI();
+            else if (idx == 1) RefreshConnectionsTab();
+            else if (idx == 2) RefreshActivityTab();
+            else if (idx == 3) RefreshUI(); // Setup has JSON preview
+            else if (idx == 4) RefreshUI(); // Config loads from AppSettings
+        }
+        catch (...) { /* don't kill navigation */ }
     }
 }
