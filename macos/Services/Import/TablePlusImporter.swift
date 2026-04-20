@@ -29,6 +29,9 @@ struct TablePlusImporter {
         }
 
         let groups = loadGroups()
+        // Load all TablePlus passwords in a single keychain query. macOS shows
+        // one access prompt — user clicks "Always Allow" once, not per connection.
+        let passwords = loadAllPasswords()
 
         return plist.compactMap { dict -> ImportedConnection? in
             guard let id = dict["ID"] as? String,
@@ -61,8 +64,7 @@ struct TablePlusImporter {
             let groupId = dict["GroupID"] as? String
             let groupName = groupId.flatMap { groups[$0] }
 
-            let dbPassword = loadPassword(connectionId: id, type: .database)
-            let sshPassword = isOverSSH ? loadPassword(connectionId: id, type: .ssh) : nil
+            let dbPassword = passwords["\(id)_database"]
 
             return ImportedConnection(
                 id: id,
@@ -83,6 +85,35 @@ struct TablePlusImporter {
                 group: groupName
             )
         }
+    }
+
+    /// Fetch all TablePlus passwords in one keychain call. Triggers a single
+    /// macOS access prompt covering every item with service `com.tableplus.TablePlus`.
+    /// Returns a dictionary keyed by account name (e.g. "<id>_database", "<id>_server").
+    static func loadAllPasswords() -> [String: String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.tableplus.TablePlus",
+            kSecReturnData as String: true,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess, let items = result as? [[String: Any]] else {
+            return [:]
+        }
+
+        var passwords: [String: String] = [:]
+        for item in items {
+            guard let account = item[kSecAttrAccount as String] as? String,
+                  let data = item[kSecValueData as String] as? Data,
+                  let password = String(data: data, encoding: .utf8) else { continue }
+            passwords[account] = password
+        }
+        return passwords
     }
 
     static func loadPassword(connectionId: String, type: PasswordType) -> String? {
