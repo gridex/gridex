@@ -5,6 +5,7 @@
 #include "UpdateService.h"
 #include "Models/AppSettings.h"
 #include "Services/MCP/MCPServerHost.h"
+#include "Services/TrayIconService.h"
 #include "GridexVersion.h"
 #include <shellapi.h>
 #include <string>
@@ -217,6 +218,12 @@ namespace winrt::Gridex::implementation
 
         auto windowNative = window.as<IWindowNative>();
         windowNative->get_WindowHandle(&MainHwnd);
+
+        // Install the system-tray icon now that MainHwnd is live.
+        // Uses subclassing so tray callbacks land in the existing
+        // WinUI message loop — no second pump required.
+        try { DBModels::TrayIconService::Initialize(MainHwnd); }
+        catch (...) { /* non-fatal */ }
 
         // Auto-start MCP server if user enabled it last session.
         // Wrap in try-catch so a startup failure (port 3333 busy,

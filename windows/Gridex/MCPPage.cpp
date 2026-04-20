@@ -10,6 +10,7 @@
 #include "Services/MCP/MCPServerHost.h"
 #include "Services/MCP/Audit/MCPAuditLogger.h"
 #include "Services/MCP/Tools/MCPToolHelpers.h"
+#include "Services/TrayIconService.h"
 #include "GridexVersion.h"
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.UI.h>
@@ -322,6 +323,7 @@ namespace winrt::Gridex::implementation
                     std::chrono::system_clock::now().time_since_epoch()).count());
             settings.Save();
         }
+        DBModels::TrayIconService::Refresh();
         RefreshUI();
     }
 
