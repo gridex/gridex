@@ -57,11 +57,12 @@
                         Padding="8,8"
                         Background="Transparent"
                         BorderThickness="0"
-                        Click="NewGroup_Click">
+                        Click="ImportConnections_Click"
+                        ToolTipService.ToolTip="Import connections from TablePlus / DBeaver / DataGrip / Navicat">
                     <StackPanel Orientation="Horizontal" Spacing="10">
-                        <FontIcon Glyph="&#xE8B7;" FontSize="14"
+                        <FontIcon Glyph="&#xE8B5;" FontSize="14"
                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="New Group"
+                        <TextBlock Text="Import Connections"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
                 </Button>
@@ -70,12 +71,11 @@
                         Padding="8,8"
                         Background="Transparent"
                         BorderThickness="0"
-                        Click="ImportConnections_Click"
-                        ToolTipService.ToolTip="Import connections from TablePlus / DBeaver / DataGrip / Navicat">
+                        Click="NewGroup_Click">
                     <StackPanel Orientation="Horizontal" Spacing="10">
-                        <FontIcon Glyph="&#xE8B5;" FontSize="14"
+                        <FontIcon Glyph="&#xE8B7;" FontSize="14"
                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBlock Text="Import Connections"
+                        <TextBlock Text="New Group"
                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                     </StackPanel>
                 </Button>
