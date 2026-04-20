@@ -216,29 +216,177 @@
             </PivotItem>
 
             <PivotItem Header="Connections">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
-                    <FontIcon Glyph="&#xE968;" FontSize="36"
-                              Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    <TextBlock Text="Per-connection access mode"
-                               HorizontalAlignment="Center" FontSize="14" />
-                    <TextBlock Text="Set per-connection Locked / Read-only / Read-write in the Connection Settings dialog for now. This full table view is coming next."
-                               HorizontalAlignment="Center" FontSize="12" TextWrapping="Wrap"
-                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               MaxWidth="520" TextAlignment="Center" />
-                </StackPanel>
+                <Grid RowSpacing="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Filter bar: search + mode filter + count -->
+                    <Grid Grid.Row="0" Padding="4,6,4,10" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="300" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <AutoSuggestBox x:Name="ConnSearchBox"
+                                        Grid.Column="0"
+                                        PlaceholderText="Search connections"
+                                        QueryIcon="Find"
+                                        TextChanged="ConnFilter_Changed" />
+                        <ComboBox x:Name="ConnFilterCombo" Grid.Column="1"
+                                  SelectedIndex="0"
+                                  SelectionChanged="ConnFilterCombo_SelectionChanged">
+                            <ComboBoxItem Content="All Access" />
+                            <ComboBoxItem Content="Locked" />
+                            <ComboBoxItem Content="Read-only" />
+                            <ComboBoxItem Content="Read-write" />
+                        </ComboBox>
+                        <TextBlock x:Name="ConnCountText" Grid.Column="3"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+
+                    <!-- Column headers -->
+                    <Border Grid.Row="1"
+                            Padding="12,8"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                            CornerRadius="6,6,0,0"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1,1,1,0">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="20" />
+                                <ColumnDefinition Width="*" MinWidth="140" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="140" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="1" Text="Name"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="2" Text="Type"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="3" Text="Host"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="4" Text="Access"
+                                       FontSize="12" FontWeight="SemiBold" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Rows container — populated in MCPPage.cpp.
+                         Not using DataTemplate + IInspectable binding
+                         because the codebase already uses
+                         programmatic row assembly (HomePage does the
+                         same for ConnectionCard). -->
+                    <ScrollViewer Grid.Row="2"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  BorderThickness="1,0,1,1"
+                                  CornerRadius="0,0,6,6">
+                        <StackPanel x:Name="ConnRowsPanel" Spacing="0" />
+                    </ScrollViewer>
+
+                    <!-- Empty state -->
+                    <StackPanel x:Name="ConnEmptyState" Grid.Row="2"
+                                VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE968;" FontSize="36"
+                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <TextBlock Text="No connections match"
+                                   HorizontalAlignment="Center" FontSize="14" />
+                        <TextBlock Text="Try a different search or filter."
+                                   HorizontalAlignment="Center" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
             </PivotItem>
 
             <PivotItem Header="Activity">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
-                    <FontIcon Glyph="&#xE9D9;" FontSize="36"
-                              Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
-                    <TextBlock Text="Audit log viewer coming next"
-                               HorizontalAlignment="Center" FontSize="14" />
-                    <TextBlock x:Name="ActivityPathText"
-                               HorizontalAlignment="Center" FontSize="11"
+                <Grid RowSpacing="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Padding="4,6,4,10" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="280" />
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <AutoSuggestBox x:Name="ActSearchBox" Grid.Column="0"
+                                        PlaceholderText="Search tool, SQL, or client"
+                                        QueryIcon="Find"
+                                        TextChanged="ActFilter_Changed" />
+                        <ComboBox x:Name="ActStatusCombo" Grid.Column="1"
+                                  SelectedIndex="0"
+                                  SelectionChanged="ActStatusCombo_SelectionChanged">
+                            <ComboBoxItem Content="All Status" />
+                            <ComboBoxItem Content="Success" />
+                            <ComboBoxItem Content="Error" />
+                            <ComboBoxItem Content="Denied" />
+                        </ComboBox>
+                        <Button Grid.Column="3"
+                                Click="ActRefresh_Click"
+                                ToolTipService.ToolTip="Refresh">
+                            <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                        </Button>
+                    </Grid>
+
+                    <Border Grid.Row="1" Padding="12,8"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                            CornerRadius="6,6,0,0"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1,1,1,0">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="*" MinWidth="160" />
+                                <ColumnDefinition Width="120" />
+                                <ColumnDefinition Width="80" />
+                                <ColumnDefinition Width="70" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Time" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="1" Text="Tool" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="2" Text="Client" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="3" Text="Status" FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="4" Text="Duration" FontSize="12" FontWeight="SemiBold" />
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="2"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  BorderThickness="1,0,1,1"
+                                  CornerRadius="0,0,6,6">
+                        <StackPanel x:Name="ActRowsPanel" Spacing="0" />
+                    </ScrollViewer>
+
+                    <StackPanel x:Name="ActEmptyState" Grid.Row="2"
+                                VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE9D9;" FontSize="36"
+                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <TextBlock Text="No activity yet"
+                                   HorizontalAlignment="Center" FontSize="14" />
+                        <TextBlock Text="MCP tool invocations will appear here once a client connects."
+                                   HorizontalAlignment="Center" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap" MaxWidth="380" TextAlignment="Center" />
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="3" x:Name="ActPathText"
+                               FontSize="11"
                                Foreground="{ThemeResource TextFillColorTertiaryBrush}"
-                               IsTextSelectionEnabled="True" />
-                </StackPanel>
+                               IsTextSelectionEnabled="True"
+                               Margin="4,8,0,0" />
+                </Grid>
             </PivotItem>
 
             <PivotItem Header="Setup">

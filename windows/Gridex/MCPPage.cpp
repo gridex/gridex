@@ -8,12 +8,16 @@
 #include "Models/AppSettings.h"
 #include "Models/ConnectionStore.h"
 #include "Services/MCP/MCPServerHost.h"
+#include "Services/MCP/Audit/MCPAuditLogger.h"
+#include "Services/MCP/Tools/MCPToolHelpers.h"
 #include "GridexVersion.h"
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.UI.h>
+#include <winrt/Microsoft.UI.Xaml.Shapes.h>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <shlobj.h>
+#include <algorithm>
 
 namespace winrt::Gridex::implementation
 {
@@ -36,7 +40,11 @@ namespace winrt::Gridex::implementation
     {
         InitializeComponent();
 
-        this->Loaded([this](auto&&, auto&&) { RefreshUI(); });
+        this->Loaded([this](auto&&, auto&&) {
+            RefreshUI();
+            RefreshConnectionsTab();
+            RefreshActivityTab();
+        });
     }
 
     void MCPPage::RefreshUI()
@@ -113,9 +121,9 @@ namespace winrt::Gridex::implementation
 
         SetupPathText().Text(
             L"Default Claude Desktop config: %APPDATA%\\Claude\\claude_desktop_config.json");
-
-        ActivityPathText().Text(
-            L"Audit log: %APPDATA%\\Gridex\\mcp-audit.jsonl");
+        // Activity path text is set in RefreshActivityTab; we used
+        // to set it here but the control moved when Activity got a
+        // real table.
     }
 
     void MCPPage::ApplyStartStopButton(bool running)
@@ -304,5 +312,377 @@ namespace winrt::Gridex::implementation
 
         InstallStatusText().Text(
             L"Installed. Restart Claude Desktop; a .bak backup of the previous config is next to the file.");
+    }
+
+    // ── Connections tab ──────────────────────────────────────
+    // Mac uses a SwiftUI Table with Pickers. WinUI 3 C++/winrt
+    // data-binding through IInspectable VMs is verbose, so we do
+    // the same thing HomePage.cpp does for ConnectionCard: build
+    // each row as a Grid at refresh time.
+
+    namespace
+    {
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml::Media;
+        using namespace winrt::Windows::UI;
+
+        // Mac MCPConnectionMode colors — red / blue / green.
+        SolidColorBrush modeBrush(DBModels::MCPConnectionMode m)
+        {
+            switch (m)
+            {
+                case DBModels::MCPConnectionMode::ReadOnly:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 30, 144, 255));
+                case DBModels::MCPConnectionMode::ReadWrite:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 46, 139, 87));
+                default: // Locked
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 220, 53, 69));
+            }
+        }
+
+        bool containsCI(const std::wstring& haystack, const std::wstring& needle)
+        {
+            if (needle.empty()) return true;
+            auto lowerH = haystack;
+            auto lowerN = needle;
+            std::transform(lowerH.begin(), lowerH.end(), lowerH.begin(), ::towlower);
+            std::transform(lowerN.begin(), lowerN.end(), lowerN.begin(), ::towlower);
+            return lowerH.find(lowerN) != std::wstring::npos;
+        }
+
+        std::wstring displayHost(const DBModels::ConnectionConfig& c)
+        {
+            if (c.databaseType == DBModels::DatabaseType::SQLite)
+                return c.filePath.empty() ? L"" : c.filePath;
+            std::wstring h = c.host;
+            if (c.port > 0) h += L":" + std::to_wstring(c.port);
+            return h;
+        }
+    }
+
+    void MCPPage::RefreshConnectionsTab()
+    {
+        auto panel = ConnRowsPanel();
+        panel.Children().Clear();
+
+        // Filter state
+        const std::wstring q = std::wstring(ConnSearchBox().Text());
+        const int filterIdx = ConnFilterCombo().SelectedIndex();
+
+        auto all = DBModels::ConnectionStore::Load();
+        int total = static_cast<int>(all.size());
+        int shown = 0;
+
+        for (const auto& c : all)
+        {
+            // Mode filter: 0=All, 1=Locked, 2=ReadOnly, 3=ReadWrite
+            if (filterIdx == 1 && c.mcpMode != DBModels::MCPConnectionMode::Locked) continue;
+            if (filterIdx == 2 && c.mcpMode != DBModels::MCPConnectionMode::ReadOnly) continue;
+            if (filterIdx == 3 && c.mcpMode != DBModels::MCPConnectionMode::ReadWrite) continue;
+
+            // Text filter on name + host
+            if (!q.empty())
+            {
+                if (!containsCI(c.name, q) && !containsCI(displayHost(c), q)) continue;
+            }
+
+            Grid row;
+            row.Padding(Thickness{ 12, 8, 12, 8 });
+            row.ColumnSpacing(12);
+
+            ColumnDefinition col0; col0.Width(GridLengthHelper::FromPixels(20));
+            ColumnDefinition col1; col1.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+            col1.MinWidth(140);
+            ColumnDefinition col2; col2.Width(GridLengthHelper::FromPixels(90));
+            ColumnDefinition col3; col3.Width(GridLengthHelper::FromPixels(180));
+            ColumnDefinition col4; col4.Width(GridLengthHelper::FromPixels(140));
+            row.ColumnDefinitions().Append(col0);
+            row.ColumnDefinitions().Append(col1);
+            row.ColumnDefinitions().Append(col2);
+            row.ColumnDefinitions().Append(col3);
+            row.ColumnDefinitions().Append(col4);
+
+            // Status dot
+            Shapes::Ellipse dot;
+            dot.Width(8); dot.Height(8);
+            dot.Fill(modeBrush(c.mcpMode));
+            dot.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(dot, 0);
+            row.Children().Append(dot);
+
+            // Name
+            TextBlock name;
+            name.Text(winrt::hstring(c.name));
+            name.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(name, 1);
+            row.Children().Append(name);
+
+            // Type
+            TextBlock type;
+            type.Text(winrt::hstring(DBModels::DatabaseTypeDisplayName(c.databaseType)));
+            type.Foreground(SolidColorBrush(ColorHelper::FromArgb(255, 160, 160, 160)));
+            type.FontSize(12);
+            type.VerticalAlignment(VerticalAlignment::Center);
+            Grid::SetColumn(type, 2);
+            row.Children().Append(type);
+
+            // Host
+            TextBlock host;
+            host.Text(winrt::hstring(displayHost(c)));
+            host.Foreground(SolidColorBrush(ColorHelper::FromArgb(255, 160, 160, 160)));
+            host.FontSize(12);
+            host.VerticalAlignment(VerticalAlignment::Center);
+            host.TextTrimming(TextTrimming::CharacterEllipsis);
+            Grid::SetColumn(host, 3);
+            row.Children().Append(host);
+
+            // Access mode picker — changes persist via ConnectionStore::Save
+            // AND sync to the running MCPServer's permissionEngine.
+            ComboBox modePicker;
+            auto addItem = [&](const wchar_t* label) {
+                ComboBoxItem item;
+                item.Content(winrt::box_value(winrt::hstring(label)));
+                modePicker.Items().Append(item);
+            };
+            addItem(L"Locked");
+            addItem(L"Read-only");
+            addItem(L"Read-write");
+            modePicker.SelectedIndex(static_cast<int>(c.mcpMode));
+            modePicker.VerticalAlignment(VerticalAlignment::Center);
+            modePicker.MinWidth(130);
+
+            const std::wstring connId = c.id;
+            modePicker.SelectionChanged(
+                [this, connId](auto&& sender, auto&&) {
+                    auto cb = sender.try_as<muxc::ComboBox>();
+                    if (!cb) return;
+                    const auto newMode = static_cast<DBModels::MCPConnectionMode>(cb.SelectedIndex());
+
+                    auto configs = DBModels::ConnectionStore::Load();
+                    for (auto& cfg : configs)
+                    {
+                        if (cfg.id == connId)
+                        {
+                            cfg.mcpMode = newMode;
+                            DBModels::ConnectionStore::Save(cfg);
+                            break;
+                        }
+                    }
+                    if (auto srv = DBModels::MCPServerHost::instance())
+                        srv->permissionEngine().setMode(connId, newMode);
+
+                    RefreshUI(); // counts on Overview
+                });
+
+            Grid::SetColumn(modePicker, 4);
+            row.Children().Append(modePicker);
+
+            // Row separator
+            Border wrap;
+            wrap.Child(row);
+            wrap.BorderBrush(SolidColorBrush(ColorHelper::FromArgb(30, 128, 128, 128)));
+            wrap.BorderThickness(Thickness{ 0, 0, 0, 1 });
+            panel.Children().Append(wrap);
+            ++shown;
+        }
+
+        ConnCountText().Text(winrt::hstring(
+            std::to_wstring(shown) + L" of " + std::to_wstring(total)));
+        ConnEmptyState().Visibility(shown == 0 && total > 0
+            ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+
+    void MCPPage::ConnFilter_Changed(
+        winrt::Microsoft::UI::Xaml::Controls::AutoSuggestBox const&,
+        winrt::Microsoft::UI::Xaml::Controls::AutoSuggestBoxTextChangedEventArgs const&)
+    {
+        RefreshConnectionsTab();
+    }
+
+    void MCPPage::ConnFilterCombo_SelectionChanged(
+        winrt::Windows::Foundation::IInspectable const&,
+        winrt::Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
+    {
+        RefreshConnectionsTab();
+    }
+
+    // ── Activity tab ─────────────────────────────────────────
+    // Tails the last 200 entries of mcp-audit.jsonl into a table.
+    // Uses the running MCPServer's logger when available; otherwise
+    // spins up a temporary MCPAuditLogger pointing at the same
+    // disk path so previous-session entries are still visible.
+
+    namespace
+    {
+        winrt::Microsoft::UI::Xaml::Media::SolidColorBrush statusBrush(
+            DBModels::MCPAuditStatus s)
+        {
+            using namespace winrt::Microsoft::UI::Xaml::Media;
+            using namespace winrt::Windows::UI;
+            switch (s)
+            {
+                case DBModels::MCPAuditStatus::Success:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 46, 139, 87));
+                case DBModels::MCPAuditStatus::Error:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 220, 53, 69));
+                case DBModels::MCPAuditStatus::Denied:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 255, 140, 0));
+                default:
+                    return SolidColorBrush(ColorHelper::FromArgb(255, 150, 150, 150));
+            }
+        }
+
+        std::wstring formatTimeHM(std::chrono::system_clock::time_point tp)
+        {
+            const std::time_t t = std::chrono::system_clock::to_time_t(tp);
+            std::tm tm{};
+            localtime_s(&tm, &t);
+            wchar_t buf[16];
+            wcsftime(buf, 16, L"%H:%M:%S", &tm);
+            return buf;
+        }
+
+        const wchar_t* statusLabel(DBModels::MCPAuditStatus s)
+        {
+            switch (s)
+            {
+                case DBModels::MCPAuditStatus::Success: return L"success";
+                case DBModels::MCPAuditStatus::Error:   return L"error";
+                case DBModels::MCPAuditStatus::Denied:  return L"denied";
+                case DBModels::MCPAuditStatus::Timeout: return L"timeout";
+            }
+            return L"?";
+        }
+    }
+
+    void MCPPage::RefreshActivityTab()
+    {
+        using namespace winrt::Microsoft::UI::Xaml;
+        using namespace winrt::Microsoft::UI::Xaml::Controls;
+        using namespace winrt::Microsoft::UI::Xaml::Media;
+        using namespace winrt::Windows::UI;
+
+        auto panel = ActRowsPanel();
+        panel.Children().Clear();
+
+        wchar_t* ad = nullptr;
+        if (SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &ad) == S_OK)
+        {
+            std::wstring dir = std::wstring(ad) + L"\\Gridex";
+            CoTaskMemFree(ad);
+            ActPathText().Text(winrt::hstring(L"Audit log: " + dir + L"\\mcp-audit.jsonl"));
+        }
+
+        std::vector<DBModels::MCPAuditEntry> entries;
+        if (auto srv = DBModels::MCPServerHost::instance())
+        {
+            entries = srv->auditLogger().recentEntries(200);
+        }
+        else
+        {
+            auto s = DBModels::AppSettings::Load();
+            DBModels::MCPAuditLogger tempLogger(
+                s.mcpAuditMaxSizeMB, s.mcpAuditRetentionDays);
+            entries = tempLogger.recentEntries(200);
+        }
+
+        const std::wstring q = std::wstring(ActSearchBox().Text());
+        const int statusIdx = ActStatusCombo().SelectedIndex();
+
+        int shown = 0;
+        for (const auto& e : entries)
+        {
+            const auto status = e.result.status;
+            if (statusIdx == 1 && status != DBModels::MCPAuditStatus::Success) continue;
+            if (statusIdx == 2 && status != DBModels::MCPAuditStatus::Error) continue;
+            if (statusIdx == 3 && status != DBModels::MCPAuditStatus::Denied) continue;
+
+            if (!q.empty())
+            {
+                auto lower = [](std::wstring s) {
+                    std::transform(s.begin(), s.end(), s.begin(), ::towlower);
+                    return s;
+                };
+                const std::wstring qL = lower(q);
+                auto toolW = DBModels::MCPToolHelpers::fromUtf8(e.tool);
+                auto clientW = DBModels::MCPToolHelpers::fromUtf8(e.client.name);
+                std::wstring sqlW = e.input.sqlPreview.has_value()
+                    ? DBModels::MCPToolHelpers::fromUtf8(*e.input.sqlPreview) : L"";
+                if (lower(toolW).find(qL) == std::wstring::npos &&
+                    lower(clientW).find(qL) == std::wstring::npos &&
+                    lower(sqlW).find(qL) == std::wstring::npos) continue;
+            }
+
+            Grid row;
+            row.Padding(Thickness{ 12, 6, 12, 6 });
+            row.ColumnSpacing(12);
+
+            ColumnDefinition c0; c0.Width(GridLengthHelper::FromPixels(90));
+            ColumnDefinition c1; c1.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+            c1.MinWidth(160);
+            ColumnDefinition c2; c2.Width(GridLengthHelper::FromPixels(120));
+            ColumnDefinition c3; c3.Width(GridLengthHelper::FromPixels(80));
+            ColumnDefinition c4; c4.Width(GridLengthHelper::FromPixels(70));
+            row.ColumnDefinitions().Append(c0);
+            row.ColumnDefinitions().Append(c1);
+            row.ColumnDefinitions().Append(c2);
+            row.ColumnDefinitions().Append(c3);
+            row.ColumnDefinitions().Append(c4);
+
+            TextBlock t; t.Text(winrt::hstring(formatTimeHM(e.timestamp)));
+            t.FontSize(12); t.FontFamily(winrt::Microsoft::UI::Xaml::Media::FontFamily(L"Consolas"));
+            t.Foreground(SolidColorBrush(ColorHelper::FromArgb(255, 160, 160, 160)));
+            Grid::SetColumn(t, 0); row.Children().Append(t);
+
+            TextBlock tool; tool.Text(winrt::hstring(DBModels::MCPToolHelpers::fromUtf8(e.tool)));
+            tool.FontSize(12); tool.FontFamily(winrt::Microsoft::UI::Xaml::Media::FontFamily(L"Consolas"));
+            Grid::SetColumn(tool, 1); row.Children().Append(tool);
+
+            TextBlock client; client.Text(winrt::hstring(DBModels::MCPToolHelpers::fromUtf8(e.client.name)));
+            client.FontSize(12);
+            client.Foreground(SolidColorBrush(ColorHelper::FromArgb(255, 160, 160, 160)));
+            Grid::SetColumn(client, 2); row.Children().Append(client);
+
+            TextBlock st; st.Text(winrt::hstring(statusLabel(status)));
+            st.FontSize(12); st.Foreground(statusBrush(status));
+            Grid::SetColumn(st, 3); row.Children().Append(st);
+
+            TextBlock dur;
+            dur.Text(winrt::hstring(std::to_wstring(e.result.durationMs) + L"ms"));
+            dur.FontSize(12); dur.FontFamily(winrt::Microsoft::UI::Xaml::Media::FontFamily(L"Consolas"));
+            dur.Foreground(SolidColorBrush(ColorHelper::FromArgb(255, 160, 160, 160)));
+            Grid::SetColumn(dur, 4); row.Children().Append(dur);
+
+            Border wrap; wrap.Child(row);
+            wrap.BorderBrush(SolidColorBrush(ColorHelper::FromArgb(30, 128, 128, 128)));
+            wrap.BorderThickness(Thickness{ 0, 0, 0, 1 });
+            panel.Children().Append(wrap);
+            ++shown;
+        }
+
+        ActEmptyState().Visibility(shown == 0
+            ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+
+    void MCPPage::ActFilter_Changed(
+        winrt::Microsoft::UI::Xaml::Controls::AutoSuggestBox const&,
+        winrt::Microsoft::UI::Xaml::Controls::AutoSuggestBoxTextChangedEventArgs const&)
+    {
+        RefreshActivityTab();
+    }
+
+    void MCPPage::ActStatusCombo_SelectionChanged(
+        winrt::Windows::Foundation::IInspectable const&,
+        winrt::Microsoft::UI::Xaml::Controls::SelectionChangedEventArgs const&)
+    {
+        RefreshActivityTab();
+    }
+
+    void MCPPage::ActRefresh_Click(
+        winrt::Windows::Foundation::IInspectable const&,
+        winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        RefreshActivityTab();
     }
 }
