@@ -59,6 +59,10 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\QueryTool.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\ExplainQueryTool.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\SearchAcrossTablesTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\InsertRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\UpdateRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\DeleteRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\ExecuteWriteQueryTool.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServerHost.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\DatabaseAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ConnectionManager.h" />
@@ -372,6 +376,18 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\SearchAcrossTablesTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\InsertRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\UpdateRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\DeleteRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\ExecuteWriteQueryTool.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServerHost.cpp">

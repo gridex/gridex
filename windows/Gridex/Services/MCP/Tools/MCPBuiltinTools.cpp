@@ -14,6 +14,10 @@
 #include "Tier2/QueryTool.h"
 #include "Tier2/ExplainQueryTool.h"
 #include "Tier2/SearchAcrossTablesTool.h"
+#include "Tier3/InsertRowsTool.h"
+#include "Tier3/UpdateRowsTool.h"
+#include "Tier3/DeleteRowsTool.h"
+#include "Tier3/ExecuteWriteQueryTool.h"
 
 namespace DBModels { namespace MCPBuiltinTools {
 
@@ -32,7 +36,13 @@ void registerAll(MCPToolRegistry& r)
     r.registerTool(std::make_shared<ExplainQueryTool>());
     r.registerTool(std::make_shared<SearchAcrossTablesTool>());
 
-    // Tier 3 — write tools arrive in Round 1B.
+    // Tier 3 — write tools. ReadWrite mode only; each call goes
+    // through MCPApprovalGate (ContentDialog on the MainWindow
+    // XamlRoot) before the adapter sees the SQL.
+    r.registerTool(std::make_shared<InsertRowsTool>());
+    r.registerTool(std::make_shared<UpdateRowsTool>());
+    r.registerTool(std::make_shared<DeleteRowsTool>());
+    r.registerTool(std::make_shared<ExecuteWriteQueryTool>());
 }
 
 }} // namespace
