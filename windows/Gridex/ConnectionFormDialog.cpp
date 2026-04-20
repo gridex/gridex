@@ -136,6 +136,11 @@ namespace winrt::Gridex::implementation
         auto sslIdx = SslModeInput().SelectedIndex();
         config.sslMode = static_cast<DBModels::SSLMode>(sslIdx);
         config.sslEnabled = (sslIdx != 1);
+        // MCP access mode — 0=Locked / 1=ReadOnly / 2=ReadWrite,
+        // matches MCPConnectionMode enum ordering.
+        const auto mcpIdx = McpModeInput().SelectedIndex();
+        config.mcpMode = static_cast<DBModels::MCPConnectionMode>(
+            mcpIdx < 0 ? 0 : mcpIdx);
         if (dbType_ == DBModels::DatabaseType::SQLite)
             config.filePath = std::wstring(FilePathInput().Text());
         if (dbType_ == DBModels::DatabaseType::MongoDB)
@@ -188,6 +193,7 @@ namespace winrt::Gridex::implementation
         PasswordInput().Password(winrt::hstring(config.password));
         DatabaseInput().Text(winrt::hstring(config.database));
         SslModeInput().SelectedIndex(static_cast<int>(config.sslMode));
+        McpModeInput().SelectedIndex(static_cast<int>(config.mcpMode));
         FilePathInput().Text(winrt::hstring(config.filePath));
         UriInput().Text(winrt::hstring(config.connectionUri));
         MongoOptionsInput().Text(winrt::hstring(config.mongoOptions));

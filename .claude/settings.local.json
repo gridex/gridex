@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(powershell.exe -ExecutionPolicy Bypass -Command '& { $msbuild = & '\\\\''C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\Installer\\\\vswhere.exe'\\\\'' -latest -products * -requires Microsoft.Component.MSBuild -find '\\\\''MSBuild\\\\**\\\\Bin\\\\MSBuild.exe'\\\\'' 2>$null | Select-Object -First 1; if \\($msbuild\\) { Write-Host \"MSBUILD=$msbuild\" } else { Write-Host '\\\\''MSBuild not found'\\\\'' } }')",
+      "Bash(powershell -ExecutionPolicy Bypass -File windows/scripts/build-unpackaged.ps1)"
+    ]
+  }
+}

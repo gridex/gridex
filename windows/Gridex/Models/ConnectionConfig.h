@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "DatabaseType.h"
 #include "ColorTag.h"
+#include "MCP/MCPConnectionMode.h"
 
 namespace DBModels
 {
@@ -58,6 +59,11 @@ namespace DBModels
         //   authMechanism=SCRAM-SHA-256
         std::wstring mongoOptions;
         std::optional<SSHTunnelConfig> sshConfig;
+
+        // Per-connection MCP access gate. Default Locked — every new
+        // connection must be explicitly opened up in MCPConnectionsView.
+        // Mirrors mac's ConnectionConfig.mcpMode.
+        MCPConnectionMode mcpMode = MCPConnectionMode::Locked;
 
         std::wstring subtitle() const
         {

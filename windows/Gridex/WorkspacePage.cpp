@@ -609,6 +609,106 @@ namespace winrt::Gridex::implementation
             });
         };
 
+        // Sidebar truncate table — confirm then TRUNCATE (DELETE on SQLite).
+        // Wipes all rows, keeps the schema. Identical confirmation UX to
+        // OnDeleteTable; only the SQL emitted differs, and the tab-close
+        // snapshot trick is skipped (the tab stays valid, it just shows
+        // zero rows after the refresh).
+        Sidebar().as<SidebarPanel>()->OnTruncateTable = [this](const std::wstring& tableName, const std::wstring& schema)
+        {
+            if (!connMgr_.isConnected() || tableName.empty()) return;
+
+            muxc::ContentDialog dlg;
+            dlg.Title(winrt::box_value(winrt::hstring(L"Truncate Table")));
+            dlg.Content(winrt::box_value(winrt::hstring(
+                L"Wipe all rows from \"" + (schema.empty() ? L"" : schema + L"\".\"") + tableName + L"\"?\n\n"
+                L"The schema stays; this is NOT reversible.")));
+            dlg.PrimaryButtonText(L"Truncate");
+            dlg.CloseButtonText(L"Cancel");
+            dlg.DefaultButton(muxc::ContentDialogButton::Close);
+            dlg.XamlRoot(this->XamlRoot());
+
+            auto op = dlg.ShowAsync();
+            op.Completed([this, tableName, schema](auto&& asyncOp, auto&&)
+            {
+                if (asyncOp.GetResults() != muxc::ContentDialogResult::Primary) return;
+                this->DispatcherQueue().TryEnqueue([this, tableName, schema]()
+                {
+                    auto adapter = connMgr_.getActiveAdapter();
+                    if (!adapter) return;
+                    try
+                    {
+                        const auto dbType = state_.connection.databaseType;
+                        // Quote identifiers per dialect (same pattern as
+                        // the Drop handler below).
+                        std::wstring qt, qs;
+                        if (dbType == DBModels::DatabaseType::MySQL)
+                        {
+                            qt = L"`" + tableName + L"`";
+                            if (!schema.empty()) qs = L"`" + schema + L"`.";
+                        }
+                        else if (dbType == DBModels::DatabaseType::SQLite)
+                        {
+                            qt = L"\"" + tableName + L"\""; // no schemas
+                        }
+                        else // Postgres / MSSQL / anything SQL-ish
+                        {
+                            qt = L"\"" + tableName + L"\"";
+                            if (!schema.empty()) qs = L"\"" + schema + L"\".";
+                        }
+
+                        // SQLite has no TRUNCATE — bare DELETE is the
+                        // documented equivalent and the engine runs it
+                        // with the fast "truncate optimization" when the
+                        // table has no FK dependencies.
+                        std::wstring sql = (dbType == DBModels::DatabaseType::SQLite)
+                            ? (L"DELETE FROM " + qt)
+                            : (L"TRUNCATE TABLE " + qs + qt);
+
+                        auto result = adapter->execute(sql);
+                        LogQuery(result);
+                        if (result.success)
+                        {
+                            LoadSidebarFromDB(); // refresh row counts
+                            // If a DataGrid tab is open on this table,
+                            // refetch so the grid reflects the wipe.
+                            for (const auto& t : state_.tabs)
+                            {
+                                if (t.type == DBModels::TabType::DataGrid &&
+                                    t.tableName == tableName &&
+                                    t.schema == schema &&
+                                    t.id == state_.activeTabId)
+                                {
+                                    SwitchContentView();
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            muxc::ContentDialog errDlg;
+                            errDlg.Title(winrt::box_value(winrt::hstring(L"Truncate Failed")));
+                            errDlg.Content(winrt::box_value(winrt::hstring(result.error)));
+                            errDlg.CloseButtonText(L"OK");
+                            errDlg.XamlRoot(this->XamlRoot());
+                            errDlg.ShowAsync();
+                        }
+                    }
+                    catch (const std::exception& e)
+                    {
+                        muxc::ContentDialog errDlg;
+                        errDlg.Title(winrt::box_value(winrt::hstring(L"Truncate Failed")));
+                        errDlg.Content(winrt::box_value(winrt::hstring(
+                            std::wstring(L"Unexpected error: ") + std::wstring(
+                                std::string(e.what()).begin(), std::string(e.what()).end()))));
+                        errDlg.CloseButtonText(L"OK");
+                        errDlg.XamlRoot(this->XamlRoot());
+                        errDlg.ShowAsync();
+                    }
+                });
+            });
+        };
+
         // Sidebar delete table — confirm then DROP
         Sidebar().as<SidebarPanel>()->OnDeleteTable = [this](const std::wstring& tableName, const std::wstring& schema)
         {

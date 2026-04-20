@@ -66,29 +66,29 @@ windows/scripts/
 **Git Bash / MSYS2**:
 ```bash
 cd /e/dev/be/vura
-powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-and-pack.ps1 -Version "0.1.4"
+powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-and-pack.ps1 -Version "0.1.5"
 ```
 
 **PowerShell (5.1 / 7+)**:
 ```powershell
 cd E:\dev\be\vura
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.4"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.5"
 ```
 
 **CMD**:
 ```cmd
 cd /d E:\dev\be\vura
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.4"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.5"
 ```
 
 Script sẽ:
 1. Cài/update `vpk` global tool (skip nếu đã có)
-2. Build `Gridex.exe` unpackaged, stamp version `0.1.4` vào About section
-3. Pack thành `Setup.exe` qua Velopack với metadata version `0.1.4`
+2. Build `Gridex.exe` unpackaged, stamp version `0.1.5` vào About section
+3. Pack thành `Setup.exe` qua Velopack với metadata version `0.1.5`
 
 **Output**: `windows/Releases/`
 - `Gridex-stable-Setup.exe` — installer user-facing
-- `Gridex-0.1.4-stable-full.nupkg` — package Velopack
+- `Gridex-0.1.5-stable-full.nupkg` — package Velopack
 - `releases.stable.json`, `RELEASES-stable` — feed manifests
 - `Gridex-stable-Portable.zip` — bản portable
 
@@ -140,7 +140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\install-vp
 powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-unpackaged.ps1
 
 # Build với version cụ thể — About section hiện đúng string
-powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-unpackaged.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-unpackaged.ps1 -Version "0.1.5-test"
 ```
 
 **PowerShell**:
@@ -149,7 +149,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-unpa
 powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1
 
 # Build với version cụ thể — About section hiện đúng string
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1 -Version "0.1.5-test"
 ```
 
 **CMD**:
@@ -158,7 +158,7 @@ REM Dev build — About section hiện "0.0.0-dev"
 powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1
 
 REM Build với version cụ thể — About section hiện đúng string
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-unpackaged.ps1 -Version "0.1.5-test"
 ```
 
 Chạy trực tiếp exe để test nhanh mà không cần cài installer:
@@ -177,17 +177,17 @@ Chạy trực tiếp exe để test nhanh mà không cần cài installer:
 
 **Git Bash / MSYS2**:
 ```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/pack-velopack.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/pack-velopack.ps1 -Version "0.1.5-test"
 ```
 
 **PowerShell**:
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\pack-velopack.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\pack-velopack.ps1 -Version "0.1.5-test"
 ```
 
 **CMD**:
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\pack-velopack.ps1 -Version "0.1.4-test"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\pack-velopack.ps1 -Version "0.1.5-test"
 ```
 
 **Lưu ý**: `-Version` truyền vào `pack-velopack.ps1` **phải khớp** với `-Version` truyền vào `build-unpackaged.ps1`, nếu không thì Velopack sẽ in một số, còn About section của app sẽ in số khác. Dùng `build-and-pack.ps1` ở trên để tránh trường hợp này.
@@ -196,10 +196,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\pack-velop
 
 - `windows/Gridex/GridexVersion.h` — include unconditional file generated
 - `windows/Gridex/GridexVersion.generated.h` — **auto-generated, gitignored**, do `build-unpackaged.ps1` ghi mỗi lần chạy
-  - Có `-Version` → `#define GRIDEX_VERSION L"0.1.4"`
+  - Có `-Version` → `#define GRIDEX_VERSION L"0.1.5"`
   - Không `-Version` → `#define GRIDEX_VERSION L"0.0.0-dev"`
 - `windows/Gridex/SettingsPage.xaml.cpp` — đọc `GRIDEX_VERSION` và set vào `VersionText` text block
-- CI workflow `.github/workflows/windows-release.yml` tự parse version từ git tag (`v0.1.4` → `0.1.4`) và forward sang script
+- CI workflow `.github/workflows/windows-release.yml` tự parse version từ git tag (`v0.1.5` → `0.1.5`) và forward sang script
 
 Build script chỉ rewrite `GridexVersion.generated.h` khi nội dung khác → không force recompile vô ích.
 
@@ -209,17 +209,17 @@ Mặc định Velopack dùng channel `stable`. Nếu muốn phát hành kênh ri
 
 **Git Bash / MSYS2**:
 ```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-and-pack.ps1 -Version "0.1.4-beta.1" -Channel "beta"
+powershell -NoProfile -ExecutionPolicy Bypass -File ./windows/scripts/build-and-pack.ps1 -Version "0.1.5-beta.1" -Channel "beta"
 ```
 
 **PowerShell**:
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.4-beta.1" -Channel "beta"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.5-beta.1" -Channel "beta"
 ```
 
 **CMD**:
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.4-beta.1" -Channel "beta"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\windows\scripts\build-and-pack.ps1 -Version "0.1.5-beta.1" -Channel "beta"
 ```
 
 Output sẽ là `Gridex-beta-Setup.exe` + `releases.beta.json` — auto-updater phân luồng theo channel.
@@ -253,7 +253,7 @@ Chưa cài đủ vcpkg deps. Xem section "Cài vcpkg deps" ở đầu file.
 ### Gridex.exe crash ngay khi khởi động với `MSVCP140.dll not found`
 Máy thiếu VC++ 2015-2022 Redistributable. Script `build-unpackaged.ps1` tự copy CRT DLLs vào output folder → nếu vẫn lỗi thì check VS install path / logs script.
 
-### Setup.exe cài xong nhưng About hiện `0.0.0-dev` dù pack với `-Version 0.1.4`
+### Setup.exe cài xong nhưng About hiện `0.0.0-dev` dù pack với `-Version 0.1.5`
 Dùng `build-and-pack.ps1` thay vì gọi `pack-velopack.ps1` trực tiếp. Trường hợp chạy `pack-velopack.ps1` với version khác version lúc build `Gridex.exe` → xóa `windows\Gridex\x64\Release\` rồi build lại đúng thứ tự.
 
 ### Lỗi `pwsh.exe exited with code 9009` trong vcpkg applocal step
@@ -288,8 +288,8 @@ del /q .\windows\Gridex\GridexVersion.generated.h
 CI tự chạy khi push tag matching `v*.*.*`:
 
 ```bash
-git tag v0.1.4
-git push origin v0.1.4
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
 GitHub Actions workflow `windows-release.yml` sẽ tự build + pack + upload assets lên GitHub Release. Xem chi tiết ở `.github/workflows/windows-release.yml`.
