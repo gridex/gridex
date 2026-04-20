@@ -20,6 +20,57 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\RowValue.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\TableInfo.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\QueryParameter.h" />
+    <!-- MCP Phase 1 — core types (header-only, no ClCompile yet). -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPConnectionMode.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPPermissionTier.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPErrorCode.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPProtocol.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPServerInfo.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPToolDefinition.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPToolError.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\MCP\MCPAuditEntry.h" />
+    <!-- MCP Phase 2 — security. -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPSQLSanitizer.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPIdentifierValidator.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPPermissionResult.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPPermissionEngine.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPRateLimiter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPApprovalGate.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPRowCountEstimator.h" />
+    <!-- MCP Phase 3 — audit. -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Audit\MCPAuditLogger.h" />
+    <!-- MCP Phase 4 — transport + server. HTTP transport TBD (Phase 4d). -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\MCPConnectionPool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServer.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPToolRegistry.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Transport\StdioTransport.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Transport\HttpTransport.h" />
+    <!-- MCP Phase 5 — tools (subset: list_connections, list_tables,
+         describe_table, query). Tier 3 write tools land in a follow-up. -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPToolHelpers.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPBuiltinTools.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListConnectionsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListTablesTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\DescribeTableTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListSchemasTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListRelationshipsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\GetSampleRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\QueryTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\ExplainQueryTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\SearchAcrossTablesTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\InsertRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\UpdateRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\DeleteRowsTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\ExecuteWriteQueryTool.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServerHost.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\TrayIconService.h" />
+    <!-- Connection importers — TablePlus / DBeaver / DataGrip / Navicat. -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\Import\ImportedConnection.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\DBeaverImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\DataGripImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\NavicatImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\TablePlusImporter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\DatabaseAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ConnectionManager.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\PostgreSQLAdapter.h" />
@@ -41,6 +92,10 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)UpdateService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)SettingsPage.h">
       <DependentUpon>SettingsPage.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClInclude>
+    <ClInclude Include="$(MSBuildThisFileDirectory)MCPPage.h">
+      <DependentUpon>MCPPage.xaml</DependentUpon>
       <SubType>Code</SubType>
     </ClInclude>
     <ClInclude Include="$(MSBuildThisFileDirectory)ConnectionCard.h">
@@ -148,6 +203,9 @@
       <SubType>Designer</SubType>
     </Page>
     <Page Include="$(MSBuildThisFileDirectory)SettingsPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="$(MSBuildThisFileDirectory)MCPPage.xaml">
       <SubType>Designer</SubType>
     </Page>
   </ItemGroup>
@@ -258,6 +316,109 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)DumpRestoreService.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPSQLSanitizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPIdentifierValidator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPPermissionEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPRateLimiter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPApprovalGate.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Security\MCPRowCountEstimator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Audit\MCPAuditLogger.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\MCPConnectionPool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPToolRegistry.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Transport\StdioTransport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Transport\HttpTransport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\MCPBuiltinTools.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListConnectionsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListTablesTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\DescribeTableTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListSchemasTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\ListRelationshipsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier1\GetSampleRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\QueryTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\ExplainQueryTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier2\SearchAcrossTablesTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\InsertRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\UpdateRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\DeleteRowsTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\ExecuteWriteQueryTool.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServerHost.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\TrayIconService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\DBeaverImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\DataGripImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\NavicatImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\TablePlusImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <!-- MCP Phase 6 UI — WinUI 3 Page with 5 tabs. -->
+    <ClCompile Include="$(MSBuildThisFileDirectory)MCPPage.cpp">
+      <DependentUpon>MCPPage.xaml</DependentUpon>
+    </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)ERDiagramService.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -331,6 +492,10 @@
     </Midl>
     <Midl Include="$(MSBuildThisFileDirectory)SettingsPage.idl">
       <DependentUpon>SettingsPage.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Midl>
+    <Midl Include="$(MSBuildThisFileDirectory)MCPPage.idl">
+      <DependentUpon>MCPPage.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
   </ItemGroup>

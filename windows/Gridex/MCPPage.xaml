@@ -1,0 +1,661 @@
+<Page
+    x:Class="Gridex.MCPPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:Gridex"
+    Background="Transparent">
+
+    <Grid RowSpacing="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Header: back button + title + server status pill + Start/Stop -->
+        <Grid Grid.Row="0" Padding="24,16,24,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <Button x:Name="BackBtn" Grid.Column="0"
+                    Background="Transparent" BorderThickness="0"
+                    Padding="8,4" VerticalAlignment="Center"
+                    ToolTipService.ToolTip="Back"
+                    Click="Back_Click">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                    <FontIcon Glyph="&#xE72B;" FontSize="14" />
+                    <TextBlock Text="Back" FontSize="13" />
+                </StackPanel>
+            </Button>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"
+                        VerticalAlignment="Center" Margin="16,0,0,0">
+                <!-- Status dot — gray (off) / green (running) / orange (pending). -->
+                <Ellipse x:Name="StatusDot" Width="10" Height="10"
+                         Fill="Gray" />
+                <StackPanel>
+                    <TextBlock Text="MCP Server" FontSize="18" FontWeight="SemiBold" />
+                    <TextBlock x:Name="StatusText"
+                               Text="Stopped"
+                               FontSize="12"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                </StackPanel>
+            </StackPanel>
+
+            <Button x:Name="StartStopBtn" Grid.Column="3"
+                    Padding="16,6"
+                    Content="Start Server"
+                    Click="StartStop_Click"
+                    Style="{StaticResource AccentButtonStyle}" />
+        </Grid>
+
+        <!-- Pivot = 5 tabs matching mac. Each tab body is its own
+             panel — Overview is wired fully, the rest show a
+             placeholder until the implementation catches up.
+             HorizontalAlignment=Center + MaxWidth keeps the
+             tab-strip centered on ultra-wide displays instead of
+             letting the 5 short tab labels cluster on the left. -->
+        <!-- Wrapper Grid with flexible side columns so the Pivot
+             stays centered on any window width. MinWidth on the
+             middle column guarantees the tabs + content get enough
+             room when the window is narrow. -->
+        <Grid Grid.Row="1" Margin="24,0,24,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" MinWidth="960" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+        <Pivot Grid.Column="1" x:Name="Tabs"
+               HorizontalAlignment="Stretch"
+               HorizontalContentAlignment="Stretch"
+               SelectionChanged="Tabs_SelectionChanged">
+            <Pivot.Resources>
+                <!-- Shrink + tighten the tab labels so they read
+                     more like the mac SegmentedControl (~14pt) and
+                     stop dominating the top of the page. -->
+                <Style TargetType="PivotHeaderItem">
+                    <Setter Property="FontSize" Value="14" />
+                    <Setter Property="FontWeight" Value="Normal" />
+                    <Setter Property="Padding" Value="14,6,14,6" />
+                    <Setter Property="MinHeight" Value="36" />
+                </Style>
+            </Pivot.Resources>
+            <PivotItem Header="Overview">
+                <ScrollViewer>
+                    <!-- HorizontalAlignment=Center so the content
+                         sits in the middle of the screen like the
+                         mac reference instead of stretching right. -->
+                    <StackPanel Spacing="20" MaxWidth="900" HorizontalAlignment="Center">
+
+                        <!-- Running card -->
+                        <Border Padding="16"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                CornerRadius="8"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <StackPanel Orientation="Horizontal" Spacing="12">
+                                <FontIcon x:Name="RunningIcon" Glyph="&#xE711;"
+                                          FontSize="22"
+                                          Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <StackPanel>
+                                    <TextBlock x:Name="RunningTitle"
+                                               Text="MCP Server is stopped"
+                                               FontSize="14" FontWeight="SemiBold" />
+                                    <TextBlock x:Name="RunningSubtitle"
+                                               Text="Enable below to let AI clients connect."
+                                               FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Access summary (per-mode connection counts). -->
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Access" FontSize="14" FontWeight="SemiBold" />
+                            <Border Padding="16" CornerRadius="8"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1">
+                                <StackPanel Spacing="10">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Locked" Grid.Column="0" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                            <Ellipse Width="8" Height="8" Fill="Red" />
+                                            <TextBlock x:Name="LockedCount" Text="0" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Read-only" Grid.Column="0" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                            <Ellipse Width="8" Height="8" Fill="DodgerBlue" />
+                                            <TextBlock x:Name="ReadOnlyCount" Text="0" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Read-write" Grid.Column="0" />
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+                                            <Ellipse Width="8" Height="8" Fill="SeaGreen" />
+                                            <TextBlock x:Name="ReadWriteCount" Text="0" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <Button x:Name="ManageConnectionsBtn"
+                                            HorizontalAlignment="Left"
+                                            Margin="0,4,0,0"
+                                            Padding="12,4"
+                                            Click="ManageConnections_Click">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <FontIcon Glyph="&#xE762;" FontSize="12" />
+                                            <TextBlock Text="Manage Connections..." FontSize="12" />
+                                        </StackPanel>
+                                    </Button>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Transport -->
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Transport" FontSize="14" FontWeight="SemiBold" />
+                            <Border Padding="16" CornerRadius="8"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1">
+                                <StackPanel Spacing="10">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="stdio" Grid.Column="0" />
+                                        <TextBlock Text="Local clients ✓"
+                                                   Grid.Column="1"
+                                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </Grid>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="HTTP" Grid.Column="0" />
+                                        <ToggleSwitch x:Name="HttpToggle"
+                                                      Grid.Column="1"
+                                                      Toggled="HttpToggle_Toggled"
+                                                      OffContent="" OnContent="" />
+                                    </Grid>
+                                    <Grid x:Name="HttpPortRow" Visibility="Collapsed">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="Port" Grid.Column="0" />
+                                        <NumberBox x:Name="HttpPortBox"
+                                                   Grid.Column="1"
+                                                   Minimum="1024" Maximum="65535"
+                                                   Value="3333" Width="120"
+                                                   ValueChanged="HttpPortBox_ValueChanged" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Tool inventory -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Tools registered"
+                                       FontSize="12"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <TextBlock x:Name="ToolsCountText"
+                                       Text="0 tools"
+                                       FontSize="13" />
+                        </StackPanel>
+
+                        <!-- Recent Activity — last 5 audit entries.
+                             Populated by RefreshUI from
+                             MCPAuditLogger::recentEntries(5). -->
+                        <StackPanel Spacing="8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Recent Activity"
+                                           FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock x:Name="RecentActivityCount"
+                                           Grid.Column="1"
+                                           FontSize="11"
+                                           VerticalAlignment="Bottom"
+                                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            </Grid>
+                            <Border Padding="12" CornerRadius="8"
+                                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1">
+                                <StackPanel x:Name="RecentActivityPanel" Spacing="6">
+                                    <TextBlock Text="No activity yet"
+                                               FontSize="12"
+                                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </PivotItem>
+
+            <PivotItem Header="Connections">
+                <Grid RowSpacing="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Filter bar: search + mode filter + count -->
+                    <Grid Grid.Row="0" Padding="4,6,4,10" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="300" />
+                            <ColumnDefinition Width="160" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <AutoSuggestBox x:Name="ConnSearchBox"
+                                        Grid.Column="0"
+                                        PlaceholderText="Search connections"
+                                        QueryIcon="Find"
+                                        TextChanged="ConnFilter_Changed" />
+                        <ComboBox x:Name="ConnFilterCombo" Grid.Column="1"
+                                  SelectedIndex="0"
+                                  SelectionChanged="ConnFilterCombo_SelectionChanged">
+                            <ComboBoxItem Content="All Access" />
+                            <ComboBoxItem Content="Locked" />
+                            <ComboBoxItem Content="Read-only" />
+                            <ComboBoxItem Content="Read-write" />
+                        </ComboBox>
+                        <TextBlock x:Name="ConnCountText" Grid.Column="3"
+                                   VerticalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </Grid>
+
+                    <!-- Column headers -->
+                    <Border Grid.Row="1"
+                            Padding="12,8"
+                            Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                            CornerRadius="6,6,0,0"
+                            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1,1,1,0">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="20" />
+                                <ColumnDefinition Width="*" MinWidth="140" />
+                                <ColumnDefinition Width="90" />
+                                <ColumnDefinition Width="180" />
+                                <ColumnDefinition Width="140" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="1" Text="Name"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="2" Text="Type"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="3" Text="Host"
+                                       FontSize="12" FontWeight="SemiBold" />
+                            <TextBlock Grid.Column="4" Text="Access"
+                                       FontSize="12" FontWeight="SemiBold" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Rows container — populated in MCPPage.cpp.
+                         Not using DataTemplate + IInspectable binding
+                         because the codebase already uses
+                         programmatic row assembly (HomePage does the
+                         same for ConnectionCard). -->
+                    <ScrollViewer Grid.Row="2"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  BorderThickness="1,0,1,1"
+                                  CornerRadius="0,0,6,6">
+                        <StackPanel x:Name="ConnRowsPanel" Spacing="0" />
+                    </ScrollViewer>
+
+                    <!-- Empty state -->
+                    <StackPanel x:Name="ConnEmptyState" Grid.Row="2"
+                                VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Spacing="8"
+                                Visibility="Collapsed">
+                        <FontIcon Glyph="&#xE968;" FontSize="36"
+                                  Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        <TextBlock Text="No connections match"
+                                   HorizontalAlignment="Center" FontSize="14" />
+                        <TextBlock Text="Try a different search or filter."
+                                   HorizontalAlignment="Center" FontSize="12"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </PivotItem>
+
+            <PivotItem Header="Activity">
+                <!-- Outer grid: filter bar + detail split + footer.
+                     The split row (*) contains a 2-column grid — the
+                     audit table on the left and the selected-entry
+                     detail pane on the right, same layout mac's
+                     HSplitView uses. -->
+                <Grid RowSpacing="0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Filter bar -->
+                    <Grid Grid.Row="0" Padding="4,6,4,10" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MaxWidth="280" />
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <AutoSuggestBox x:Name="ActSearchBox" Grid.Column="0"
+                                        PlaceholderText="Search tool, SQL, or client"
+                                        QueryIcon="Find"
+                                        TextChanged="ActFilter_Changed" />
+                        <ComboBox x:Name="ActStatusCombo" Grid.Column="1"
+                                  SelectedIndex="0"
+                                  SelectionChanged="ActStatusCombo_SelectionChanged">
+                            <ComboBoxItem Content="All Status" />
+                            <ComboBoxItem Content="Success" />
+                            <ComboBoxItem Content="Error" />
+                            <ComboBoxItem Content="Denied" />
+                        </ComboBox>
+                        <Button Grid.Column="3"
+                                Click="ActRefresh_Click"
+                                ToolTipService.ToolTip="Refresh">
+                            <FontIcon Glyph="&#xE72C;" FontSize="12" />
+                        </Button>
+                    </Grid>
+
+                    <!-- Table + detail split -->
+                    <Grid Grid.Row="1" ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="440" />
+                            <ColumnDefinition Width="360" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left: audit table -->
+                        <Grid Grid.Column="0" RowSpacing="0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Border Grid.Row="0" Padding="12,8"
+                                    Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                    CornerRadius="6,6,0,0"
+                                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                    BorderThickness="1,1,1,0">
+                                <Grid ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="90" />
+                                        <ColumnDefinition Width="*" MinWidth="160" />
+                                        <ColumnDefinition Width="120" />
+                                        <ColumnDefinition Width="80" />
+                                        <ColumnDefinition Width="70" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Time"     FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="1" Text="Tool"     FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="2" Text="Client"   FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="3" Text="Status"   FontSize="12" FontWeight="SemiBold" />
+                                    <TextBlock Grid.Column="4" Text="Duration" FontSize="12" FontWeight="SemiBold" />
+                                </Grid>
+                            </Border>
+
+                            <ScrollViewer Grid.Row="1"
+                                          BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                          BorderThickness="1,0,1,1"
+                                          CornerRadius="0,0,6,6">
+                                <StackPanel x:Name="ActRowsPanel" Spacing="0" />
+                            </ScrollViewer>
+
+                            <StackPanel x:Name="ActEmptyState" Grid.Row="1"
+                                        VerticalAlignment="Center" HorizontalAlignment="Center"
+                                        Spacing="8"
+                                        Visibility="Collapsed">
+                                <FontIcon Glyph="&#xE9D9;" FontSize="36"
+                                          Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                                <TextBlock Text="No activity yet"
+                                           HorizontalAlignment="Center" FontSize="14" />
+                                <TextBlock Text="MCP tool invocations will appear here once a client connects."
+                                           HorizontalAlignment="Center" FontSize="12"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           TextWrapping="Wrap" MaxWidth="380" TextAlignment="Center" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Right: detail pane (populated on row click) -->
+                        <Border Grid.Column="1"
+                                Padding="16"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                CornerRadius="6"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1">
+                            <ScrollViewer>
+                                <StackPanel x:Name="ActDetailPanel" Spacing="12">
+                                    <TextBlock x:Name="ActDetailPlaceholder"
+                                               Text="Click a row on the left to see the full audit entry (SQL preview, client info, error message, etc.)."
+                                               FontSize="12"
+                                               TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                    <TextBlock Grid.Row="2" x:Name="ActPathText"
+                               FontSize="11"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               IsTextSelectionEnabled="True"
+                               Margin="4,8,0,0" />
+                </Grid>
+            </PivotItem>
+
+            <PivotItem Header="Setup">
+                <ScrollViewer>
+                    <StackPanel Spacing="16" MaxWidth="900" HorizontalAlignment="Center">
+                        <!-- Info banner — matches mac "This is a config file..." -->
+                        <Border Padding="12,10" CornerRadius="6"
+                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <FontIcon Glyph="&#xE946;" FontSize="14"
+                                          Foreground="DodgerBlue" />
+                                <StackPanel>
+                                    <TextBlock Text="This is a config file, not a terminal command"
+                                               FontSize="13" FontWeight="SemiBold" />
+                                    <TextBlock FontSize="11"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               TextWrapping="Wrap"
+                                               Text="Use 'Install' below to add Gridex to Claude Desktop automatically, or copy and paste into the config file manually." />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- AI-client picker. Changing this
+                             regenerates the config preview + the
+                             path label + routes Install / Copy to
+                             the right file. -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="AI Client" FontSize="13" FontWeight="SemiBold" />
+                            <ComboBox x:Name="ClientPicker" SelectedIndex="0" Width="260"
+                                      SelectionChanged="ClientPicker_SelectionChanged">
+                                <ComboBoxItem Content="Claude Desktop" />
+                                <ComboBoxItem Content="Claude Code (CLI / CCD)" />
+                                <ComboBoxItem Content="Cursor" />
+                                <ComboBoxItem Content="Windsurf" />
+                                <ComboBoxItem Content="Gemini CLI" />
+                            </ComboBox>
+                        </StackPanel>
+
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="Config file" FontSize="13" FontWeight="SemiBold" />
+                            <TextBlock x:Name="SetupPathText"
+                                       FontSize="12"
+                                       IsTextSelectionEnabled="True"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+
+                        <!-- Quick Install row — big accent button +
+                             Copy side-by-side, matching the mac. -->
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="Quick Install" FontSize="13" FontWeight="SemiBold" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="InstallClaudeBtn"
+                                        Click="InstallClaude_Click"
+                                        Style="{StaticResource AccentButtonStyle}"
+                                        MinWidth="280" Padding="16,8">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xEA86;" FontSize="14" />
+                                        <TextBlock x:Name="InstallBtnText"
+                                                   Text="Install for Claude Desktop" />
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="CopyConfigBtn"
+                                        Click="CopyConfig_Click"
+                                        Padding="16,8">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8C8;" FontSize="14" />
+                                        <TextBlock Text="Copy" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                            <TextBlock x:Name="InstallStatusText"
+                                       FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                        </StackPanel>
+
+                        <TextBlock Text="Configuration Preview"
+                                   FontSize="13" FontWeight="SemiBold"
+                                   Margin="0,8,0,0" />
+                        <Border Padding="12" CornerRadius="6"
+                                Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}">
+                            <TextBox x:Name="SetupConfigBox"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     FontFamily="Consolas"
+                                     FontSize="12"
+                                     TextWrapping="NoWrap"
+                                     MinHeight="160" />
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </PivotItem>
+
+            <PivotItem Header="Config">
+                <ScrollViewer>
+                    <StackPanel Spacing="16" MaxWidth="900" HorizontalAlignment="Center">
+                        <TextBlock Text="Rate Limits" FontSize="14" FontWeight="SemiBold" />
+                        <Grid ColumnSpacing="16" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="180" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="Queries per minute" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="QpmBox" Grid.Row="0" Grid.Column="1"
+                                       Minimum="10" Maximum="500" Value="60" />
+                            <TextBlock Text="Queries per hour" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="QphBox" Grid.Row="1" Grid.Column="1"
+                                       Minimum="100" Maximum="10000" Value="1000" />
+                            <TextBlock Text="Writes per minute" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="WpmBox" Grid.Row="2" Grid.Column="1"
+                                       Minimum="1" Maximum="100" Value="10" />
+                            <TextBlock Text="DDL per minute" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="DdlBox" Grid.Row="3" Grid.Column="1"
+                                       Minimum="1" Maximum="20" Value="1" />
+                        </Grid>
+
+                        <TextBlock Text="Timeouts" FontSize="14" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <Grid ColumnSpacing="16" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="180" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Query timeout (sec)" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="QueryTimeoutBox" Grid.Row="0" Grid.Column="1"
+                                       Minimum="5" Maximum="600" Value="30" />
+                            <TextBlock Text="Approval timeout (sec)" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="ApprovalTimeoutBox" Grid.Row="1" Grid.Column="1"
+                                       Minimum="10" Maximum="300" Value="60" />
+                            <TextBlock Text="Connection timeout (sec)" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="ConnectionTimeoutBox" Grid.Row="2" Grid.Column="1"
+                                       Minimum="5" Maximum="60" Value="10" />
+                        </Grid>
+
+                        <TextBlock Text="Security" FontSize="14" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <StackPanel Spacing="8">
+                            <ToggleSwitch x:Name="RequireApprovalToggle"
+                                          Header="Require approval for write operations"
+                                          IsOn="True" />
+                            <ToggleSwitch x:Name="AllowRemoteHttpToggle"
+                                          Header="Allow remote HTTP connections"
+                                          IsOn="False" />
+                            <TextBlock Text="⚠ Remote HTTP exposes the MCP server on your LAN. Only enable on trusted networks."
+                                       FontSize="11"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                                       TextWrapping="Wrap" />
+                        </StackPanel>
+
+                        <TextBlock Text="Audit Log" FontSize="14" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <Grid ColumnSpacing="16" RowSpacing="8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="180" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Retention (days)" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="RetentionBox" Grid.Row="0" Grid.Column="1"
+                                       Minimum="0" Maximum="3650" Value="90" />
+                            <TextBlock Text="Max log size (MB)" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" />
+                            <NumberBox x:Name="MaxSizeBox" Grid.Row="1" Grid.Column="1"
+                                       Minimum="10" Maximum="1000" Value="100" />
+                        </Grid>
+
+                        <Button x:Name="SaveConfigBtn"
+                                Content="Save Config"
+                                Style="{StaticResource AccentButtonStyle}"
+                                HorizontalAlignment="Left"
+                                Margin="0,8,0,0"
+                                Click="SaveConfig_Click" />
+                        <TextBlock x:Name="SaveConfigStatusText"
+                                   FontSize="11"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </PivotItem>
+        </Pivot>
+        </Grid>
+    </Grid>
+</Page>

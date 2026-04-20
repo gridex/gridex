@@ -326,6 +326,41 @@ namespace DBModels
         s.rowLimit           = extractInt(json, L"rowLimit", 100);
         s.lastPageBeforeSettings = extractString(json, L"lastPageBeforeSettings");
         s.connectionGroups   = extractStringArray(json, L"connectionGroups");
+
+        // MCP — all fields optional for forward compat with 0.1.3 settings.
+        s.mcpEnabled                  = extractBool(json, L"mcpEnabled", false);
+        s.mcpHttpEnabled              = extractBool(json, L"mcpHttpEnabled", false);
+        s.mcpHttpPort                 = extractInt(json,  L"mcpHttpPort", 3333);
+        s.mcpAllowRemoteHTTP          = extractBool(json, L"mcpAllowRemoteHTTP", false);
+        s.mcpRequireApprovalForWrites = extractBool(json, L"mcpRequireApprovalForWrites", true);
+        s.mcpQueriesPerMinute         = extractInt(json,  L"mcpQueriesPerMinute", 60);
+        s.mcpQueriesPerHour           = extractInt(json,  L"mcpQueriesPerHour", 1000);
+        s.mcpWritesPerMinute          = extractInt(json,  L"mcpWritesPerMinute", 10);
+        s.mcpDdlPerMinute             = extractInt(json,  L"mcpDdlPerMinute", 1);
+        s.mcpQueryTimeout             = extractInt(json,  L"mcpQueryTimeout", 30);
+        s.mcpApprovalTimeout          = extractInt(json,  L"mcpApprovalTimeout", 60);
+        s.mcpConnectionTimeout        = extractInt(json,  L"mcpConnectionTimeout", 10);
+        s.mcpAuditRetentionDays       = extractInt(json,  L"mcpAuditRetentionDays", 90);
+        s.mcpAuditMaxSizeMB           = extractInt(json,  L"mcpAuditMaxSizeMB", 100);
+        // 64-bit unix seconds: extractInt returns 32-bit; for mcpStartTime
+        // we bounce through wide-stoll to cover dates past 2038.
+        {
+            std::wstring needle = L"\"mcpStartTime\":";
+            size_t pos = json.find(needle);
+            if (pos != std::wstring::npos)
+            {
+                pos += needle.size();
+                while (pos < json.size() && (json[pos] == L' ' || json[pos] == L'\t')) pos++;
+                std::wstring num;
+                if (pos < json.size() && (json[pos] == L'-' || iswdigit(json[pos])))
+                {
+                    num += json[pos++];
+                    while (pos < json.size() && iswdigit(json[pos])) num += json[pos++];
+                }
+                if (!num.empty()) { try { s.mcpStartTime = std::stoll(num); } catch (...) {} }
+            }
+        }
+
         return s;
     }
 
@@ -352,7 +387,26 @@ namespace DBModels
             if (i > 0) ss << L", ";
             ss << L"\"" << escapeJson(connectionGroups[i]) << L"\"";
         }
-        ss << L"]\n";
+        ss << L"],\n";
+
+        // MCP block. Booleans written as literal true/false; ints
+        // as plain numbers. Group at the end to minimize diff churn
+        // if we add more prefs later.
+        ss << L"  \"mcpEnabled\": "                  << (mcpEnabled ? L"true" : L"false")                  << L",\n";
+        ss << L"  \"mcpHttpEnabled\": "              << (mcpHttpEnabled ? L"true" : L"false")              << L",\n";
+        ss << L"  \"mcpHttpPort\": "                 << mcpHttpPort                                         << L",\n";
+        ss << L"  \"mcpAllowRemoteHTTP\": "          << (mcpAllowRemoteHTTP ? L"true" : L"false")          << L",\n";
+        ss << L"  \"mcpRequireApprovalForWrites\": " << (mcpRequireApprovalForWrites ? L"true" : L"false") << L",\n";
+        ss << L"  \"mcpQueriesPerMinute\": "         << mcpQueriesPerMinute                                 << L",\n";
+        ss << L"  \"mcpQueriesPerHour\": "           << mcpQueriesPerHour                                   << L",\n";
+        ss << L"  \"mcpWritesPerMinute\": "          << mcpWritesPerMinute                                  << L",\n";
+        ss << L"  \"mcpDdlPerMinute\": "             << mcpDdlPerMinute                                     << L",\n";
+        ss << L"  \"mcpQueryTimeout\": "             << mcpQueryTimeout                                     << L",\n";
+        ss << L"  \"mcpApprovalTimeout\": "          << mcpApprovalTimeout                                  << L",\n";
+        ss << L"  \"mcpConnectionTimeout\": "        << mcpConnectionTimeout                                << L",\n";
+        ss << L"  \"mcpAuditRetentionDays\": "       << mcpAuditRetentionDays                               << L",\n";
+        ss << L"  \"mcpAuditMaxSizeMB\": "           << mcpAuditMaxSizeMB                                   << L",\n";
+        ss << L"  \"mcpStartTime\": "                << mcpStartTime                                        << L"\n";
         ss << L"}\n";
 
         std::string utf8 = toUtf8(ss.str());

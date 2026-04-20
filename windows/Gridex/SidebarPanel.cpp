@@ -446,13 +446,21 @@ namespace winrt::Gridex::implementation
                 { if (OnImportTable) OnImportTable(exportName, exportSchema); });
                 contextMenu.Items().Append(importItem);
 
-                // Delete Table — destructive. Only offered for real tables
-                // (not views) since DROP VIEW needs a different code path.
-                // Host shows a confirmation dialog before actually running
-                // DROP TABLE.
+                // Truncate + Delete — destructive. Only offered for
+                // real tables (not views) since views can't be truncated
+                // and DROP VIEW needs a different code path. Host shows
+                // a confirmation dialog before running the statement.
                 if (item.type == DBModels::SidebarItemType::Table)
                 {
                     contextMenu.Items().Append(muxc::MenuFlyoutSeparator());
+
+                    muxc::MenuFlyoutItem truncateItem;
+                    truncateItem.Text(L"Truncate Table...");
+                    truncateItem.Icon(muxc::FontIcon());
+                    truncateItem.Icon().as<muxc::FontIcon>().Glyph(L"\xE74D"); // eraser-ish; trash is close enough
+                    truncateItem.Click([this, exportName, exportSchema](auto&&, auto&&)
+                    { if (OnTruncateTable) OnTruncateTable(exportName, exportSchema); });
+                    contextMenu.Items().Append(truncateItem);
 
                     muxc::MenuFlyoutItem deleteItem;
                     deleteItem.Text(L"Delete Table...");

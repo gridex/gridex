@@ -26,6 +26,36 @@ namespace DBModels
         // Connection groups (user-defined labels)
         std::vector<std::wstring> connectionGroups;
 
+        // ── MCP Server ───────────────────────────────────────
+        // All MCP prefs live in the same settings.json as the rest
+        // of the app (no separate file). Defaults mirror macOS so
+        // first-launch behavior is identical across platforms.
+
+        // Transport / server lifecycle
+        bool mcpEnabled = false;
+        bool mcpHttpEnabled = false;
+        int  mcpHttpPort = 3333;                 // localhost by default
+        bool mcpAllowRemoteHTTP = false;         // flips bind to 0.0.0.0
+        int64_t mcpStartTime = 0;                // unix seconds; uptime tracking
+
+        // Security
+        bool mcpRequireApprovalForWrites = true;
+
+        // Rate limits (mac defaults)
+        int mcpQueriesPerMinute = 60;
+        int mcpQueriesPerHour   = 1000;
+        int mcpWritesPerMinute  = 10;
+        int mcpDdlPerMinute     = 1;
+
+        // Timeouts (seconds)
+        int mcpQueryTimeout      = 30;
+        int mcpApprovalTimeout   = 60;
+        int mcpConnectionTimeout = 10;
+
+        // Audit log rotation (JSONL at %APPDATA%\Gridex\mcp-audit.jsonl)
+        int mcpAuditRetentionDays = 90;
+        int mcpAuditMaxSizeMB     = 100;
+
         // Load from file (returns default if file missing)
         static AppSettings Load();
 

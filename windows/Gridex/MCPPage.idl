@@ -1,0 +1,8 @@
+namespace Gridex
+{
+    [default_interface]
+    runtimeclass MCPPage : Microsoft.UI.Xaml.Controls.Page
+    {
+        MCPPage();
+    }
+}

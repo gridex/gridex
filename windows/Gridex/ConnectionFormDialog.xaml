@@ -22,6 +22,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <!-- Row 0: Name + Group -->
@@ -321,6 +322,36 @@
                         </Grid>
                     </Grid>
                 </StackPanel>
+
+                <!-- Row 10: MCP access mode (per-connection). Decides
+                     whether the AI (via MCP server) can see / query /
+                     modify this connection. Default Locked, user must
+                     opt in explicitly. -->
+                <TextBlock Grid.Row="10" Grid.Column="0"
+                           Text="MCP access"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right"
+                           Margin="0,0,16,0"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Grid Grid.Row="10" Grid.Column="1" Margin="0,0,0,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <ComboBox x:Name="McpModeInput" Grid.Column="0"
+                              MinWidth="160" SelectedIndex="0">
+                        <ComboBoxItem Content="Locked (AI hidden)" />
+                        <ComboBoxItem Content="Read-only (AI can query)" />
+                        <ComboBoxItem Content="Read-write (AI can modify w/ approval)" />
+                    </ComboBox>
+                    <TextBlock Grid.Column="1"
+                               Margin="12,0,0,0"
+                               VerticalAlignment="Center"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                               Text="You can change this later in MCP Server → Connections." />
+                </Grid>
             </Grid>
         </ScrollViewer>
 

@@ -28,6 +28,9 @@ namespace winrt::Gridex::implementation
         // Callbacks for add/delete table buttons
         std::function<void()> OnAddTable;
         std::function<void(const std::wstring& tableName, const std::wstring& schema)> OnDeleteTable;
+        // Truncate — same signature as OnDeleteTable. Host confirms
+        // + emits TRUNCATE TABLE (or DELETE FROM on SQLite).
+        std::function<void(const std::wstring& tableName, const std::wstring& schema)> OnTruncateTable;
 
         // Callback for export table (tableName, schema, format: "csv"/"json"/"sql")
         std::function<void(const std::wstring& tableName, const std::wstring& schema,
