@@ -65,6 +65,12 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\Tools\Tier3\ExecuteWriteQueryTool.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\MCP\MCPServerHost.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Services\TrayIconService.h" />
+    <!-- Connection importers — TablePlus / DBeaver / DataGrip / Navicat. -->
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\Import\ImportedConnection.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\DBeaverImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\DataGripImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\NavicatImporter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\Import\TablePlusImporter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\DatabaseAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ConnectionManager.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\PostgreSQLAdapter.h" />
@@ -395,6 +401,18 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)Services\TrayIconService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\DBeaverImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\DataGripImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\NavicatImporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\Import\TablePlusImporter.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <!-- MCP Phase 6 UI — WinUI 3 Page with 5 tabs. -->

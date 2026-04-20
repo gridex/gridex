@@ -23,6 +23,13 @@ namespace winrt::Gridex::implementation
         void OpenMcp_Click(
             winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
+
+        // Opens the import wizard for TablePlus / DBeaver /
+        // DataGrip / Navicat connections. See ImportConnections.cpp
+        // for the dialog build-up; too much UI code to keep inline.
+        winrt::fire_and_forget ImportConnections_Click(
+            winrt::Windows::Foundation::IInspectable const& sender,
+            winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
         void ConnectionItem_Click(
             winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::Controls::ItemClickEventArgs const& e);

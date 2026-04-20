@@ -17,6 +17,12 @@
 #include "App.xaml.h"
 #include "Models/ConnectionStore.h"
 #include "Models/ConnectionManager.h"
+#include "Services/Import/DBeaverImporter.h"
+#include "Services/Import/DataGripImporter.h"
+#include "Services/Import/NavicatImporter.h"
+#include "Services/Import/TablePlusImporter.h"
+#include <winrt/Microsoft.Windows.Storage.Pickers.h>
+#include <random>
 
 namespace winrt::Gridex::implementation
 {
@@ -555,5 +561,239 @@ namespace winrt::Gridex::implementation
         muxc::AutoSuggestBox const& sender, muxc::AutoSuggestBoxTextChangedEventArgs const&)
     {
         RefreshList(std::wstring(sender.Text()));
+    }
+
+    // ── Import Connections wizard ──────────────────────────────
+    // Builds a ContentDialog with a source switcher + list of
+    // ImportedConnections with per-row CheckBoxes. Import button
+    // writes selected rows into ConnectionStore and refreshes the
+    // sidebar list. Navicat branches through an .ncx file picker.
+
+    namespace
+    {
+        std::wstring newConnectionId()
+        {
+            std::random_device rd;
+            std::mt19937_64 gen(rd());
+            std::uniform_int_distribution<uint64_t> dist;
+            wchar_t buf[32];
+            swprintf_s(buf, 32, L"%016llx%016llx",
+                (unsigned long long)dist(gen), (unsigned long long)dist(gen));
+            return buf;
+        }
+
+        // Shared builder for a single importer-result row. The
+        // CheckBox instance is stored in `row.first` so the Import
+        // button can poll IsChecked when the user clicks confirm.
+        std::pair<muxc::CheckBox, winrt::Microsoft::UI::Xaml::Controls::Border>
+        buildImportedRow(const DBModels::ImportedConnection& c)
+        {
+            using namespace winrt::Microsoft::UI::Xaml;
+            using namespace winrt::Microsoft::UI::Xaml::Controls;
+
+            muxc::Grid row;
+            row.Padding(Thickness{ 8, 6, 8, 6 });
+            row.ColumnSpacing(10);
+
+            ColumnDefinition c0, c1, c2;
+            c0.Width(GridLengthHelper::FromPixels(36));
+            c1.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star));
+            c2.Width(GridLengthHelper::FromPixels(90));
+            row.ColumnDefinitions().Append(c0);
+            row.ColumnDefinitions().Append(c1);
+            row.ColumnDefinitions().Append(c2);
+
+            muxc::CheckBox chk; chk.IsChecked(true);
+            muxc::Grid::SetColumn(chk, 0); row.Children().Append(chk);
+
+            muxc::StackPanel sp; sp.Spacing(2);
+            muxc::TextBlock name; name.Text(winrt::hstring(c.name));
+            name.FontSize(13); name.FontWeight(Windows::UI::Text::FontWeights::SemiBold());
+            sp.Children().Append(name);
+            std::wstring sub = !c.host.empty()
+                ? c.host + (c.port.has_value() ? L":" + std::to_wstring(*c.port) : L"")
+                : c.filePath;
+            if (!c.database.empty()) sub += L" / " + c.database;
+            if (sub.empty()) sub = L"(no host)";
+            muxc::TextBlock subt; subt.Text(winrt::hstring(sub));
+            subt.FontSize(11);
+            subt.Foreground(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(
+                winrt::Windows::UI::ColorHelper::FromArgb(255, 150, 150, 150)));
+            sp.Children().Append(subt);
+            muxc::Grid::SetColumn(sp, 1); row.Children().Append(sp);
+
+            muxc::TextBlock type; type.Text(winrt::hstring(
+                DBModels::DatabaseTypeDisplayName(c.databaseType)));
+            type.FontSize(11); type.VerticalAlignment(VerticalAlignment::Center);
+            type.Foreground(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(
+                winrt::Windows::UI::ColorHelper::FromArgb(255, 150, 150, 150)));
+            muxc::Grid::SetColumn(type, 2); row.Children().Append(type);
+
+            muxc::Border wrap;
+            wrap.Child(row);
+            wrap.BorderBrush(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(
+                winrt::Windows::UI::ColorHelper::FromArgb(30, 128, 128, 128)));
+            wrap.BorderThickness(Thickness{ 0, 0, 0, 1 });
+            return { chk, wrap };
+        }
+    }
+
+    winrt::fire_and_forget HomePage::ImportConnections_Click(
+        winrt::Windows::Foundation::IInspectable const&,
+        mux::RoutedEventArgs const&)
+    {
+        auto self = get_strong();
+
+        // Dialog chrome + source-picker ComboBox + rows container.
+        muxc::ContentDialog dlg;
+        dlg.Title(winrt::box_value(winrt::hstring(L"Import Connections")));
+        dlg.PrimaryButtonText(L"Import Selected");
+        dlg.CloseButtonText(L"Cancel");
+        dlg.DefaultButton(muxc::ContentDialogButton::Primary);
+        dlg.XamlRoot(this->XamlRoot());
+        dlg.Resources().Insert(winrt::box_value(L"ContentDialogMaxWidth"), winrt::box_value(720.0));
+
+        muxc::StackPanel content; content.Spacing(10); content.MinWidth(520);
+
+        muxc::TextBlock intro;
+        intro.Text(L"Pick a source, review detected connections, then Import.");
+        intro.FontSize(12);
+        intro.Foreground(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(
+            winrt::Windows::UI::ColorHelper::FromArgb(255, 150, 150, 150)));
+        content.Children().Append(intro);
+
+        muxc::ComboBox sourceCombo; sourceCombo.MinWidth(240);
+        auto addSource = [&](const wchar_t* label, bool installed)
+        {
+            muxc::ComboBoxItem item;
+            item.Content(winrt::box_value(winrt::hstring(
+                installed ? label : std::wstring(label) + L"  (not detected)")));
+            sourceCombo.Items().Append(item);
+        };
+        addSource(L"DBeaver",      DBModels::DBeaverImporter::isInstalled());
+        addSource(L"DataGrip",     DBModels::DataGripImporter::isInstalled());
+        addSource(L"Navicat (pick .ncx)", true);
+        addSource(L"TablePlus",    DBModels::TablePlusImporter::isInstalled());
+        sourceCombo.SelectedIndex(0);
+        content.Children().Append(sourceCombo);
+
+        muxc::TextBlock status; status.FontSize(11);
+        status.Foreground(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(
+            winrt::Windows::UI::ColorHelper::FromArgb(255, 180, 180, 180)));
+        content.Children().Append(status);
+
+        muxc::ScrollViewer sv;
+        sv.HorizontalScrollMode(muxc::ScrollMode::Disabled);
+        sv.VerticalScrollBarVisibility(muxc::ScrollBarVisibility::Auto);
+        sv.MaxHeight(360);
+        muxc::StackPanel rows; rows.Spacing(0);
+        sv.Content(rows);
+        content.Children().Append(sv);
+
+        dlg.Content(content);
+
+        // Holder for imported rows currently displayed (parallel
+        // with CheckBox widgets so we can zip on confirm).
+        auto imported = std::make_shared<std::vector<DBModels::ImportedConnection>>();
+        auto checks   = std::make_shared<std::vector<muxc::CheckBox>>();
+
+        auto loadSource = [self, imported, checks, &rows, &status, this](int idx) -> winrt::fire_and_forget
+        {
+            imported->clear();
+            checks->clear();
+            rows.Children().Clear();
+            status.Text(L"Scanning...");
+
+            try
+            {
+                if (idx == 0) *imported = DBModels::DBeaverImporter::importConnections();
+                else if (idx == 1) *imported = DBModels::DataGripImporter::importConnections();
+                else if (idx == 2)
+                {
+                    // Open file picker for .ncx file.
+                    using namespace winrt::Microsoft::Windows::Storage::Pickers;
+                    winrt::Microsoft::UI::WindowId windowId{
+                        reinterpret_cast<uint64_t>(
+                            winrt::Gridex::implementation::App::MainHwnd) };
+                    FileOpenPicker picker(windowId);
+                    picker.FileTypeFilter().Append(L".ncx");
+                    picker.FileTypeFilter().Append(L".xml");
+                    auto result = co_await picker.PickSingleFileAsync();
+                    if (result.Path().empty()) { status.Text(L"Cancelled."); co_return; }
+                    *imported = DBModels::NavicatImporter::importFromNCX(std::wstring(result.Path()));
+                }
+                else if (idx == 3)
+                {
+                    *imported = DBModels::TablePlusImporter::importConnections();
+                    if (imported->empty())
+                    {
+                        status.Text(winrt::hstring(DBModels::TablePlusImporter::windowsSupportNote()));
+                        co_return;
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                std::string msg = e.what();
+                status.Text(winrt::hstring(L"Error: " +
+                    std::wstring(msg.begin(), msg.end())));
+                co_return;
+            }
+
+            if (imported->empty())
+            {
+                status.Text(L"No connections detected.");
+                co_return;
+            }
+            status.Text(winrt::hstring(
+                std::to_wstring(imported->size()) + L" connection(s) detected. Untick any you want to skip."));
+            for (const auto& c : *imported)
+            {
+                auto [chk, wrap] = buildImportedRow(c);
+                checks->push_back(chk);
+                rows.Children().Append(wrap);
+            }
+        };
+
+        sourceCombo.SelectionChanged(
+            [loadSource](auto&& s, auto&&) mutable
+            {
+                if (auto cb = s.try_as<muxc::ComboBox>())
+                    loadSource(cb.SelectedIndex());
+            });
+        loadSource(0);
+
+        // Show dialog + on Import merge into ConnectionStore.
+        auto op = dlg.ShowAsync();
+        auto result = co_await op;
+        if (result != muxc::ContentDialogResult::Primary) co_return;
+
+        int added = 0;
+        for (size_t i = 0; i < imported->size() && i < checks->size(); ++i)
+        {
+            auto chkBox = (*checks)[i];
+            auto ib = chkBox.IsChecked();
+            if (!ib || !ib.Value()) continue;
+
+            auto cfg = (*imported)[i].toConnectionConfig();
+            if (cfg.id.empty()) cfg.id = newConnectionId();
+            DBModels::ConnectionStore::Save(cfg);
+            ++added;
+        }
+
+        RefreshList();
+
+        // Brief result toast via another mini-dialog (mac uses
+        // NSAlert; ContentDialog is closest native match).
+        muxc::ContentDialog done;
+        done.Title(winrt::box_value(winrt::hstring(L"Import Complete")));
+        done.Content(winrt::box_value(winrt::hstring(
+            L"Imported " + std::to_wstring(added) + L" connection(s). Passwords "
+            L"may need to be re-entered for some sources (DataGrip, Navicat) "
+            L"because the original tools keep them in their own credential "
+            L"store.")));
+        done.CloseButtonText(L"OK");
+        done.XamlRoot(this->XamlRoot());
+        done.ShowAsync();
     }
 }
