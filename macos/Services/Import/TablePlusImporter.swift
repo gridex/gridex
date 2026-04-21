@@ -188,6 +188,7 @@ struct TablePlusImporter {
         if lower.contains("redis") { return .redis }
         if lower.contains("mongo") { return .mongodb }
         if lower.contains("mssql") || lower.contains("sqlserver") { return .mssql }
+        if lower.contains("clickhouse") { return .clickhouse }
         return .postgresql
     }
 }

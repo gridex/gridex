@@ -51,6 +51,8 @@ struct ExplainQueryTool: MCPTool {
         case .mssql:
             // SQL Server uses SET SHOWPLAN_TEXT or estimated plan
             explainSQL = "SET SHOWPLAN_TEXT ON; \(sql); SET SHOWPLAN_TEXT OFF"
+        case .clickhouse:
+            explainSQL = "EXPLAIN \(sql)"
         case .mongodb, .redis:
             return MCPToolResult(text: "EXPLAIN is not supported for \(config.databaseType.displayName) connections.", isError: true)
         }

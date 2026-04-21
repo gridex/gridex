@@ -78,6 +78,7 @@ actor ConnectionManager {
         case .redis: return RedisAdapter()
         case .mongodb: return MongoDBAdapter()
         case .mssql: return MSSQLAdapter()
+        case .clickhouse: return ClickHouseAdapter()
         }
     }
 }

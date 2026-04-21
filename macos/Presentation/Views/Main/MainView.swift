@@ -842,6 +842,8 @@ struct DatabaseTypeIcon: View {
             return LinearGradient(colors: [Color(red: 0.30, green: 0.65, blue: 0.35), Color(red: 0.20, green: 0.50, blue: 0.25)], startPoint: .top, endPoint: .bottom)
         case .mssql:
             return LinearGradient(colors: [Color(red: 0.80, green: 0.20, blue: 0.40), Color(red: 0.65, green: 0.10, blue: 0.30)], startPoint: .top, endPoint: .bottom)
+        case .clickhouse:
+            return LinearGradient(colors: [Color(red: 1.00, green: 0.85, blue: 0.00), Color(red: 0.85, green: 0.65, blue: 0.00)], startPoint: .top, endPoint: .bottom)
         }
     }
 
@@ -853,6 +855,7 @@ struct DatabaseTypeIcon: View {
         case .redis: return "Rd"
         case .mongodb: return "Mg"
         case .mssql: return "MS"
+        case .clickhouse: return "CH"
         }
     }
 }
@@ -1678,7 +1681,7 @@ struct NewDatabaseSheet: View {
         switch adapter.databaseType {
         case .postgresql: return ["Default", "UTF8", "LATIN1", "SQL_ASCII"]
         case .mysql: return ["Default", "utf8mb4", "utf8", "latin1"]
-        case .sqlite, .redis, .mongodb, .mssql: return ["Default"]
+        case .sqlite, .redis, .mongodb, .mssql, .clickhouse: return ["Default"]
         }
     }
 
@@ -1687,7 +1690,7 @@ struct NewDatabaseSheet: View {
         switch adapter.databaseType {
         case .postgresql: return ["Default", "C", "POSIX", "en_US.UTF-8"]
         case .mysql: return ["Default", "utf8mb4_unicode_ci", "utf8mb4_general_ci", "utf8_general_ci"]
-        case .sqlite, .redis, .mongodb, .mssql: return ["Default"]
+        case .sqlite, .redis, .mongodb, .mssql, .clickhouse: return ["Default"]
         }
     }
 
@@ -1776,6 +1779,8 @@ struct NewDatabaseSheet: View {
             break // SQLite/Redis don't support CREATE DATABASE
         case .mssql:
             break // SQL Server: use plain CREATE DATABASE without options for MVP
+        case .clickhouse:
+            break // ClickHouse: use plain CREATE DATABASE (options go via SETTINGS)
         case .mongodb:
             // MongoDB: use the adapter's createDatabase method
             skipExecuteRaw = true

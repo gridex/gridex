@@ -205,6 +205,7 @@ private class NavicatNCXParser: NSObject, XMLParserDelegate {
         if lower.contains("redis") { return .redis }
         if lower.contains("mongo") { return .mongodb }
         if lower.contains("sqlserver") || lower.contains("mssql") { return .mssql }
+        if lower.contains("clickhouse") { return .clickhouse }
         if lower == "1" { return .mysql }
         if lower == "2" { return .postgresql }
         if lower == "3" { return .sqlite }

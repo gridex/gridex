@@ -631,6 +631,7 @@ struct BackupRestoreView: View {
         case .redis: return .red
         case .mongodb: return .green
         case .mssql: return Color(red: 0.8, green: 0.2, blue: 0.4)
+        case .clickhouse: return Color(red: 1.0, green: 0.85, blue: 0.0)
         }
     }
 
@@ -642,6 +643,7 @@ struct BackupRestoreView: View {
         case .redis: return "Rd"
         case .mongodb: return "Mg"
         case .mssql: return "MS"
+        case .clickhouse: return "CH"
         }
     }
 
@@ -673,6 +675,7 @@ struct BackupRestoreView: View {
             case .redis: RedisAdapter()
             case .mongodb: MongoDBAdapter()
             case .mssql: MSSQLAdapter()
+            case .clickhouse: ClickHouseAdapter()
             }
 
             do {

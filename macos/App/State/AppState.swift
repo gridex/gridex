@@ -609,6 +609,11 @@ final class AppState: ObservableObject {
                 _ = try await adapter.executeRaw(sql: "USE [\(databaseName.replacingOccurrences(of: "]", with: "]]"))]")
                 currentDatabaseName = databaseName
 
+            case .clickhouse:
+                // ClickHouse HTTP is stateless — adapter intercepts USE and updates its default DB.
+                _ = try await adapter.executeRaw(sql: "USE `\(databaseName.replacingOccurrences(of: "`", with: "``"))`")
+                currentDatabaseName = databaseName
+
             case .postgresql:
                 // PostgreSQL: each connection is tied to one database — must reconnect
                 try await adapter.disconnect()
