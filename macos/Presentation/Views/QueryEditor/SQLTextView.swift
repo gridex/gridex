@@ -28,11 +28,7 @@ final class SQLTextView: NSTextView {
     private func commonInit() {
         font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
         textContainerInset = NSSize(width: 12, height: 8)
-        isAutomaticQuoteSubstitutionEnabled = false
-        isAutomaticDashSubstitutionEnabled = false
-        isAutomaticTextReplacementEnabled = false
-        isAutomaticSpellingCorrectionEnabled = false
-        isContinuousSpellCheckingEnabled = false
+        disableAutoSubstitutions()
     }
 
     override func keyDown(with event: NSEvent) {

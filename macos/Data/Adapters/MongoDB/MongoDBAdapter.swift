@@ -100,11 +100,12 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
         return set
     }()
 
-    /// Replace the /database segment of a mongodb URI with a new database name.
-    /// Preserves user:pass@host[:port] and any ?query string after the database.
+    /// Normalise the /database segment of a mongodb URI.
+    /// - If `newDB` is set, it overrides whatever's in the URI.
+    /// - Otherwise, the URI's own db is kept.
+    /// - If neither is present, `admin` is injected — `MongoDatabase.connect(to:)`
+    ///   needs a concrete db name, and an empty `/?…` path would otherwise fail.
     private func overrideDatabase(in uri: String, with newDB: String?) -> String {
-        guard let newDB = newDB, !newDB.isEmpty else { return uri }
-
         let prefix: String
         let rest: String
         if uri.hasPrefix("mongodb+srv://") {
@@ -133,14 +134,26 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
             searchStart = pathPart.startIndex
         }
 
+        let hostPart: String
+        let existingDB: String
         if let slashIdx = pathPart[searchStart...].firstIndex(of: "/") {
-            // Replace existing database segment
-            let hostPart = String(pathPart[..<slashIdx])
-            return prefix + hostPart + "/" + newDB + query
+            hostPart = String(pathPart[..<slashIdx])
+            existingDB = String(pathPart[pathPart.index(after: slashIdx)...])
         } else {
-            // No database in URI — append it
-            return prefix + pathPart + "/" + newDB + query
+            hostPart = pathPart
+            existingDB = ""
         }
+
+        let effectiveDB: String
+        if let newDB, !newDB.isEmpty {
+            effectiveDB = newDB
+        } else if !existingDB.isEmpty {
+            effectiveDB = existingDB
+        } else {
+            effectiveDB = "admin"
+        }
+
+        return prefix + hostPart + "/" + effectiveDB + query
     }
 
     /// MongoKitten error types lack NSError bridging, so the default
@@ -158,10 +171,11 @@ final class MongoDBAdapter: DatabaseAdapter, @unchecked Sendable {
             let msg = reply.errorMessage ?? "MongoDB server returned an error"
             let codeName = reply.codeName.map { " (\($0))" } ?? ""
             message = msg + codeName
-        } else if let described = error as? CustomStringConvertible {
-            message = described.description
         } else {
-            message = error.localizedDescription
+            // MongoKittenError is a Swift enum — `localizedDescription` is useless,
+            // but `String(describing:)` prints the case name, which is the most
+            // actionable signal we can surface without version-locking to the lib.
+            message = String(describing: error)
         }
         return NSError(
             domain: "MongoDB",

@@ -4,6 +4,7 @@
 // JSON document editor for inserting MongoDB documents.
 
 import SwiftUI
+import AppKit
 
 struct MongoDocumentEditorSheet: View {
     let collectionName: String
@@ -41,16 +42,11 @@ struct MongoDocumentEditorSheet: View {
 
             Divider()
 
-            // JSON editor
-            ScrollView {
-                TextEditor(text: $jsonText)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(minHeight: 280)
-                    .padding(8)
-                    .scrollContentBackground(.hidden)
-                    .background(Color(nsColor: .textBackgroundColor))
-            }
-            .frame(minHeight: 300)
+            // macOS smart quotes silently replace `"` with `"`/`"`, which then fail
+            // JSONSerialization — force a plain-text NSTextView here.
+            PlainJSONTextEditor(text: $jsonText)
+                .frame(minHeight: 300)
+                .background(Color(nsColor: .textBackgroundColor))
 
             if let errorMessage {
                 Divider()
@@ -152,5 +148,47 @@ struct MongoDocumentEditorSheet: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+// MARK: - Plain-text JSON editor
+
+private struct PlainJSONTextEditor: NSViewRepresentable {
+    @Binding var text: String
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        let binding: Binding<String>
+        init(_ binding: Binding<String>) { self.binding = binding }
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            binding.wrappedValue = tv.string
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator($text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        // `NSTextView.scrollableTextView()` is documented to always produce an
+        // NSTextView document view — a failure here would be a system-level bug.
+        let textView = scroll.documentView as! NSTextView
+
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.disableAutoSubstitutions()
+        // NSTextView defaults undo to off; SwiftUI's TextEditor enabled it, so keep parity.
+        textView.allowsUndo = true
+        textView.delegate = context.coordinator
+        textView.string = text
+
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let textView = scroll.documentView as? NSTextView,
+              textView.string != text else { return }
+        textView.string = text
     }
 }
