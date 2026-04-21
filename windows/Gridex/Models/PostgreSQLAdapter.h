@@ -68,9 +68,18 @@ namespace DBModels
         std::wstring quoteSqlLiteral(const std::wstring& value) const override;
         std::wstring quoteSqlIdentifier(const std::wstring& name) const override;
 
+        // Getters so hosts can open a second "side" connection with the
+        // same credentials (used by the EE connection monitor to avoid
+        // serializing its pg_stat_activity polling against the user's
+        // foreground SQL editor queries on the primary PGconn).
+        const ConnectionConfig& getConnectionConfig() const { return storedConfig_; }
+        const std::wstring& getStoredPassword() const { return storedPassword_; }
+
     private:
         PGconn* conn_ = nullptr;
         bool connected_ = false;
+        ConnectionConfig storedConfig_;
+        std::wstring storedPassword_;
 
         // Helper: convert wstring to UTF-8 for libpq
         static std::string toUtf8(const std::wstring& wstr);

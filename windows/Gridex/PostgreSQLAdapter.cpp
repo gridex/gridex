@@ -87,6 +87,12 @@ namespace DBModels
     {
         disconnect();
 
+        // Stash creds so callers can spawn side-connections (e.g. the EE
+        // connection monitor needs its own PGconn so polling doesn't
+        // serialize against the user's foreground queries).
+        storedConfig_ = config;
+        storedPassword_ = password;
+
         // Build connection string
         std::string connStr;
         connStr += "host=" + toUtf8(config.host);
