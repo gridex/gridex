@@ -52,7 +52,7 @@
             </Button>
         </StackPanel>
 
-        <!-- Row 2: Redis, MongoDB -->
+        <!-- Row 2: Redis, MongoDB, SQL Server -->
         <StackPanel Orientation="Horizontal" Spacing="12"
                     HorizontalAlignment="Center">
             <Button Tag="Redis" Click="TypeButton_Click"
@@ -91,6 +91,23 @@
                         <FontIcon Glyph="&#xE968;" FontSize="24" Foreground="White" />
                     </Border>
                     <TextBlock Text="SQL Server" FontSize="11" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
+        <!-- Row 3: ClickHouse -->
+        <StackPanel Orientation="Horizontal" Spacing="12"
+                    HorizontalAlignment="Center">
+            <Button Tag="ClickHouse" Click="TypeButton_Click"
+                    Padding="16,12" CornerRadius="8"
+                    Background="Transparent" BorderThickness="1"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}">
+                <StackPanel Width="88" Spacing="8" HorizontalAlignment="Center">
+                    <Border Width="48" Height="48" CornerRadius="12"
+                            Background="#FFCC00" HorizontalAlignment="Center">
+                        <FontIcon Glyph="&#xE968;" FontSize="24" Foreground="White" />
+                    </Border>
+                    <TextBlock Text="ClickHouse" FontSize="11" FontWeight="SemiBold"
                                HorizontalAlignment="Center" />
                 </StackPanel>
             </Button>

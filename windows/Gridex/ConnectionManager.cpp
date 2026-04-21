@@ -6,6 +6,7 @@
 #include "Models/RedisAdapter.h"
 #include "Models/MongoDBAdapter.h"
 #include "Models/MSSQLAdapter.h"
+#include "Models/ClickHouseAdapter.h"
 
 namespace DBModels
 {
@@ -147,6 +148,8 @@ namespace DBModels
             return std::make_shared<MongoDBAdapter>();
         case DatabaseType::MSSQLServer:
             return std::make_shared<MSSQLAdapter>();
+        case DatabaseType::ClickHouse:
+            return std::make_shared<ClickHouseAdapter>();
         default:
             throw DatabaseError(DatabaseError::Code::ConnectionFailed,
                 "Unsupported database type");

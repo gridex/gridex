@@ -142,10 +142,18 @@ namespace DBModels
                     statements.push_back(generateInsert(table, schema, edit, dbType, columnTypes));
                     break;
                 case EditType::Update:
-                    statements.push_back(generateUpdate(table, schema, edit, dbType, columnTypes));
+                    // ClickHouse uses ALTER TABLE ... UPDATE instead of standard UPDATE.
+                    if (dbType == DatabaseType::ClickHouse)
+                        statements.push_back(generateClickHouseUpdate(table, schema, edit, dbType, columnTypes));
+                    else
+                        statements.push_back(generateUpdate(table, schema, edit, dbType, columnTypes));
                     break;
                 case EditType::Delete:
-                    statements.push_back(generateDelete(table, schema, edit, dbType));
+                    // ClickHouse uses ALTER TABLE ... DELETE instead of standard DELETE FROM.
+                    if (dbType == DatabaseType::ClickHouse)
+                        statements.push_back(generateClickHouseDelete(table, schema, edit, dbType));
+                    else
+                        statements.push_back(generateDelete(table, schema, edit, dbType));
                     break;
                 }
             }
@@ -157,9 +165,10 @@ namespace DBModels
 
         static std::wstring quoteId(const std::wstring& name, DatabaseType dbType)
         {
-            if (dbType == DatabaseType::MySQL)
+            if (dbType == DatabaseType::MySQL ||
+                dbType == DatabaseType::ClickHouse)
                 return L"`" + name + L"`";
-            return L"\"" + name + L"\"";  // PostgreSQL, SQLite
+            return L"\"" + name + L"\"";  // PostgreSQL, SQLite, MSSQL
         }
 
         static std::wstring quoteLit(const std::wstring& value)
@@ -311,6 +320,33 @@ namespace DBModels
                                            DatabaseType dbType)
         {
             std::wstring sql = L"DELETE FROM " + qualifiedTable(table, schema, dbType);
+            sql += L" WHERE " + buildWhere(edit.primaryKey, dbType);
+            return sql;
+        }
+
+        // ClickHouse mutation: ALTER TABLE db.t UPDATE col=val WHERE ...
+        static std::wstring generateClickHouseUpdate(
+            const std::wstring& table,
+            const std::wstring& schema,
+            const PendingEdit& edit,
+            DatabaseType dbType,
+            const std::unordered_map<std::wstring, std::wstring>& columnTypes = {})
+        {
+            std::wstring sql = L"ALTER TABLE " + qualifiedTable(table, schema, dbType) + L" UPDATE ";
+            sql += quoteId(edit.column, dbType) + L" = "
+                + quoteLitTyped(edit.column, edit.newValue, dbType, columnTypes);
+            sql += L" WHERE " + buildWhere(edit.primaryKey, dbType);
+            return sql;
+        }
+
+        // ClickHouse mutation: ALTER TABLE db.t DELETE WHERE ...
+        static std::wstring generateClickHouseDelete(
+            const std::wstring& table,
+            const std::wstring& schema,
+            const PendingEdit& edit,
+            DatabaseType dbType)
+        {
+            std::wstring sql = L"ALTER TABLE " + qualifiedTable(table, schema, dbType) + L" DELETE";
             sql += L" WHERE " + buildWhere(edit.primaryKey, dbType);
             return sql;
         }

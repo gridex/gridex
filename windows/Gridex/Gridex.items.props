@@ -79,6 +79,7 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\RedisAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\MongoDBAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\MSSQLAdapter.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\ClickHouseAdapter.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\SSHTunnelService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ChangeTracker.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\CredentialManager.h" />
@@ -293,6 +294,9 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)MSSQLAdapter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)ClickHouseAdapter.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)SSHTunnelService.cpp">

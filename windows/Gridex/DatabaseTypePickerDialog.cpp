@@ -26,6 +26,7 @@ namespace winrt::Gridex::implementation
             else if (tag == L"Redis") selectedType = DBModels::DatabaseType::Redis;
             else if (tag == L"MongoDB") selectedType = DBModels::DatabaseType::MongoDB;
             else if (tag == L"MSSQLServer") selectedType = DBModels::DatabaseType::MSSQLServer;
+            else if (tag == L"ClickHouse") selectedType = DBModels::DatabaseType::ClickHouse;
             if (OnTypeSelected) OnTypeSelected(selectedType);
         }
     }
