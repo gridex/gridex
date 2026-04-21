@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>AI-native database IDE for macOS and Windows.</strong><br>
-  One app for PostgreSQL, MySQL, SQLite, Redis, MongoDB, and SQL Server — with a built-in MCP server and AI chat.
+  One app for PostgreSQL, MySQL, SQLite, Redis, MongoDB, SQL Server, and ClickHouse — with a built-in MCP server and AI chat.
 </p>
 
 <p align="center">
@@ -27,10 +27,11 @@
   <img src="https://img.shields.io/badge/Redis-DC382D?style=for-the-badge&logo=redis&logoColor=white" alt="Redis">
   <img src="https://img.shields.io/badge/MongoDB-47A248?style=for-the-badge&logo=mongodb&logoColor=white" alt="MongoDB">
   <img src="https://img.shields.io/badge/SQL_Server-CC2927?style=for-the-badge&logo=microsoftsqlserver&logoColor=white" alt="SQL Server">
+  <img src="https://img.shields.io/badge/ClickHouse-FFCC01?style=for-the-badge&logo=clickhouse&logoColor=black" alt="ClickHouse">
 </p>
 
 <p align="center">
-  <em>Six drivers in one native binary. All share the same <code>DatabaseAdapter</code> protocol (~50 methods) so every feature — grid, query editor, ER diagram, backup, MCP — works identically across engines.</em>
+  <em>Seven drivers in one native binary. All share the same <code>DatabaseAdapter</code> protocol (~50 methods) so every feature — grid, query editor, ER diagram, backup, MCP — works identically across engines.</em>
 </p>
 
 ---
@@ -38,7 +39,7 @@
 ## Why Gridex
 
 - **Native.** AppKit on macOS, WinUI 3 on Windows. No Electron, no web views for the grid.
-- **Multi-database.** Six drivers in one binary, each with the right primitives (SCAN for Redis, aggregations for MongoDB, stored procedures for SQL Server, sequences for Postgres).
+- **Multi-database.** Seven drivers in one binary, each with the right primitives (SCAN for Redis, aggregations for MongoDB, stored procedures for SQL Server, sequences for Postgres, MergeTree mutations for ClickHouse).
 - **AI that sees your schema.** Claude, GPT, Gemini, and Ollama can read your tables, run read-only queries, and write SQL scoped to the connection you pick.
 - **MCP server built in.** Plug Gridex into Claude Desktop, Cursor, or any MCP client over stdio — 13 tools with a 3-tier permission model and audit trail.
 - **Credentials stay local.** macOS Keychain / Windows Credential Manager. No cloud sync, no telemetry, no proxy.
@@ -55,12 +56,13 @@
 | **Redis** | [RediStack](https://github.com/swift-server/RediStack) | Key browser, SCAN filter, Server INFO dashboard, Slow Log viewer, `rediss://` TLS |
 | **MongoDB** | [MongoKitten](https://github.com/orlandos-nl/MongoKitten) | Document editor, NDJSON backup/restore, aggregation pipeline |
 | **SQL Server** | [CosmoSQLClient](https://github.com/vkuttyp/CosmoSQLClient-Swift) | TDS 7.4 (no FreeTDS), native `BACKUP DATABASE`, stored procedures |
+| **ClickHouse** | Pure Swift (URLSession HTTP) | HTTP/HTTPS on ports 8123/8443, full mTLS via PKCS#12, `system.*` introspection, version-aware fallbacks (CH 20.8+) |
 
 ---
 
 ## MCP Server
 
-Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agents) over stdio. Every tool call runs through a permission gate and is recorded in the audit log.
+Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agents). Available on both **macOS** (stdio) and **Windows** (stdio + HTTP). Every tool call runs through a permission gate and is recorded in the audit log.
 
 <p align="center">
   <img src="assets/mcp.png" alt="MCP Server configuration" width="100%">
@@ -83,6 +85,8 @@ Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agent
 - `MCPRateLimiter` — caps calls per tool per minute
 - `MCPApprovalGate` — prompts the user for destructive actions
 
+**MCP window** — 5 tabs: Overview, Setup, Connections, Activity, Advanced.
+
 <p align="center">
   <img src="assets/mcp-logs.png" alt="MCP activity log" width="100%">
 </p>
@@ -97,7 +101,7 @@ Every tool invocation lands in the activity log with tier, SQL, duration, row co
   <img src="assets/diagram.png" alt="ER diagram canvas" width="100%">
 </p>
 
-- Pure Swift renderer on macOS; Dagre + WebView on Windows — no external d2/Graphviz binary.
+- macOS: custom `NSView` + CoreGraphics renderer. Windows: in-process Dagre layout + WebView. No external `d2`/Graphviz binary on either platform.
 - Auto-layout, pan, zoom, fit-to-view, FK relationship routing.
 - Reads live schema from the active adapter — no separate import step.
 - Click a column to jump to its table; double-click to open data.
@@ -145,7 +149,7 @@ Password, private-key, or key-with-passphrase auth. Local port forwarding via `s
 
 ## mTLS (Teleport-style)
 
-Connections support `sslKeyPath` + `sslCertPath` + `sslCACertPath` for mutual TLS. Works end-to-end for PostgreSQL, MySQL, and Redis — drop in the certs a tool like Teleport issues and connect as usual.
+Connections support `sslKeyPath` + `sslCertPath` + `sslCACertPath` for mutual TLS. Works end-to-end for PostgreSQL, MySQL, Redis, and ClickHouse — drop in the certs a tool like Teleport issues and connect as usual. ClickHouse accepts PKCS#12 client bundles with pinned CA (PEM or DER).
 
 ## Backup & Restore
 
@@ -157,6 +161,7 @@ Connections support `sslKeyPath` + `sslCertPath` + `sslCACertPath` for mutual TL
 | MongoDB | NDJSON (one doc per line, pure Swift) |
 | Redis | JSON snapshot via SCAN (pure Swift) |
 | SQL Server | Native `BACKUP DATABASE` |
+| ClickHouse | SQL dump (`SHOW CREATE TABLE` + `FORMAT Values`, pure Swift) |
 
 Selective table backup, compression, and progress reporting for the CLI-backed formats.
 
@@ -232,7 +237,7 @@ gridex/
 │   │   └── Models/           RowValue, ConnectionConfig, QueryResult, MCPAuditEntry
 │   ├── Domain/               Use cases, repository protocols
 │   ├── Data/                 Adapters + SwiftData persistence + Keychain
-│   │   └── Adapters/         SQLite, PostgreSQL, MySQL, MongoDB, Redis, MSSQL
+│   │   └── Adapters/         SQLite, PostgreSQL, MySQL, MongoDB, Redis, MSSQL, ClickHouse
 │   ├── Services/             Cross-cutting
 │   │   ├── QueryEngine/      ConnectionManager, QueryEngine, QueryBuilder
 │   │   ├── AI/               Anthropic, OpenAI, Gemini, Ollama providers
@@ -247,7 +252,7 @@ gridex/
 
 **Key protocols**
 
-- `DatabaseAdapter` — connection lifecycle, queries, schema, CRUD, transactions, pagination. All 6 adapters conform.
+- `DatabaseAdapter` — connection lifecycle, queries, schema, CRUD, transactions, pagination. All 7 adapters conform.
 - `LLMService` — streaming AI responses via `AsyncThrowingStream`. All 4 providers conform.
 - `SchemaInspectable` — full schema snapshot for the AI context engine and ER diagram.
 - `MCPTool` — MCP tool contract with tier, input schema, and permission-checked execute.
@@ -277,7 +282,7 @@ gridex/
 | [CosmoSQLClient-Swift](https://github.com/vkuttyp/CosmoSQLClient-Swift) | main | MSSQL via TDS 7.4 |
 | [Sparkle](https://github.com/sparkle-project/Sparkle) | 2.6.0+ | macOS auto-update |
 
-System library: `libsqlite3` (linked at build time).
+System library: `libsqlite3` (linked at build time). ClickHouse uses `URLSession` + `Security.framework` — no SPM dependency.
 
 ---
 
