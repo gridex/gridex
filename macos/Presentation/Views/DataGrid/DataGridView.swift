@@ -2733,6 +2733,15 @@ struct InlineStructureView: View {
                 "UNIQUEIDENTIFIER", "XML", "JSON", "ROWVERSION", "HIERARCHYID",
                 "GEOGRAPHY", "GEOMETRY", "SQL_VARIANT",
             ]
+            case .clickhouse: base = [
+                "UInt8", "UInt16", "UInt32", "UInt64", "UInt128", "UInt256",
+                "Int8", "Int16", "Int32", "Int64", "Int128", "Int256",
+                "Float32", "Float64", "Decimal(18, 4)", "Decimal(38, 4)", "Decimal(76, 4)",
+                "String", "FixedString(32)", "UUID",
+                "Date", "Date32", "DateTime", "DateTime64(3)", "DateTime64(6)",
+                "Boolean", "IPv4", "IPv6", "JSON",
+                "Nullable(String)", "Array(String)", "Array(UInt64)", "Map(String, String)",
+            ]
             case .redis: base = ["string", "list", "set", "zset", "hash", "stream"]
             case .mongodb: base = ["string", "integer", "double", "boolean", "date", "objectId", "document", "array"]
             }

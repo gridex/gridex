@@ -49,6 +49,7 @@ struct CreateTableView: View {
     private var defaultSchema: String {
         switch appState.activeAdapter?.databaseType {
         case .mssql: return "dbo"
+        case .clickhouse: return appState.currentDatabaseName ?? "default"
         default: return "public"
         }
     }
@@ -77,6 +78,7 @@ struct CreateTableView: View {
                 case .mysql: idType = "int"
                 case .sqlite: idType = "INTEGER"
                 case .mssql: idType = "INT"
+                case .clickhouse: idType = "UInt64"
                 default: idType = "int"
                 }
                 if columns.count == 1 && columns[0].dataType == "int4" {
@@ -840,6 +842,7 @@ struct CreateTableView: View {
         case .mysql: return "varchar(255)"
         case .sqlite: return "TEXT"
         case .mssql: return "NVARCHAR(255)"
+        case .clickhouse: return "String"
         case .redis: return "string"
         case .mongodb: return "string"
         }
@@ -855,9 +858,30 @@ struct CreateTableView: View {
         case .mysql: cachedDataTypes = mysqlDataTypes
         case .sqlite: cachedDataTypes = sqliteDataTypes
         case .mssql: cachedDataTypes = mssqlDataTypes
+        case .clickhouse: cachedDataTypes = clickhouseDataTypes
         case .redis: cachedDataTypes = ["string", "list", "set", "zset", "hash", "stream"]
         case .mongodb: cachedDataTypes = ["string", "integer", "double", "boolean", "date", "objectId", "document", "array"]
         }
+    }
+
+    /// ClickHouse data types grouped by family. Nullable/Array wrappers are applied
+    /// per-column by the user (the form doesn't try to auto-wrap).
+    private var clickhouseDataTypes: [String] {
+        [
+            // Integers
+            "UInt8", "UInt16", "UInt32", "UInt64", "UInt128", "UInt256",
+            "Int8", "Int16", "Int32", "Int64", "Int128", "Int256",
+            // Floats + decimals
+            "Float32", "Float64", "Decimal(18, 4)", "Decimal(38, 4)", "Decimal(76, 4)",
+            // Strings
+            "String", "FixedString(32)", "UUID",
+            // Date/time
+            "Date", "Date32", "DateTime", "DateTime64(3)", "DateTime64(6)",
+            // Other
+            "Boolean", "IPv4", "IPv6", "JSON",
+            // Common wrappers (users can edit the inner type)
+            "Nullable(String)", "Array(String)", "Array(UInt64)", "Map(String, String)",
+        ]
     }
 
     /// SQL Server data types ordered by category (exact numerics → approximate

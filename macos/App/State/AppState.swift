@@ -609,6 +609,11 @@ final class AppState: ObservableObject {
                 _ = try await adapter.executeRaw(sql: "USE [\(databaseName.replacingOccurrences(of: "]", with: "]]"))]")
                 currentDatabaseName = databaseName
 
+            case .clickhouse:
+                // ClickHouse HTTP is stateless — adapter intercepts USE and updates its default DB.
+                _ = try await adapter.executeRaw(sql: "USE `\(databaseName.replacingOccurrences(of: "`", with: "``"))`")
+                currentDatabaseName = databaseName
+
             case .postgresql:
                 // PostgreSQL: each connection is tied to one database — must reconnect
                 try await adapter.disconnect()
@@ -720,6 +725,19 @@ final class AppState: ObservableObject {
     func refreshSidebar() {
         guard let adapter = activeAdapter, let config = activeConfig else { return }
         Task { await loadSidebar(config: config, adapter: adapter) }
+    }
+
+    /// Re-fetch the database list from the active adapter and publish it.
+    /// Call after CREATE DATABASE / DROP DATABASE so pickers and switchers update
+    /// without waiting for the user to reconnect.
+    func refreshAvailableDatabases() async {
+        guard let adapter = activeAdapter else { return }
+        do {
+            let databases = try await adapter.listDatabases()
+            availableDatabases = databases
+        } catch {
+            print("refreshAvailableDatabases failed: \(error)")
+        }
     }
 
     func loadSavedConnections() async {

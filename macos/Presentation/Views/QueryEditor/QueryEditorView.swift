@@ -285,9 +285,7 @@ struct QueryEditorView: View {
                     appState.currentDatabaseName = newDB
                 }
                 // Refresh the available databases list (picker shows new/removed DBs)
-                if let databases = try? await adapter.listDatabases() {
-                    appState.availableDatabases = databases
-                }
+                await appState.refreshAvailableDatabases()
             }
 
             // Script may have created/altered/dropped tables — refresh the sidebar

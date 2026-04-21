@@ -891,6 +891,7 @@ struct NewTableSheet: View {
         case .mysql: idType = "int AUTO_INCREMENT PRIMARY KEY"
         case .sqlite: idType = "INTEGER PRIMARY KEY AUTOINCREMENT"
         case .mssql: idType = "INT IDENTITY(1,1) PRIMARY KEY"
+        case .clickhouse: idType = "UInt64) ENGINE = MergeTree ORDER BY (id" // NB: no FK/IDENTITY — MergeTree requires an ORDER BY
         case .redis, .mongodb: return // Non-SQL databases don't support CREATE TABLE
         }
 

@@ -46,6 +46,24 @@ struct ERDiagramView: View {
                 }
                 .padding(12)
             }
+
+            // ClickHouse has no foreign keys — flag the diagram so users don't
+            // mistake the missing relations for a bug.
+            if appState.activeAdapter?.databaseType == .clickhouse && !viewModel.isLoading && !viewModel.tables.isEmpty {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        Image(systemName: "info.circle.fill")
+                        Text("ClickHouse has no foreign keys — showing tables only.")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(12)
+                }
+            }
         }
         .background(Color(nsColor: .controlBackgroundColor))
         .task {

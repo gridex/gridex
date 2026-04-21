@@ -126,6 +126,7 @@ struct DBeaverImporter {
         if lower.contains("redis") { return .redis }
         if lower.contains("mongo") { return .mongodb }
         if lower.contains("sqlserver") || lower.contains("mssql") { return .mssql }
+        if lower.contains("clickhouse") { return .clickhouse }
         return .postgresql
     }
 

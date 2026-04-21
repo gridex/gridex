@@ -10,12 +10,13 @@ enum SQLDialect: Sendable {
     case redis
     case mongodb
     case mssql
+    case clickhouse
 
     func quoteIdentifier(_ identifier: String) -> String {
         switch self {
         case .postgresql, .sqlite:
             return "\"\(identifier.replacingOccurrences(of: "\"", with: "\"\""))\""
-        case .mysql:
+        case .mysql, .clickhouse:
             return "`\(identifier.replacingOccurrences(of: "`", with: "``"))`"
         case .mssql:
             return "[\(identifier.replacingOccurrences(of: "]", with: "]]"))]"
@@ -43,7 +44,7 @@ enum SQLDialect: Sendable {
             return { "$\($0)" }
         case .mssql:
             return { "@p\($0)" }
-        case .mysql, .sqlite, .redis, .mongodb:
+        case .mysql, .sqlite, .redis, .mongodb, .clickhouse:
             return { _ in "?" }
         }
     }

@@ -50,6 +50,7 @@ enum BackupFormat: String, CaseIterable, Sendable {
         case .mssql: return [.bak]
         case .mongodb: return [.ndjson]
         case .redis: return [.redisJSON]
+        case .clickhouse: return [.sql]
         }
     }
 }
@@ -108,6 +109,11 @@ actor BackupService {
                 return BackupResult(success: false, outputPath: nil, errorMessage: "SQL Server adapter required for backup", duration: 0, fileSize: nil)
             }
             return await mssqlBackup(adapter: mssql, database: database, to: outputURL, start: start)
+        case .clickhouse:
+            guard let ch = adapter as? ClickHouseAdapter else {
+                return BackupResult(success: false, outputPath: nil, errorMessage: "ClickHouse adapter required for backup", duration: 0, fileSize: nil)
+            }
+            return await clickhouseBackup(adapter: ch, database: database, to: outputURL, start: start)
         }
     }
 
@@ -146,6 +152,11 @@ actor BackupService {
                 return BackupResult(success: false, outputPath: nil, errorMessage: "SQL Server adapter required for restore", duration: 0, fileSize: nil)
             }
             return await mssqlRestore(adapter: mssql, database: database, from: inputURL, start: start)
+        case .clickhouse:
+            guard let ch = adapter as? ClickHouseAdapter else {
+                return BackupResult(success: false, outputPath: nil, errorMessage: "ClickHouse adapter required for restore", duration: 0, fileSize: nil)
+            }
+            return await clickhouseRestore(adapter: ch, database: database, from: inputURL, start: start)
         }
     }
 
@@ -823,6 +834,114 @@ actor BackupService {
                         duration: duration, fileSize: nil))
                 }
             }
+        }
+    }
+
+    // MARK: - ClickHouse (pure Swift SQL dump via HTTP)
+
+    /// ClickHouse backup: emit `CREATE TABLE` + row-level `INSERT ... FORMAT Values`
+    /// statements for each table in the database. Views are skipped — they're
+    /// derived from their sources and will be recreated when the source tables exist.
+    private func clickhouseBackup(
+        adapter: ClickHouseAdapter,
+        database: String,
+        to outputURL: URL,
+        start: CFAbsoluteTime
+    ) async -> BackupResult {
+        do {
+            FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+            guard let handle = try? FileHandle(forWritingTo: outputURL) else {
+                return BackupResult(success: false, outputPath: nil,
+                                    errorMessage: "Cannot create output file at \(outputURL.path)",
+                                    duration: CFAbsoluteTimeGetCurrent() - start, fileSize: nil)
+            }
+            defer { try? handle.close() }
+
+            let header = "-- ClickHouse dump for database `\(database)` at \(ISO8601DateFormatter().string(from: Date()))\n\n"
+            if let data = header.data(using: .utf8) { try handle.write(contentsOf: data) }
+
+            let tables = try await adapter.listTables(schema: database)
+            for t in tables {
+                let ddlResult = try await adapter.executeRaw(
+                    sql: "SHOW CREATE TABLE `\(database)`.`\(t.name)`"
+                )
+                let ddl = ddlResult.rows.first?.first?.stringValue ?? ""
+                if !ddl.isEmpty {
+                    let block = "\(ddl);\n\n"
+                    if let data = block.data(using: .utf8) { try handle.write(contentsOf: data) }
+                }
+
+                // Row data via `FORMAT Values` → `(v1, v2), (v3, v4)...` for direct INSERT.
+                // Loads the whole result into memory — acceptable for v1.
+                let rowDump = try await adapter.executeRaw(
+                    sql: "SELECT * FROM `\(database)`.`\(t.name)` FORMAT Values"
+                )
+                if let body = rowDump.rows.first?.first?.stringValue, !body.isEmpty {
+                    let stmt = "INSERT INTO `\(database)`.`\(t.name)` VALUES \(body);\n\n"
+                    if let data = stmt.data(using: .utf8) { try handle.write(contentsOf: data) }
+                }
+            }
+
+            let size = try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? Int64
+            return BackupResult(
+                success: true, outputPath: outputURL.path, errorMessage: nil,
+                duration: CFAbsoluteTimeGetCurrent() - start, fileSize: size
+            )
+        } catch {
+            return BackupResult(
+                success: false, outputPath: nil,
+                errorMessage: "ClickHouse backup failed: \(error.localizedDescription)",
+                duration: CFAbsoluteTimeGetCurrent() - start, fileSize: nil
+            )
+        }
+    }
+
+    /// ClickHouse restore: split the dump on `;` and execute each statement.
+    /// Targets the selected database via `USE` first so unqualified identifiers work.
+    private func clickhouseRestore(
+        adapter: ClickHouseAdapter,
+        database: String,
+        from inputURL: URL,
+        start: CFAbsoluteTime
+    ) async -> BackupResult {
+        do {
+            let data = try Data(contentsOf: inputURL)
+            guard let content = String(data: data, encoding: .utf8) else {
+                return BackupResult(success: false, outputPath: nil,
+                                    errorMessage: "Invalid UTF-8 in backup file",
+                                    duration: CFAbsoluteTimeGetCurrent() - start, fileSize: nil)
+            }
+            _ = try await adapter.executeRaw(sql: "USE `\(database.replacingOccurrences(of: "`", with: "``"))`")
+
+            // Statement splitter: naive — splits on `;` at line ends, skipping lines that
+            // start with `--`. ClickHouse's VALUES bodies are emitted on a single line so
+            // a trailing `;` is always statement-terminating in the output of this dumper.
+            var statement = ""
+            for rawLine in content.components(separatedBy: "\n") {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("--") || line.isEmpty { continue }
+                statement += rawLine + "\n"
+                if line.hasSuffix(";") {
+                    let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let sql = trimmed.hasSuffix(";") ? String(trimmed.dropLast()) : trimmed
+                    if !sql.isEmpty {
+                        _ = try await adapter.executeRaw(sql: sql)
+                    }
+                    statement = ""
+                }
+            }
+
+            let size = try? FileManager.default.attributesOfItem(atPath: inputURL.path)[.size] as? Int64
+            return BackupResult(
+                success: true, outputPath: nil, errorMessage: nil,
+                duration: CFAbsoluteTimeGetCurrent() - start, fileSize: size
+            )
+        } catch {
+            return BackupResult(
+                success: false, outputPath: nil,
+                errorMessage: "ClickHouse restore failed: \(error.localizedDescription)",
+                duration: CFAbsoluteTimeGetCurrent() - start, fileSize: nil
+            )
         }
     }
 }

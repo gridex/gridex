@@ -169,6 +169,7 @@ private class DataGripXMLParser: NSObject, XMLParserDelegate {
         if combined.contains("redis") { return .redis }
         if combined.contains("mongo") { return .mongodb }
         if combined.contains("sqlserver") || combined.contains("mssql") { return .mssql }
+        if combined.contains("clickhouse") { return .clickhouse }
         return .postgresql
     }
 

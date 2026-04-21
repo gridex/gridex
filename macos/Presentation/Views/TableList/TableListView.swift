@@ -191,6 +191,20 @@ final class TableListViewModel: ObservableObject {
                     WHERE TABLE_SCHEMA = '\(schema ?? "dbo")' AND TABLE_TYPE = 'BASE TABLE'
                     ORDER BY TABLE_NAME
                     """)
+            case .clickhouse:
+                let db: String
+                if let schema, !schema.isEmpty {
+                    db = schema
+                } else {
+                    db = (try? await adapter.currentDatabase()) ?? "default"
+                }
+                let safe = db.replacingOccurrences(of: "'", with: "\\'")
+                result = try await adapter.executeRaw(sql: """
+                    SELECT name, total_rows, total_bytes, engine
+                    FROM system.tables
+                    WHERE database = '\(safe)' AND engine NOT LIKE '%View'
+                    ORDER BY name
+                    """)
             }
 
             columns = result.columns.map(\.name)

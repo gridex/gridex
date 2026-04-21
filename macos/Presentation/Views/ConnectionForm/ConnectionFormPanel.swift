@@ -149,6 +149,7 @@ final class ConnectionFormPanel {
         case .redis: RedisAdapter()
         case .mongodb: MongoDBAdapter()
         case .mssql: MSSQLAdapter()
+        case .clickhouse: ClickHouseAdapter()
         }
 
         let sshService = appState.container.sshTunnelService
