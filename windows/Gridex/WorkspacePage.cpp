@@ -1322,6 +1322,18 @@ namespace winrt::Gridex::implementation
                 state_.statusSchema = config.database;
             }
         }
+        // ClickHouse: no schema concept, the connected database is the
+        // "schema". Without this branch currentSchema_ keeps the PG
+        // default "public" and listTables / fetchRows look for non-
+        // existent public.<table>.
+        else if (config.databaseType == DBModels::DatabaseType::ClickHouse)
+        {
+            if (!config.database.empty())
+            {
+                currentSchema_ = config.database;
+                state_.statusSchema = config.database;
+            }
+        }
 
         UpdateBreadcrumb();
 

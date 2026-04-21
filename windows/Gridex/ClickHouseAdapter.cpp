@@ -505,11 +505,14 @@ namespace DBModels
         const std::wstring& /*schema*/)
     {
         ensureConnected();
-        // Return built-in function names for auto-complete / documentation.
-        // Scoped by origin='System' to avoid noise from user-defined functions.
+        // Only surface user-defined functions (origin='SQLUserDefined').
+        // ClickHouse ships ~1000 built-ins (BIT_AND, sumMap, etc.) — showing
+        // them as sidebar entries swamps the UI and some consumers were
+        // even treating them as tables. User-defined scope matches what
+        // PG / MySQL show.
         auto result = executeInternal(
             "SELECT name FROM system.functions "
-            "WHERE origin = 'System' ORDER BY name");
+            "WHERE origin = 'SQLUserDefined' ORDER BY name");
         std::vector<std::wstring> funcs;
         for (auto& row : result.rows)
         {
