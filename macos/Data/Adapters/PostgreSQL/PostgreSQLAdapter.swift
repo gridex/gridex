@@ -231,10 +231,19 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
     }
 
     func listSchemas(database: String?) async throws -> [String] {
+        // Query pg_namespace directly rather than information_schema.schemata.
+        // The latter is defined (per SQL standard) to filter rows by
+        // `pg_has_role(owner, 'USAGE') OR has_schema_privilege('USAGE, CREATE')`,
+        // so on Supabase — where the `postgres` role is NOSUPERUSER and schemas
+        // like `auth`, `storage`, `realtime`, `extensions`, `graphql` are owned
+        // by `supabase_admin` without a USAGE grant — everything except `public`
+        // silently disappears. pg_namespace is readable by all roles and returns
+        // every physical schema, matching what pgAdmin/TablePlus/DBeaver show.
         let result = try await executeRaw(sql: """
-            SELECT schema_name FROM information_schema.schemata
-            WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-            ORDER BY schema_name
+            SELECT nspname FROM pg_namespace
+            WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND nspname !~ '^pg_(temp|toast_temp)_'
+            ORDER BY nspname
             """)
         return result.rows.compactMap { $0.first?.stringValue }
     }
