@@ -17,6 +17,7 @@ class HomeBrandingPanel;
 class MCPConnectionProvider;
 class MCPWindow;
 class SecretStore;
+class UpdateService;
 class WorkspaceState;
 class WorkspaceView;
 namespace mcp { class MCPServer; }
@@ -44,6 +45,7 @@ private slots:
     void onImportConnections();
     void onExportConnections();
     void onOpenMCPServer();
+    void onCheckForUpdates();
 
 private:
     void setupMenuBar();
@@ -63,6 +65,9 @@ private:
     std::unique_ptr<MCPConnectionProvider>  mcpProvider_;
     std::unique_ptr<mcp::MCPServer>         mcpServer_;
     MCPWindow*                              mcpWindow_ = nullptr;  // owned by Qt parent when shown
+
+    // Auto-update (AppImage self-replace; no-op for other distros).
+    std::unique_ptr<UpdateService> updateService_;
 
     // Menu actions that toggle enabled state with connection
     QAction* newQueryAction_    = nullptr;

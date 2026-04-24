@@ -49,6 +49,10 @@ target_link_libraries(gridex PRIVATE
     Qt6::Widgets
 )
 
+target_compile_definitions(gridex PRIVATE
+    GRIDEX_VERSION="${PROJECT_VERSION}"
+)
+
 set_target_properties(gridex PROPERTIES
     WIN32_EXECUTABLE OFF
     MACOSX_BUNDLE OFF

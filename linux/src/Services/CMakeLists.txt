@@ -42,6 +42,11 @@ add_library(gridex-services STATIC
     MCP/Tools/Tier3/UpdateRowsTool.cpp
     MCP/Tools/Tier3/DeleteRowsTool.cpp
     MCP/Tools/Tier3/ExecuteWriteQueryTool.cpp
+    Update/UpdateService.cpp
+)
+
+target_compile_definitions(gridex-services PUBLIC
+    GRIDEX_VERSION="${PROJECT_VERSION}"
 )
 
 target_include_directories(gridex-services PUBLIC

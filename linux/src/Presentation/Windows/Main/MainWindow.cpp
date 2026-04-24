@@ -15,8 +15,10 @@
 #include <QAbstractButton>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QProgressDialog>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QTimer>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QString>
@@ -47,6 +49,7 @@
 #include "Presentation/Views/TabBar/WorkspaceTabBar.h"
 #include "Services/MCP/MCPServer.h"
 #include "Services/MCP/Security/ApprovalGate.h"
+#include "Services/Update/UpdateService.h"
 
 namespace gridex {
 
@@ -127,6 +130,32 @@ void MainWindow::wireBackend() {
         mcpServer_->auditLogger().setMaxFileSize(
             static_cast<qint64>(s.value("mcp.audit.maxSizeMB", 100).toInt()) * 1024 * 1024);
     }
+
+    // Auto-update: silent background check 3s after launch. Notifies via
+    // message box only when a new version is available; failures are
+    // swallowed so offline users aren't nagged.
+    updateService_ = std::make_unique<UpdateService>();
+    connect(updateService_.get(), &UpdateService::updateChecked, this,
+            [this](const UpdateCheckResult& r) {
+        if (r.errorMessage.isEmpty() && r.hasUpdate) {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Information);
+            box.setWindowTitle(tr("Update available"));
+            box.setText(tr("Gridex %1 is available (you have %2).").arg(r.newVersion, r.currentVersion));
+            if (!r.notes.isEmpty()) box.setInformativeText(r.notes);
+            auto* install = box.addButton(tr("Install"), QMessageBox::AcceptRole);
+            box.addButton(tr("Later"), QMessageBox::RejectRole);
+            box.exec();
+            if (box.clickedButton() == install) {
+                updateService_->downloadAndApply(r.downloadUrl, r.sha256);
+            }
+        }
+    });
+    connect(updateService_.get(), &UpdateService::errorOccurred, this,
+            [this](const QString& msg) {
+        QMessageBox::warning(this, tr("Update failed"), msg);
+    });
+    QTimer::singleShot(3000, this, [this] { updateService_->checkForUpdate(); });
 }
 
 void MainWindow::setupMenuBar() {
@@ -189,6 +218,9 @@ void MainWindow::setupMenuBar() {
     auto* shortcuts = helpMenu->addAction(tr("Keyboard &Shortcuts"));
     shortcuts->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Slash));
     connect(shortcuts, &QAction::triggered, this, &MainWindow::onShowShortcuts);
+    helpMenu->addSeparator();
+    auto* checkUpdatesAction = helpMenu->addAction(tr("Check for &Updates…"));
+    connect(checkUpdatesAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
     helpMenu->addSeparator();
     auto* about = helpMenu->addAction(tr("&About Gridex"));
     connect(about, &QAction::triggered, this, &MainWindow::onShowAbout);
@@ -473,11 +505,62 @@ void MainWindow::onOpenMCPServer() {
     mcpWindow_->activateWindow();
 }
 
+void MainWindow::onCheckForUpdates() {
+    if (!updateService_) return;
+    auto* progress = new QProgressDialog(tr("Checking for updates…"), QString(), 0, 0, this);
+    progress->setWindowTitle(tr("Gridex Update"));
+    progress->setModal(true);
+    progress->setMinimumWidth(360);
+    progress->show();
+
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    *conn = connect(updateService_.get(), &UpdateService::updateChecked, this,
+                    [this, progress, conn](const UpdateCheckResult& r) {
+        QObject::disconnect(*conn);
+        progress->close();
+        progress->deleteLater();
+
+        if (!r.errorMessage.isEmpty()) {
+            QMessageBox::warning(this, tr("Update check failed"), r.errorMessage);
+            return;
+        }
+        if (!r.hasUpdate) {
+            QMessageBox::information(this, tr("You're up to date"),
+                tr("Gridex %1 is the latest version.").arg(r.currentVersion));
+            return;
+        }
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Information);
+        box.setWindowTitle(tr("Update available"));
+        box.setText(tr("Gridex %1 is available (you have %2).").arg(r.newVersion, r.currentVersion));
+        if (!r.notes.isEmpty()) box.setInformativeText(r.notes);
+        auto* install = box.addButton(tr("Install"), QMessageBox::AcceptRole);
+        box.addButton(tr("Later"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == install) {
+            auto* dlProgress = new QProgressDialog(tr("Downloading…"), tr("Cancel"), 0, 0, this);
+            dlProgress->setWindowTitle(tr("Gridex Update"));
+            dlProgress->setMinimumWidth(360);
+            dlProgress->setModal(true);
+            connect(updateService_.get(), &UpdateService::statusChanged,
+                    dlProgress, &QProgressDialog::setLabelText);
+            connect(updateService_.get(), &UpdateService::errorOccurred, this,
+                    [this, dlProgress](const QString& msg) {
+                dlProgress->close();
+                QMessageBox::warning(this, tr("Update failed"), msg);
+            });
+            dlProgress->show();
+            updateService_->downloadAndApply(r.downloadUrl, r.sha256);
+        }
+    });
+    updateService_->checkForUpdate();
+}
+
 void MainWindow::onShowAbout() {
     QMessageBox::about(this, tr("About Gridex"), tr(
         "<h2>Gridex</h2>"
         "<p><b>AI-Native Database IDE</b> (Linux build)</p>"
-        "<p>Version 0.1 — 2026</p>"
+        "<p>Version %1 — 2026</p>").arg(UpdateService::currentVersion()) + tr(
         "<p>Connects to PostgreSQL, MySQL, SQLite, Redis, MongoDB, MSSQL with "
         "SSH tunnel support. Ships an AI chat assistant that speaks your "
         "schema.</p>"
