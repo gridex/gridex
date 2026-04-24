@@ -33,12 +33,12 @@ struct ClientSpec {
     const char* pathTemplate;   // ~/ is expanded
 };
 
+// Linux-only clients. Claude Desktop has no Linux build, so it's omitted.
 static const ClientSpec kClients[] = {
-    {"claude_desktop", "Claude Desktop",
-     "~/.config/Claude/claude_desktop_config.json"},
-    {"cursor",         "Cursor",        "~/.cursor/mcp.json"},
-    {"windsurf",       "Windsurf",      "~/.windsurf/mcp.json"},
-    {"claude_code",    "Claude Code",   "~/.claude/settings.json"},
+    {"claude_code", "Claude Code",  "~/.claude.json"},
+    {"cursor",      "Cursor",       "~/.cursor/mcp.json"},
+    {"windsurf",    "Windsurf",     "~/.codeium/windsurf/mcp_config.json"},
+    {"gemini_cli",  "Gemini CLI",   "~/.gemini/settings.json"},
 };
 
 QString expand(const QString& p) {
