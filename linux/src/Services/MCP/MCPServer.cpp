@@ -61,8 +61,12 @@ void MCPServer::start() {
     startTime_ = std::chrono::system_clock::now();
     if (transport_) {
         transport_->setHandler([this](const JSONRPCRequest& req) {
+            // JSON-RPC 2.0: notifications have no `id` and MUST NOT receive a
+            // response. Claude Code drops the connection if it gets an
+            // unsolicited response (zod validation rejects id=null).
+            const bool isNotification = req.id.is_null();
             auto resp = handleRequest(req);
-            transport_->send(resp);
+            if (!isNotification) transport_->send(resp);
         });
         transport_->start();
     }
