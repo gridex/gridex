@@ -1,15 +1,17 @@
 <h1 align="center">Gridex</h1>
 
 <p align="center">
-  <strong>AI-native database IDE for macOS and Windows.</strong><br>
+  <strong>AI-native database IDE for macOS, Windows, and Linux.</strong><br>
   One app for PostgreSQL, MySQL, SQLite, Redis, MongoDB, SQL Server, and ClickHouse — with a built-in MCP server and AI chat.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/macOS-14%2B-blue" alt="macOS 14+">
   <img src="https://img.shields.io/badge/Windows-10%2B-0078D4" alt="Windows 10+">
+  <img src="https://img.shields.io/badge/Linux-Qt%206-77BB44" alt="Linux Qt 6">
   <img src="https://img.shields.io/badge/Swift-5.10-orange" alt="Swift 5.10">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
+  <a href="https://discord.gg/UuV2Ktc6"><img src="https://img.shields.io/badge/chat-Discord-5865F2?logo=discord&logoColor=white" alt="Join Discord"></a>
 </p>
 
 <p align="center">
@@ -38,8 +40,8 @@
 
 ## Why Gridex
 
-- **Native.** AppKit on macOS, WinUI 3 on Windows. No Electron, no web views for the grid.
-- **Multi-database.** Seven drivers in one binary, each with the right primitives (SCAN for Redis, aggregations for MongoDB, stored procedures for SQL Server, sequences for Postgres, MergeTree mutations for ClickHouse).
+- **Native.** AppKit on macOS, WinUI 3 on Windows, Qt 6 on Linux. No Electron, no web views for the grid.
+- **Multi-database.** Seven drivers on macOS, six on Linux/Windows (ClickHouse macOS-only for now), each with the right primitives (SCAN for Redis, aggregations for MongoDB, stored procedures for SQL Server, sequences for Postgres, MergeTree mutations for ClickHouse).
 - **AI that sees your schema.** Claude, GPT, Gemini, and Ollama can read your tables, run read-only queries, and write SQL scoped to the connection you pick.
 - **MCP server built in.** Plug Gridex into Claude Desktop, Cursor, or any MCP client over stdio — 13 tools with a 3-tier permission model and audit trail.
 - **Credentials stay local.** macOS Keychain / Windows Credential Manager. No cloud sync, no telemetry, no proxy.
@@ -62,7 +64,7 @@
 
 ## MCP Server
 
-Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agents). Available on both **macOS** (stdio) and **Windows** (stdio + HTTP). Every tool call runs through a permission gate and is recorded in the audit log.
+Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agents). Available on **macOS** (stdio), **Windows** (stdio + HTTP), and **Linux** (stdio). Every tool call runs through a permission gate and is recorded in the audit log.
 
 <p align="center">
   <img src="assets/mcp.png" alt="MCP Server configuration" width="100%">
@@ -181,6 +183,10 @@ Connections import from **TablePlus**, **Navicat** (NCX with Blowfish decrypt), 
 - Windows 10 or later (64-bit)
 - Visual Studio 2022+, .NET 8 SDK, vcpkg
 
+### Linux
+- Ubuntu 22.04+/24.04, Debian 12, Fedora 40 (or any distro with Qt 6 ≥ 6.4)
+- GCC ≥ 11 or Clang ≥ 14, CMake ≥ 3.24, Ninja, Qt 6 dev packages
+
 ## Build & Run
 
 ### macOS
@@ -197,6 +203,22 @@ swift build
 ./scripts/build-app.sh
 open dist/Gridex.app
 ```
+
+### Linux
+
+```bash
+git clone https://github.com/gridex/gridex.git
+cd gridex
+cmake -S linux -B linux/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build linux/build --parallel
+./linux/build/gridex
+```
+
+Full Linux build, packaging, and AppImage instructions in [linux/README.md](linux/README.md).
+
+### Windows
+
+See [windows/README.md](windows/README.md) for the full WinUI 3 / vcpkg / Velopack toolchain.
 
 ### Release
 
@@ -220,7 +242,11 @@ Pipeline: `swift build` → `.app` bundle → code sign → notarize → staple 
 | `NOTARY_PROFILE` | `notarytool` keychain profile (default: `gridex-notarize`) |
 | `NOTARIZE` | Set to `0` to skip notarization |
 
-Auto-update is delivered via [Sparkle](https://sparkle-project.org). Release artifacts are signed, stapled, and advertised via an appcast feed.
+Auto-update channels:
+
+- **macOS** — [Sparkle](https://sparkle-project.org), signed/stapled DMGs advertised via appcast.
+- **Windows** — Velopack (`vpk`) packaged installer + delta updates.
+- **Linux** — AppImage with self-update against a JSON feed hosted on Cloudflare R2.
 
 ---
 
@@ -246,6 +272,7 @@ gridex/
 │   │   └── Export/           ExportService, BackupService
 │   └── Presentation/         AppKit views, SwiftUI settings, ViewModels
 ├── windows/                  Windows app (C++, WinUI 3)
+├── linux/                    Linux app (C++20, Qt 6) — adapters, MCP, AppImage
 ├── scripts/                  Build and release automation
 └── Package.swift             SPM manifest
 ```
@@ -285,6 +312,10 @@ gridex/
 System library: `libsqlite3` (linked at build time). ClickHouse uses `URLSession` + `Security.framework` — no SPM dependency.
 
 ---
+
+## Community
+
+Join the Discord to ask questions, share feedback, or follow release notes: <https://discord.gg/UuV2Ktc6>.
 
 ## Contributing
 
