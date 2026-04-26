@@ -621,17 +621,11 @@ namespace winrt::Gridex::implementation
 
         // Chunked render to keep the UI thread responsive on large
         // result sets. Building 3k+ row visuals in one synchronous
-        // pass froze the app for 5+ seconds — measurable in the
-        // wild on `SELECT * FROM big_table`.
-        //
-        // Why a DispatcherQueueTimer (and not just TryEnqueue):
-        // chained TryEnqueue posts drain back-to-back without
-        // letting layout / paint pump in between, so the user
-        // sees a long freeze and then all rows appear at once.
-        // A timer with a small interval forces a real frame gap
-        // between chunks — input + paint get scheduled naturally.
-        constexpr int kFirstChunk = 100;  // small first paint
-        constexpr int kChunk      = 100;  // per-tick budget
+        // pass froze the app for 5+ seconds. The async tail (BuildRowsTail)
+        // co_awaits resume_after between chunks so layout + paint actually
+        // pump between chunks — TryEnqueue chains and DispatcherQueueTimer
+        // both proved insufficient.
+        constexpr int kFirstChunk = 100;
 
         int firstEnd = (std::min)(totalRows, kFirstChunk);
         for (int i = 0; i < firstEnd; ++i)
@@ -646,40 +640,65 @@ namespace winrt::Gridex::implementation
 
         if (firstEnd >= totalRows) return;
 
-        // New generation token. If another SetData fires before this
-        // chain finishes, the captured `gen` will mismatch and the
-        // tick drops out without appending stale rows.
+        // Bump generation token so any in-flight tail from a previous
+        // SetData call notices it has been superseded and bails out.
         const uint64_t gen = ++buildRowsGeneration_;
-        auto self = get_strong();
-        auto dq = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
-        if (!dq)
-        {
-            // No dispatcher (unlikely on the UI thread, but be safe) —
-            // fall through to synchronous render of the remainder.
-            for (int i = firstEnd; i < totalRows; ++i)
-                rows.Children().Append(BuildRowElement(i));
-            return;
-        }
+        BuildRowsTail(gen, firstEnd, totalRows);
+    }
 
-        auto cursor = std::make_shared<int>(firstEnd);
-        auto timer  = dq.CreateTimer();
-        timer.Interval(std::chrono::milliseconds(16)); // ~1 frame
-        timer.IsRepeating(true);
-        timer.Tick([self, timer, cursor, gen, totalRows]
-                   (auto&&, auto&&)
+    namespace {
+        // Resume the awaiting coroutine on the UI dispatcher's thread.
+        // WinAppSDK doesn't ship a resume_foreground overload for
+        // Microsoft.UI.Dispatching.DispatcherQueue, so this is the
+        // equivalent custom awaiter — TryEnqueue parks h.resume() on
+        // the UI thread and the coroutine continues there.
+        struct ResumeOnDispatcher
         {
-            if (self->buildRowsGeneration_ != gen) { timer.Stop(); return; }
-            int start = *cursor;
-            int end   = (std::min)(totalRows, start + kChunk);
-            auto rows = self->DataRows();
-            for (int i = start; i < end; ++i)
-                rows.Children().Append(self->BuildRowElement(i));
-            if (self->selectedRow_ >= start && self->selectedRow_ < end)
-                self->HighlightRow(self->selectedRow_);
-            *cursor = end;
-            if (end >= totalRows) timer.Stop();
-        });
-        timer.Start();
+            winrt::Microsoft::UI::Dispatching::DispatcherQueue dq;
+            bool await_ready() const noexcept { return false; }
+            void await_suspend(std::coroutine_handle<> h) const
+            {
+                dq.TryEnqueue([h] { h.resume(); });
+            }
+            void await_resume() const noexcept {}
+        };
+    }
+
+    winrt::fire_and_forget DataGridView::BuildRowsTail(
+        uint64_t gen, int startIdx, int totalRows)
+    {
+        constexpr int kChunk = 100;
+
+        // Strong ref keeps the page alive for the duration of the
+        // streaming render even if the user navigates away.
+        auto self = get_strong();
+        // Capture the UI dispatcher so each iteration can hop back
+        // after the delay (resume_after lands on a thread-pool thread).
+        auto dq = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+
+        try
+        {
+            for (int i = startIdx; i < totalRows; i += kChunk)
+            {
+                if (self->buildRowsGeneration_ != gen) co_return; // superseded
+                int end = (std::min)(totalRows, i + kChunk);
+                auto rows = self->DataRows();
+                if (!rows) co_return;
+                for (int j = i; j < end; ++j)
+                    rows.Children().Append(self->BuildRowElement(j));
+                if (self->selectedRow_ >= i && self->selectedRow_ < end)
+                    self->HighlightRow(self->selectedRow_);
+                if (end >= totalRows) break;
+                // Yield ~1 frame so layout + paint + input get to run.
+                // resume_after lands on the thread pool — hop back to
+                // the UI thread via the custom awaiter before touching
+                // XAML in the next pass.
+                co_await winrt::resume_after(std::chrono::milliseconds(16));
+                if (!dq) co_return;
+                co_await ResumeOnDispatcher{ dq };
+            }
+        }
+        catch (...) { /* page closed mid-stream — drop quietly */ }
     }
 
     // Build a single row's UI element. Layout: a horizontal StackPanel that

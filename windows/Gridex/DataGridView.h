@@ -148,6 +148,9 @@ namespace winrt::Gridex::implementation
         // fill, and the cell container — eliminating ~3100 ColumnDefinition
         // objects (for a 100x30 page) and the Button visual-state machinery.
         void BuildRows();
+        // Async tail of BuildRows — yields between chunks via
+        // resume_after so layout/paint pump every few hundred rows.
+        winrt::fire_and_forget BuildRowsTail(uint64_t gen, int startIdx, int totalRows);
         winrt::Microsoft::UI::Xaml::Controls::StackPanel BuildRowElement(int rowIdx);
         void SelectRow(int index);
         void HighlightRow(int index);
