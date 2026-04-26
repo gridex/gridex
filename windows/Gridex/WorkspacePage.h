@@ -112,6 +112,15 @@ namespace winrt::Gridex::implementation
         void SwitchContentView();
         void OnTableSelected(const std::wstring& tableName, const std::wstring& schema);
         void OpenNewQueryTab();
+        // Inspect a failed query's error text for the typical
+        // "syntax error at or near 'X'" pattern. If X is a known
+        // reserved keyword for the active dialect AND it appears
+        // unquoted in the SQL, return a short user-facing hint
+        // suggesting the right quote char. Empty string = no hint.
+        static std::wstring ReservedKeywordHint(
+            const std::wstring& sql,
+            const std::wstring& error,
+            DBModels::DatabaseType dbType);
 
         // ── CRUD Operations ─────────────────────────
         void DeleteSelectedRow();

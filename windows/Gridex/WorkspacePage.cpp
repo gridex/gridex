@@ -2606,6 +2606,75 @@ namespace winrt::Gridex::implementation
 
     // ── Query Log ───────────────────────────────────────
 
+    std::wstring WorkspacePage::ReservedKeywordHint(
+        const std::wstring& sql,
+        const std::wstring& error,
+        DBModels::DatabaseType dbType)
+    {
+        // Tight common subset shared across PG/MySQL/MSSQL/SQLite.
+        // Adding every dialect's full reserved list bloats the binary
+        // for marginal value — these are the words users actually
+        // collide with when naming tables/columns.
+        static const std::vector<std::wstring> kReserved = {
+            L"order", L"user", L"group", L"select", L"from", L"where",
+            L"table", L"column", L"index", L"key", L"primary", L"references",
+            L"limit", L"offset", L"join", L"left", L"right", L"inner",
+            L"outer", L"on", L"and", L"or", L"not", L"null", L"default",
+            L"check", L"unique", L"foreign", L"timestamp", L"date", L"time",
+            L"int", L"integer", L"text", L"value", L"values", L"asc", L"desc",
+        };
+
+        // Lower-cased copies for case-insensitive matching.
+        auto toLower = [](std::wstring s) {
+            std::transform(s.begin(), s.end(), s.begin(),
+                [](wchar_t c) { return std::towlower(c); });
+            return s;
+        };
+        const std::wstring sqlLower = toLower(sql);
+        const std::wstring errLower = toLower(error);
+
+        // Heuristic: the error mentions "syntax error" + "at or near"
+        // (PG / MySQL phrasing). Pull the keyword out of the quoted
+        // segment if present.
+        if (errLower.find(L"syntax error") == std::wstring::npos) return L"";
+
+        std::wstring suspect;
+        // Try "at or near \"X\"" first (PG)
+        auto p = errLower.find(L"at or near \"");
+        if (p != std::wstring::npos)
+        {
+            auto end = errLower.find(L'"', p + 12);
+            if (end != std::wstring::npos)
+                suspect = errLower.substr(p + 12, end - (p + 12));
+        }
+        // Fallback: first reserved keyword that appears unquoted in SQL
+        if (suspect.empty())
+        {
+            for (auto& kw : kReserved)
+                if (sqlLower.find(L" " + kw + L" ") != std::wstring::npos ||
+                    sqlLower.find(L" " + kw) != std::wstring::npos)
+                {
+                    suspect = kw; break;
+                }
+        }
+        if (suspect.empty()) return L"";
+
+        // Confirm it's actually a reserved word we know about.
+        bool isReserved = false;
+        for (auto& kw : kReserved)
+            if (kw == suspect) { isReserved = true; break; }
+        if (!isReserved) return L"";
+
+        // Pick the dialect's identifier quote char.
+        const wchar_t q = (dbType == DBModels::DatabaseType::MySQL ||
+                           dbType == DBModels::DatabaseType::ClickHouse)
+                          ? L'`' : L'"';
+
+        return L"`" + suspect + L"` is a reserved SQL keyword. Wrap it in "
+             + std::wstring(1, q) + suspect + std::wstring(1, q)
+             + L" to use it as an identifier.";
+    }
+
     void WorkspacePage::LogQuery(const DBModels::QueryResult& result, double renderTimeMs)
     {
         DBModels::QueryLogEntry entry;
@@ -2692,6 +2761,27 @@ namespace winrt::Gridex::implementation
                     winrt::Windows::UI::ColorHelper::FromArgb(255, 196, 43, 28)));
                 errTb.Opacity(0.8);
                 QueryLogEntries().Children().Append(errTb);
+
+                // Reserved-keyword hint: PG / MySQL frequently produce
+                // a generic "syntax error at or near 'X'" for a token
+                // that is actually a reserved word being used as an
+                // unquoted identifier (e.g. `select id from order`).
+                // Surface a one-line hint so the user knows to wrap
+                // the offending name in the dialect's quote char.
+                std::wstring hint = ReservedKeywordHint(
+                    entry.sql, entry.error, state_.connection.databaseType);
+                if (!hint.empty())
+                {
+                    muxc::TextBlock hintTb;
+                    hintTb.Text(winrt::hstring(L"-- HINT: " + hint));
+                    hintTb.FontSize(11);
+                    hintTb.FontFamily(mux::Media::FontFamily(L"Cascadia Code,Consolas,monospace"));
+                    hintTb.IsTextSelectionEnabled(true);
+                    hintTb.Foreground(muxm::SolidColorBrush(
+                        winrt::Windows::UI::ColorHelper::FromArgb(255, 200, 150, 40)));
+                    hintTb.Opacity(0.9);
+                    QueryLogEntries().Children().Append(hintTb);
+                }
             }
         }
 
