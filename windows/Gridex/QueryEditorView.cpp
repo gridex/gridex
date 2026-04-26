@@ -4,6 +4,7 @@
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Microsoft.UI.Input.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
 #include "QueryEditorView.h"
 #if __has_include("QueryEditorView.g.cpp")
 #include "QueryEditorView.g.cpp"
@@ -470,23 +471,123 @@ namespace winrt::Gridex::implementation
 
     // ── Core methods ───────────────────────────────────
 
-    void QueryEditorView::ExecuteCurrentQuery()
+    namespace {
+        // QueryPerf: temporary instrumentation to pin down the freeze on
+        // big result sets. Writes phase markers to %TEMP%\gridex-perf.log
+        // so they survive across runs and are easy to paste back. Strip
+        // once we have the answer.
+        std::wstring perfLogPath()
+        {
+            wchar_t tmp[MAX_PATH];
+            DWORD n = GetTempPathW(MAX_PATH, tmp);
+            if (!n) return L"C:\\gridex-perf.log";
+            return std::wstring(tmp, n) + L"gridex-perf.log";
+        }
+        void perfLog(const wchar_t* line)
+        {
+            FILE* f = nullptr;
+            _wfopen_s(&f, perfLogPath().c_str(), L"a, ccs=UTF-8");
+            if (!f) return;
+            SYSTEMTIME st; GetLocalTime(&st);
+            fwprintf(f, L"%02d:%02d:%02d.%03d %ls\n",
+                st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, line);
+            fclose(f);
+            OutputDebugStringW(line);
+            OutputDebugStringW(L"\n");
+        }
+        struct QueryPerfStage {
+            std::wstring name;
+            std::chrono::steady_clock::time_point t0;
+            QueryPerfStage(const wchar_t* n)
+                : name(n), t0(std::chrono::steady_clock::now())
+            {
+                perfLog((L"[QueryPerf] " + name + L" START").c_str());
+            }
+            ~QueryPerfStage()
+            {
+                auto dur = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t0).count();
+                wchar_t buf[256];
+                swprintf_s(buf, L"[QueryPerf] %ls END  %lldms",
+                    name.c_str(), (long long)dur);
+                perfLog(buf);
+            }
+        };
+
+        // UI-thread resumer (WinAppSDK ships no resume_foreground for
+        // Microsoft.UI.Dispatching.DispatcherQueue, so this is the
+        // equivalent custom awaiter). Used by ExecuteCurrentQuery to
+        // hop back to the UI thread after the bg query finishes.
+        struct ResumeOnDispatcher
+        {
+            winrt::Microsoft::UI::Dispatching::DispatcherQueue dq;
+            bool await_ready() const noexcept { return false; }
+            void await_suspend(std::coroutine_handle<> h) const
+            {
+                dq.TryEnqueue([h] { h.resume(); });
+            }
+            void await_resume() const noexcept {}
+        };
+    }
+
+    winrt::fire_and_forget QueryEditorView::ExecuteCurrentQuery()
     {
-        if (!sqlEditor_) return;
+        if (!sqlEditor_) co_return;
         std::wstring sql(sqlEditor_.Text());
-        if (sql.empty()) return;
+        if (sql.empty()) co_return;
         HideSuggestions();
 
         QueryStatusText().Text(L"Running...");
+        QueryLoadingText().Text(L"Running query...");
+        QueryLoadingOverlay().Visibility(mux::Visibility::Visible);
+        perfLog(L"[QueryPerf] ====== ExecuteCurrentQuery ======");
 
-        if (OnExecuteQuery)
+        if (!OnExecuteQuery)
         {
-            lastResult_ = OnExecuteQuery(sql);
-            if (lastResult_.success)
-                ShowResult(lastResult_);
-            else
-                ShowError(lastResult_.error);
+            QueryLoadingOverlay().Visibility(mux::Visibility::Collapsed);
+            co_return;
         }
+
+        // Run the query on a background thread so the UI thread can
+        // paint the loading overlay + handle input. Without the hop,
+        // adapter->execute blocks the UI for the entire query duration
+        // and the overlay never appears.
+        auto self = get_strong();
+        auto dq = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+        auto cb = OnExecuteQuery;
+        DBModels::QueryResult result;
+
+        co_await winrt::resume_background();
+        try
+        {
+            QueryPerfStage s(L"OnExecuteQuery (adapter->execute)");
+            result = cb(sql);
+        }
+        catch (...) { result.success = false; result.error = L"Query execution failed."; }
+
+        // Hop back to the UI thread to render.
+        if (dq) co_await ResumeOnDispatcher{ dq };
+
+        self->lastResult_ = std::move(result);
+        wchar_t buf[256];
+        swprintf_s(buf, L"[QueryPerf] result.rows=%zu cols=%zu success=%d",
+            self->lastResult_.rows.size(), self->lastResult_.columnNames.size(),
+            (int)self->lastResult_.success);
+        perfLog(buf);
+
+        if (self->lastResult_.success)
+        {
+            QueryPerfStage s(L"ShowResult (sync portion)");
+            self->ShowResult(self->lastResult_);
+        }
+        else
+        {
+            self->ShowError(self->lastResult_.error);
+        }
+
+        // Hide overlay after the sync portion of ShowResult has rendered
+        // first chunk (the async tail keeps streaming behind the scenes).
+        self->QueryLoadingOverlay().Visibility(mux::Visibility::Collapsed);
     }
 
     void QueryEditorView::SetSql(const std::wstring& sql)
@@ -572,10 +673,24 @@ namespace winrt::Gridex::implementation
 
     void QueryEditorView::ShowResult(const DBModels::QueryResult& result)
     {
-        ResultsContainer().Children().Clear();
+        {
+            QueryPerfStage s(L"ResultsContainer.Clear");
+            ResultsContainer().Children().Clear();
+        }
 
         std::wstring status = std::to_wstring(result.totalRows) + L" rows  \u00B7  " +
             std::to_wstring(static_cast<int>(result.executionTimeMs)) + L" ms";
+        // Cap how many rows we realize in the visual tree. Building +
+        // clearing 47k XAML elements (1817 rows x 25 cols x 1.x children
+        // each) freezes the UI for seconds even with chunked render.
+        // Until we wire ItemsRepeater virtualization, truncate to a
+        // sane upper bound and surface the truncation in the status.
+        constexpr int kMaxRenderedRows = 500;
+        const int totalRowsAll = static_cast<int>(result.rows.size());
+        const int truncatedTo  = (totalRowsAll > kMaxRenderedRows)
+                                     ? kMaxRenderedRows : totalRowsAll;
+        if (totalRowsAll > truncatedTo)
+            status += L"  ·  showing first " + std::to_wstring(truncatedTo);
         QueryStatusText().Text(winrt::hstring(status));
         ResultsHeader().Visibility(mux::Visibility::Visible);
         ResultsSummaryText().Text(winrt::hstring(status));
@@ -597,8 +712,23 @@ namespace winrt::Gridex::implementation
         }
         resultColumnWidths_.assign(nCols, colWidth);
 
-        BuildResultHeaders(result);
-        BuildResultRows(result);
+        {
+            QueryPerfStage s(L"BuildResultHeaders");
+            BuildResultHeaders(result);
+        }
+
+        // Render only the truncated slice. Copy is cheap relative to the
+        // XAML element creation cost we just avoided.
+        if (totalRowsAll > truncatedTo)
+        {
+            DBModels::QueryResult sliced = result;
+            sliced.rows.resize(truncatedTo);
+            BuildResultRows(sliced);
+        }
+        else
+        {
+            BuildResultRows(result);
+        }
     }
 
     // ── Result-grid headers with drag-to-resize grip ──────────────
@@ -614,6 +744,15 @@ namespace winrt::Gridex::implementation
         headerRow.Orientation(muxc::Orientation::Horizontal);
         headerRow.Background(muxm::SolidColorBrush(
             winrt::Windows::UI::ColorHelper::FromArgb(15, 128, 128, 128)));
+
+        // Share ONE QueryResult instance across all column lambdas.
+        // Previously each column copied the entire result by value into
+        // its own PointerReleased handler — for a 1817×25 result that's
+        // 25 deep copies of a million-wstring table (4+ seconds on
+        // mid-size queries; user hit a hard freeze). shared_ptr keeps
+        // the rebuild path working (resize-end rebuilds rows from the
+        // same data) without the per-column duplication.
+        auto resultShared = std::make_shared<DBModels::QueryResult>(result);
 
         for (size_t ci = 0; ci < result.columnNames.size(); ++ci)
         {
@@ -673,9 +812,6 @@ namespace winrt::Gridex::implementation
                 });
 
             const int colIndex = static_cast<int>(ci);
-            // Capture result by value so PointerReleased can rebuild rows
-            // even if the outer ShowResult stack frame is long gone.
-            DBModels::QueryResult resultCopy = result;
 
             resizeGrip.PointerPressed(
                 [this, colIndex](winrt::Windows::Foundation::IInspectable const& sender,
@@ -723,8 +859,8 @@ namespace winrt::Gridex::implementation
                 });
 
             resizeGrip.PointerReleased(
-                [this, resultCopy](winrt::Windows::Foundation::IInspectable const& sender,
-                                   mux::Input::PointerRoutedEventArgs const& e)
+                [this, resultShared](winrt::Windows::Foundation::IInspectable const& sender,
+                                     mux::Input::PointerRoutedEventArgs const& e)
                 {
                     if (resizingResultCol_ >= 0)
                     {
@@ -733,7 +869,7 @@ namespace winrt::Gridex::implementation
                         resizingResultCol_ = -1;
                         // Rebuild rows only -- keeping the header avoids
                         // rewiring every grip's pointer handlers.
-                        BuildResultRows(resultCopy);
+                        BuildResultRows(*resultShared);
                     }
                     e.Handled(true);
                 });
@@ -746,13 +882,13 @@ namespace winrt::Gridex::implementation
     }
 
     // ── Result-grid rows (header-independent, rebuilt on resize end) ──
-    void QueryEditorView::BuildResultRows(const DBModels::QueryResult& result)
-    {
-        // Remove any existing row StackPanels but keep the header (index 0).
-        auto children = ResultsContainer().Children();
-        while (children.Size() > 1) children.RemoveAt(1);
-
-        for (int i = 0; i < static_cast<int>(result.rows.size()); ++i)
+    namespace {
+        // Build a single result-row StackPanel. Pulled out so the
+        // chunked tail can call it without duplicating the cell layout.
+        muxc::StackPanel BuildResultRow(
+            const DBModels::QueryResult& result, int i,
+            const std::vector<double>& colWidths,
+            double defaultWidth)
         {
             auto& row = result.rows[i];
             muxc::StackPanel rowPanel;
@@ -764,8 +900,8 @@ namespace winrt::Gridex::implementation
             for (size_t ci = 0; ci < result.columnNames.size(); ++ci)
             {
                 const auto& col = result.columnNames[ci];
-                const double w = (ci < resultColumnWidths_.size())
-                    ? resultColumnWidths_[ci] : RESULT_COL_DEFAULT_WIDTH;
+                const double w = (ci < colWidths.size())
+                    ? colWidths[ci] : defaultWidth;
 
                 std::wstring val;
                 auto it = row.find(col);
@@ -788,8 +924,67 @@ namespace winrt::Gridex::implementation
                 cell.Child(lbl);
                 rowPanel.Children().Append(cell);
             }
-            ResultsContainer().Children().Append(rowPanel);
+            return rowPanel;
         }
+    }
+
+    // Chunked render: synchronous first chunk for instant first paint,
+    // then a coroutine streams the rest in 100-row batches yielding
+    // ~1 frame between chunks. Mirrors DataGridView's tail pattern.
+    void QueryEditorView::BuildResultRows(const DBModels::QueryResult& result)
+    {
+        QueryPerfStage stage(L"BuildResultRows (sync first chunk)");
+        // Remove any existing row StackPanels but keep the header (index 0).
+        auto children = ResultsContainer().Children();
+        while (children.Size() > 1) children.RemoveAt(1);
+
+        const int totalRows = static_cast<int>(result.rows.size());
+        constexpr int kFirstChunk = 100;
+        int firstEnd = (totalRows < kFirstChunk) ? totalRows : kFirstChunk;
+
+        for (int i = 0; i < firstEnd; ++i)
+            ResultsContainer().Children().Append(
+                BuildResultRow(result, i, resultColumnWidths_, RESULT_COL_DEFAULT_WIDTH));
+
+        wchar_t buf[256];
+        swprintf_s(buf, L"[QueryPerf]   first chunk %d rows appended", firstEnd);
+        perfLog(buf);
+
+        if (firstEnd >= totalRows) return;
+
+        // New generation cancels any in-flight tail from a previous run.
+        const uint64_t gen = ++buildResultGeneration_;
+        BuildResultRowsTail(result, gen, firstEnd);
+    }
+
+    winrt::fire_and_forget QueryEditorView::BuildResultRowsTail(
+        DBModels::QueryResult result, uint64_t gen, int startIdx)
+    {
+        constexpr int kChunk = 100;
+        const int totalRows = static_cast<int>(result.rows.size());
+        auto self = get_strong();
+        auto dq = winrt::Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+
+        try
+        {
+            for (int i = startIdx; i < totalRows; i += kChunk)
+            {
+                if (self->buildResultGeneration_ != gen) co_return; // superseded
+                int end = (totalRows < i + kChunk) ? totalRows : i + kChunk;
+                auto container = self->ResultsContainer();
+                if (!container) co_return;
+                for (int j = i; j < end; ++j)
+                    container.Children().Append(
+                        BuildResultRow(result, j,
+                                       self->resultColumnWidths_,
+                                       RESULT_COL_DEFAULT_WIDTH));
+                if (end >= totalRows) break;
+                co_await winrt::resume_after(std::chrono::milliseconds(16));
+                if (!dq) co_return;
+                co_await ResumeOnDispatcher{ dq };
+            }
+        }
+        catch (...) { /* page closed mid-stream — drop quietly */ }
     }
 
     void QueryEditorView::ShowError(const std::wstring& message)

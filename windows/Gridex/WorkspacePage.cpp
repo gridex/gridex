@@ -378,7 +378,20 @@ namespace winrt::Gridex::implementation
 
                         auto result = adapter->execute(effective);
                         if (rewritten) result.sql = effective; // log rewritten form
-                        LogQuery(result);
+                        // QueryEditorView now calls this lambda from a
+                        // background thread (so the loading overlay can
+                        // paint while adapter->execute blocks). LogQuery
+                        // touches XAML, so marshal it back to the UI via
+                        // the page's own dispatcher (xaml elements expose
+                        // their dispatcher on every thread, GetForCurrent
+                        // returns null off the UI thread).
+                        auto self = get_strong();
+                        auto dq = self->DispatcherQueue();
+                        DBModels::QueryResult forLog = result;
+                        if (dq)
+                            dq.TryEnqueue([self, forLog]{ self->LogQuery(forLog); });
+                        else
+                            LogQuery(result);
                         return result;
                     }
                     catch (const std::exception& ex)

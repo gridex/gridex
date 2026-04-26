@@ -130,6 +130,13 @@ namespace winrt::Gridex::implementation
         winrt::Microsoft::UI::Xaml::Style cellStyle_{ nullptr };
         winrt::Microsoft::UI::Xaml::Style rowNumStyle_{ nullptr };
 
+        // Bumped on every BuildRows kickoff. The chunked scheduler
+        // captures its value and bails out as soon as it sees a newer
+        // generation — so rapid SetData calls (table switch, refresh,
+        // re-query) don't keep appending stale rows from the previous
+        // load.
+        uint64_t buildRowsGeneration_ = 0;
+
         void EnsureCellStyles();
 
         void ComputeColumnWidths();
@@ -141,6 +148,9 @@ namespace winrt::Gridex::implementation
         // fill, and the cell container — eliminating ~3100 ColumnDefinition
         // objects (for a 100x30 page) and the Button visual-state machinery.
         void BuildRows();
+        // Async tail of BuildRows — yields between chunks via
+        // resume_after so layout/paint pump every few hundred rows.
+        winrt::fire_and_forget BuildRowsTail(uint64_t gen, int startIdx, int totalRows);
         winrt::Microsoft::UI::Xaml::Controls::StackPanel BuildRowElement(int rowIdx);
         void SelectRow(int index);
         void HighlightRow(int index);

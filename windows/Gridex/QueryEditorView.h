@@ -65,11 +65,18 @@ namespace winrt::Gridex::implementation
         static constexpr double RESULT_COL_DEFAULT_WIDTH = 150.0;
 
         void EnsureEditorCreated();
-        void ExecuteCurrentQuery();
+        winrt::fire_and_forget ExecuteCurrentQuery();
         void ShowResult(const DBModels::QueryResult& result);
         void ShowError(const std::wstring& message);
         void BuildResultHeaders(const DBModels::QueryResult& result);
         void BuildResultRows(const DBModels::QueryResult& result);
+        // Async tail of BuildResultRows — yields between chunks via
+        // resume_after so layout/paint pump every few hundred rows.
+        // Required for large result sets (3k+ rows) — synchronous render
+        // froze the UI thread for 5+ seconds.
+        winrt::fire_and_forget BuildResultRowsTail(
+            DBModels::QueryResult result, uint64_t gen, int startIdx);
+        uint64_t buildResultGeneration_ = 0;
         void OnEditorTextChanged();
         void ForceShowSuggestions();
         void ShowSuggestions(const std::vector<std::wstring>& items);

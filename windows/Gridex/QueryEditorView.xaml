@@ -87,10 +87,29 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>
 
-            <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto"
-                          VerticalScrollBarVisibility="Auto">
-                <StackPanel x:Name="ResultsContainer" Spacing="0" />
-            </ScrollViewer>
+            <Grid Grid.Row="1">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="ResultsContainer" Spacing="0" />
+                </ScrollViewer>
+
+                <!-- Loading overlay shown while a query is running. -->
+                <Grid x:Name="QueryLoadingOverlay"
+                      Visibility="Collapsed"
+                      Background="{ThemeResource SmokeFillColorDefaultBrush}">
+                    <StackPanel Orientation="Vertical"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Spacing="12">
+                        <ProgressRing IsActive="True" Width="40" Height="40" />
+                        <TextBlock x:Name="QueryLoadingText"
+                                   Text="Running query..."
+                                   FontSize="13"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </Grid>
         </Grid>
     </Grid>
 </UserControl>
