@@ -19,6 +19,10 @@ final class SavedConnectionEntity {
     /// Fine-grained SSL posture (raw value of `SSLMode`). Optional for SwiftData
     /// lightweight migration of pre-existing rows. Read site falls back to `sslEnabled`.
     var sslMode: String?
+    /// Optional SSL certificate paths. Kept optional for lightweight migration.
+    var sslKeyPath: String?
+    var sslCertPath: String?
+    var sslCACertPath: String?
     var sshEnabled: Bool
     var sshHost: String?
     var sshPort: Int?
@@ -46,6 +50,9 @@ final class SavedConnectionEntity {
         username: String? = nil,
         sslEnabled: Bool = false,
         sslMode: String? = nil,
+        sslKeyPath: String? = nil,
+        sslCertPath: String? = nil,
+        sslCACertPath: String? = nil,
         sshEnabled: Bool = false,
         sshHost: String? = nil,
         sshPort: Int? = nil,
@@ -70,6 +77,9 @@ final class SavedConnectionEntity {
         self.username = username
         self.sslEnabled = sslEnabled
         self.sslMode = sslMode
+        self.sslKeyPath = sslKeyPath
+        self.sslCertPath = sslCertPath
+        self.sslCACertPath = sslCACertPath
         self.sshEnabled = sshEnabled
         self.sshHost = sshHost
         self.sshPort = sshPort
@@ -120,6 +130,9 @@ final class SavedConnectionEntity {
             sslMode: sslMode.flatMap { SSLMode(rawValue: $0) },
             colorTag: colorTag.flatMap { ColorTag(rawValue: $0) },
             group: group,
+            sslKeyPath: sslKeyPath,
+            sslCertPath: sslCertPath,
+            sslCACertPath: sslCACertPath,
             filePath: filePath,
             sshConfig: sshConfig,
             mcpMode: mcpMode.flatMap { MCPConnectionMode(rawValue: $0) } ?? .locked,
