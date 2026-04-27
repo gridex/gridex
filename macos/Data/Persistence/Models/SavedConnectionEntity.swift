@@ -16,6 +16,9 @@ final class SavedConnectionEntity {
     var database: String?
     var username: String?
     var sslEnabled: Bool
+    /// Fine-grained SSL posture (raw value of `SSLMode`). Optional for SwiftData
+    /// lightweight migration of pre-existing rows. Read site falls back to `sslEnabled`.
+    var sslMode: String?
     var sshEnabled: Bool
     var sshHost: String?
     var sshPort: Int?
@@ -42,6 +45,7 @@ final class SavedConnectionEntity {
         database: String? = nil,
         username: String? = nil,
         sslEnabled: Bool = false,
+        sslMode: String? = nil,
         sshEnabled: Bool = false,
         sshHost: String? = nil,
         sshPort: Int? = nil,
@@ -65,6 +69,7 @@ final class SavedConnectionEntity {
         self.database = database
         self.username = username
         self.sslEnabled = sslEnabled
+        self.sslMode = sslMode
         self.sshEnabled = sshEnabled
         self.sshHost = sshHost
         self.sshPort = sshPort
@@ -112,6 +117,7 @@ final class SavedConnectionEntity {
             database: database,
             username: username,
             sslEnabled: sslEnabled,
+            sslMode: sslMode.flatMap { SSLMode(rawValue: $0) },
             colorTag: colorTag.flatMap { ColorTag(rawValue: $0) },
             group: group,
             filePath: filePath,
