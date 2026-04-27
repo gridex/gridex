@@ -28,31 +28,7 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let username = config.username ?? "postgres"
         let database = config.database ?? username
 
-        let tlsConfig: PostgresClient.Configuration.TLS
-        if config.sslEnabled {
-            var tls = TLSConfiguration.makeClientConfiguration()
-
-            // Load client certificate and key for mTLS (e.g., Teleport)
-            if let certPath = config.sslCertPath, !certPath.isEmpty,
-               let keyPath = config.sslKeyPath, !keyPath.isEmpty {
-                let cert = try NIOSSLCertificate.fromPEMFile(certPath)
-                let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-                tls.certificateChain = cert.map { .certificate($0) }
-                tls.privateKey = .privateKey(key)
-            }
-
-            // Load CA certificate for server verification
-            if let caPath = config.sslCACertPath, !caPath.isEmpty {
-                tls.trustRoots = .file(caPath)
-                tls.certificateVerification = .fullVerification
-            } else {
-                tls.certificateVerification = .none
-            }
-
-            tlsConfig = .prefer(tls)
-        } else {
-            tlsConfig = .disable
-        }
+        let tlsConfig = try Self.makeTLSConfig(for: config.effectiveSSLMode, config: config)
 
         let pgConfig = PostgresClient.Configuration(
             host: host,
@@ -66,12 +42,55 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let newClient = PostgresClient(configuration: pgConfig)
         self.client = newClient
 
-        // PostgresClient requires run() in a background task
-        self.clientTask = Task { await newClient.run() }
+        // Querying before PostgresClient.run() is scheduled surfaces a bare
+        // `_ConnectionPoolModule.ConnectionPoolError` that hides the real cause;
+        // reproduces on slow handshakes (e.g. HighGo Secure login-audit NOTICE).
+        // The continuation guarantees the spawned Task body has been entered;
+        // the trailing yield lets run() reach its first suspension point.
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.clientTask = Task {
+                cont.resume()
+                await newClient.run()
+            }
+        }
+        await Task.yield()
 
-        // Verify the connection works
         _ = try await newClient.query("SELECT 1")
         isConnected = true
+    }
+
+    private static func makeTLSConfig(
+        for mode: SSLMode,
+        config: ConnectionConfig
+    ) throws -> PostgresClient.Configuration.TLS {
+        if mode == .disabled { return .disable }
+
+        var tls = TLSConfiguration.makeClientConfiguration()
+
+        // mTLS client cert (e.g. Teleport).
+        if let certPath = config.sslCertPath, !certPath.isEmpty,
+           let keyPath = config.sslKeyPath, !keyPath.isEmpty {
+            let cert = try NIOSSLCertificate.fromPEMFile(certPath)
+            let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+            tls.certificateChain = cert.map { .certificate($0) }
+            tls.privateKey = .privateKey(key)
+        }
+
+        // libpq semantics: PREFERRED/REQUIRED encrypt only; VERIFY_CA verifies
+        // the chain; VERIFY_IDENTITY also verifies the hostname.
+        switch mode {
+        case .verifyCA, .verifyIdentity:
+            if let caPath = config.sslCACertPath, !caPath.isEmpty {
+                tls.trustRoots = .file(caPath)
+            }
+            tls.certificateVerification = (mode == .verifyIdentity) ? .fullVerification : .noHostnameVerification
+        default:
+            tls.certificateVerification = .none
+        }
+
+        // .prefer falls back to plaintext when the server refuses TLS;
+        // every stricter mode requires a successful TLS handshake.
+        return (mode == .preferred) ? .prefer(tls) : .require(tls)
     }
 
     func disconnect() async throws {

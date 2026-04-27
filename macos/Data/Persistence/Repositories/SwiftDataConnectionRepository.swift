@@ -55,6 +55,10 @@ final class SwiftDataConnectionRepository: ConnectionRepository, @unchecked Send
             database: config.database,
             username: config.username,
             sslEnabled: config.sslEnabled,
+            sslMode: config.sslMode?.rawValue,
+            sslKeyPath: config.sslKeyPath,
+            sslCertPath: config.sslCertPath,
+            sslCACertPath: config.sslCACertPath,
             sshEnabled: config.sshConfig != nil,
             sshHost: config.sshConfig?.host,
             sshPort: config.sshConfig?.port,
@@ -88,6 +92,10 @@ final class SwiftDataConnectionRepository: ConnectionRepository, @unchecked Send
         entity.database = config.database
         entity.username = config.username
         entity.sslEnabled = config.sslEnabled
+        entity.sslMode = config.sslMode?.rawValue
+        entity.sslKeyPath = config.sslKeyPath
+        entity.sslCertPath = config.sslCertPath
+        entity.sslCACertPath = config.sslCACertPath
         entity.colorTag = config.colorTag?.rawValue
         entity.group = config.group
         entity.filePath = config.filePath
