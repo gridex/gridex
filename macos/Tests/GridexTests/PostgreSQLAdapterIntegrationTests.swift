@@ -205,4 +205,43 @@ final class PostgreSQLAdapterIntegrationTests: XCTestCase {
             }
         }
     }
+
+    func test_listTables_usesPgCatalogOnHighGoSecure() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let host = env["GRIDEX_HIGHGO_HOST"],
+              let port = Int(env["GRIDEX_HIGHGO_PORT"] ?? ""),
+              let database = env["GRIDEX_HIGHGO_DATABASE"],
+              let username = env["GRIDEX_HIGHGO_USER"],
+              let password = env["GRIDEX_HIGHGO_PASSWORD"] else {
+            throw XCTSkip("Set GRIDEX_HIGHGO_* to run the HighGo Secure catalog regression test")
+        }
+
+        let cfg = ConnectionConfig(
+            id: UUID(),
+            name: "highgo-catalog-regression",
+            databaseType: .postgresql,
+            host: host,
+            port: port,
+            database: database,
+            username: username,
+            sslEnabled: false,
+            sslMode: .disabled
+        )
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: password)
+
+        let tables: [TableInfo]
+        do {
+            tables = try await adapter.listTables(schema: "public")
+            try await adapter.disconnect()
+        } catch {
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        let names = tables.map(\.name)
+        XCTAssertEqual(names.count, Set(names).count, "HighGo information_schema.tables can duplicate rows; listTables must return unique physical tables")
+        XCTAssertEqual(names.filter { $0 == "app_view" }.count, 1)
+        XCTAssertTrue(names.contains("hg_t_audit_log"), "pg_class-backed listTables should include physical tables hidden by information_schema.tables")
+    }
 }

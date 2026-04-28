@@ -8,6 +8,7 @@ import PostgresNIO
 import NIOCore
 import NIOPosix
 import NIOSSL
+import Logging
 
 final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendable {
     let databaseType: DatabaseType = .postgresql
@@ -15,6 +16,7 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
     private var client: PostgresClient?
     private var clientTask: Task<Void, Never>?
     private let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+    private let logger = Logger(label: "com.gridex.postgresql")
 
     deinit {
         clientTask?.cancel()
@@ -270,19 +272,20 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
     func listTables(schema: String?) async throws -> [TableInfo] {
         let schemaFilter = schema ?? "public"
         let result = try await executeParameterized(sql: """
-            SELECT t.table_name,
-                   (SELECT reltuples::bigint FROM pg_class c
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE c.relname = t.table_name AND n.nspname = $1)
-            FROM information_schema.tables t
-            WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
-            ORDER BY t.table_name
+            SELECT c.relname, NULLIF(c.reltuples::bigint, -1)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relkind IN ('r', 'p')
+            ORDER BY c.relname
             """, params: [schemaFilter])
-        return result.rows.compactMap { row -> TableInfo? in
+        let tables = result.rows.compactMap { row -> TableInfo? in
             guard let name = row.first?.stringValue else { return nil }
             let count = row.count > 1 ? row[1].intValue : nil
             return TableInfo(name: name, schema: schemaFilter, type: .table, estimatedRowCount: count)
         }
+        logger.debug("Loaded tables", metadata: ["schema": "\(schemaFilter)", "count": "\(tables.count)"])
+        return tables
     }
 
     func listViews(schema: String?) async throws -> [ViewInfo] {
