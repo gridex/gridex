@@ -45,6 +45,7 @@ let package = Package(
             path: "macos",
             exclude: [
                 "Resources/Info.plist",
+                "Tests",
             ],
             resources: [
                 .copy("Resources/Gridex.entitlements"),
@@ -59,6 +60,11 @@ let package = Package(
                     "-Xlinker", "macos/Resources/Info.plist",
                 ]),
             ]
+        ),
+        .testTarget(
+            name: "GridexTests",
+            dependencies: ["Gridex"],
+            path: "macos/Tests/GridexTests"
         ),
     ]
 )
