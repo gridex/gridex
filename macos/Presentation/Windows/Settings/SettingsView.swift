@@ -33,6 +33,7 @@ struct GeneralSettingsView: View {
     @AppStorage("general.autoRefreshSidebar") private var autoRefreshSidebar = true
     @AppStorage("general.refreshInterval") private var refreshInterval = 300 // seconds
     @AppStorage("general.showQueryLog") private var showQueryLog = false
+    @AppStorage("mcp.hideStatusBarIcon") private var hideStatusBarIcon = false
 
     var body: some View {
         Form {
@@ -61,9 +62,18 @@ struct GeneralSettingsView: View {
             Section("Query") {
                 Toggle("Show query log panel by default", isOn: $showQueryLog)
             }
+
+            Section("Status Bar") {
+                Toggle("Hide status bar icon", isOn: $hideStatusBarIcon)
+            }
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: hideStatusBarIcon) { _, _ in
+            Task { @MainActor in
+                MCPStatusBarController.shared.refresh()
+            }
+        }
     }
 }
 
