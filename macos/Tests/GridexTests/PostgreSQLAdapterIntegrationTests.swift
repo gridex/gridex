@@ -346,4 +346,111 @@ final class PostgreSQLAdapterIntegrationTests: XCTestCase {
         _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
         try await adapter.disconnect()
     }
+
+    // MARK: - listViews + primaryKeyColumns migration off information_schema.*
+
+    // Same anti-pattern PR #47 fixed for listTables: information_schema.{views,
+    // table_constraints, key_column_usage} are privilege-filtered per the SQL
+    // standard and HighGo Secure 4.5+ duplicates rows. These tests pin the new
+    // pg_class / pg_constraint queries against a vanilla PG so a future
+    // contributor can't silently regress to information_schema.
+    func test_listViews_returnsViewsAndMaterializedViews() async throws {
+        try skipIfNoServer(port: 55434)
+
+        let cfg = makeBaseConfig(host: "127.0.0.1", port: 55434, sslMode: .disabled)
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: nil)
+
+        let suffix = UUID().uuidString.prefix(8).lowercased()
+        let table = "src_\(suffix)"
+        let view = "v_\(suffix)"
+        let matview = "mv_\(suffix)"
+        do {
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(table) (id int)")
+            _ = try await adapter.executeRaw(sql: "CREATE VIEW \(view) AS SELECT id FROM \(table)")
+            _ = try await adapter.executeRaw(sql: "CREATE MATERIALIZED VIEW \(matview) AS SELECT id FROM \(table) WITH NO DATA")
+
+            let views = try await adapter.listViews(schema: "public")
+            let names = views.map(\.name)
+
+            XCTAssertTrue(names.contains(view), "ordinary view must appear")
+            XCTAssertTrue(names.contains(matview), "materialized view must appear")
+
+            let v = views.first { $0.name == view }
+            let m = views.first { $0.name == matview }
+            XCTAssertEqual(v?.isMaterialized, false)
+            XCTAssertEqual(m?.isMaterialized, true)
+            XCTAssertNotNil(v?.definition, "pg_get_viewdef must return a body")
+            XCTAssertNotNil(m?.definition, "pg_get_viewdef must work for matviews too")
+        } catch {
+            _ = try? await adapter.executeRaw(sql: "DROP MATERIALIZED VIEW IF EXISTS \(matview)")
+            _ = try? await adapter.executeRaw(sql: "DROP VIEW IF EXISTS \(view)")
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table) CASCADE")
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        _ = try? await adapter.executeRaw(sql: "DROP MATERIALIZED VIEW IF EXISTS \(matview)")
+        _ = try? await adapter.executeRaw(sql: "DROP VIEW IF EXISTS \(view)")
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table) CASCADE")
+        try await adapter.disconnect()
+    }
+
+    func test_primaryKeyColumns_simpleAndCompound_orderPreserved() async throws {
+        try skipIfNoServer(port: 55434)
+
+        let cfg = makeBaseConfig(host: "127.0.0.1", port: 55434, sslMode: .disabled)
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: nil)
+
+        let suffix = UUID().uuidString.prefix(8).lowercased()
+        let simple = "pk_simple_\(suffix)"
+        let compound = "pk_compound_\(suffix)"
+        do {
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(simple) (id int PRIMARY KEY, name text)")
+            // Intentionally declare PK as (b, a) — column order in the constraint
+            // is NOT the table column order. The new query must follow the
+            // constraint declaration order, matching pre-PR information_schema
+            // behavior.
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(compound) (a int, b int, c int, PRIMARY KEY (b, a))")
+
+            let simplePK = try await adapter.primaryKeyColumns(table: simple, schema: "public")
+            XCTAssertEqual(simplePK, ["id"])
+
+            let compoundPK = try await adapter.primaryKeyColumns(table: compound, schema: "public")
+            XCTAssertEqual(compoundPK, ["b", "a"],
+                "compound PK must preserve declaration order (b, a) — not column order (a, b)")
+        } catch {
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(compound)")
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(simple)")
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(compound)")
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(simple)")
+        try await adapter.disconnect()
+    }
+
+    func test_primaryKeyColumns_returnsEmpty_whenTableHasNoPK() async throws {
+        try skipIfNoServer(port: 55434)
+
+        let cfg = makeBaseConfig(host: "127.0.0.1", port: 55434, sslMode: .disabled)
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: nil)
+
+        let table = "no_pk_\(UUID().uuidString.prefix(8).lowercased())"
+        do {
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(table) (id int, name text)")
+            let pk = try await adapter.primaryKeyColumns(table: table, schema: "public")
+            XCTAssertEqual(pk, [])
+        } catch {
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+        try await adapter.disconnect()
+    }
 }

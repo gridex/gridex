@@ -292,15 +292,19 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
 
     func listViews(schema: String?) async throws -> [ViewInfo] {
         let schemaFilter = schema ?? "public"
+        // Same anti-pattern PR #47 fixed for listTables: information_schema.views is
+        // privilege-filtered per the SQL standard and HighGo Secure 4.5+ (audit
+        // module) duplicates rows. Read pg_class directly: relkind 'v' = view,
+        // 'm' = materialized view. pg_get_viewdef works for both.
         let result = try await executeParameterized(sql: """
-            SELECT table_name, view_definition, false AS is_materialized
-            FROM information_schema.views
-            WHERE table_schema = $1
-            UNION ALL
-            SELECT matviewname, definition, true
-            FROM pg_matviews
-            WHERE schemaname = $1
-            ORDER BY table_name
+            SELECT c.relname,
+                   pg_get_viewdef(c.oid, true) AS definition,
+                   (c.relkind = 'm') AS is_materialized
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relkind IN ('v', 'm')
+            ORDER BY c.relname
             """, params: [schemaFilter])
 
         return result.rows.compactMap { row -> ViewInfo? in
@@ -760,14 +764,20 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
 
     func primaryKeyColumns(table: String, schema: String?) async throws -> [String] {
         let schemaFilter = schema ?? "public"
+        // Same anti-pattern: information_schema.{table_constraints, key_column_usage}
+        // is privilege-filtered and HighGo can duplicate. Use pg_constraint directly;
+        // `array_position(con.conkey, a.attnum)` preserves PK column order, replacing
+        // the kcu.ordinal_position used by the previous query.
         let result = try await executeParameterized(sql: """
-            SELECT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = $1 AND tc.table_name = $2
-            ORDER BY kcu.ordinal_position
+            SELECT a.attname
+            FROM pg_constraint con
+            JOIN pg_class cls ON cls.oid = con.conrelid
+            JOIN pg_namespace ns ON ns.oid = cls.relnamespace
+            JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey)
+            WHERE ns.nspname = $1
+              AND cls.relname = $2
+              AND con.contype = 'p'
+            ORDER BY array_position(con.conkey, a.attnum)
             """, params: [schemaFilter, table])
         return result.rows.compactMap { $0.first?.stringValue }
     }
