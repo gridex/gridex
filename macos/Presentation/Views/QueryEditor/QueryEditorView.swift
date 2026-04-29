@@ -374,7 +374,11 @@ struct QueryEditorView: View {
         isExecuting = true
         errorMessage = nil
 
-        let explainSQL = "EXPLAIN QUERY PLAN \(sql)"
+        guard let explainSQL = adapter.databaseType.explainSQL(for: sql) else {
+            errorMessage = "EXPLAIN is not supported for \(adapter.databaseType.displayName) connections."
+            isExecuting = false
+            return
+        }
         Task {
             let start = Date()
             do {

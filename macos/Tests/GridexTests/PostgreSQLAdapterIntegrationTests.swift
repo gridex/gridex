@@ -306,4 +306,44 @@ final class PostgreSQLAdapterIntegrationTests: XCTestCase {
         _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(plain)")
         try await adapter.disconnect()
     }
+
+    // MARK: - Issue #49 — Explain button server-side regression
+
+    // The query editor button used to send "EXPLAIN QUERY PLAN <sql>" to every
+    // engine — that's SQLite syntax, Postgres rejects it with SQLSTATE 42601
+    // ("syntax error at or near \"QUERY\""). After the fix, the editor goes
+    // through DatabaseType.explainSQL(for:) which emits the engine-correct form.
+    // This test asserts the PG-specific shape actually parses and executes.
+    func test_explainSQL_postgresShape_runsWithoutSyntaxError() async throws {
+        try skipIfNoServer(port: 55434)
+
+        let cfg = makeBaseConfig(host: "127.0.0.1", port: 55434, sslMode: .disabled)
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: nil)
+
+        // Make sure there's something to plan against.
+        let table = "gridex_explain_test_\(UUID().uuidString.prefix(8).lowercased())"
+        do {
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(table) (id int)")
+
+            guard let explainSQL = DatabaseType.postgresql.explainSQL(for: "SELECT * FROM \(table)") else {
+                XCTFail("PG must produce a non-nil EXPLAIN string")
+                return
+            }
+            // The literal regression: the SQL we send must NOT be the SQLite
+            // form. (Belt-and-braces against a future contributor accidentally
+            // re-introducing the same hardcode.)
+            XCTAssertFalse(explainSQL.uppercased().contains("QUERY PLAN"))
+
+            let result = try await adapter.executeRaw(sql: explainSQL)
+            XCTAssertFalse(result.rows.isEmpty, "EXPLAIN must return at least one plan row")
+        } catch {
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+        try await adapter.disconnect()
+    }
 }
