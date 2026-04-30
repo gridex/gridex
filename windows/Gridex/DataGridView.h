@@ -90,6 +90,12 @@ namespace winrt::Gridex::implementation
         DBModels::QueryResult data_;
         std::vector<DBModels::ColumnInfo> columnMetadata_;
         int selectedRow_ = -1;
+        // Column index of the cell most recently right-clicked. Used by
+        // the context menu's "Copy cell" item to pull the full value
+        // out of data_.rows (cells are visually truncated at
+        // MAX_CELL_DISPLAY_CHARS so a TextBlock-level Ctrl+C only sees
+        // the visible prefix). -1 = no cell context yet.
+        int contextCol_ = -1;
 
         // Tracks the (row, col) that is currently in inline-edit mode
         // (TextBox swapped in place of TextBlock). -1/-1 when nothing is
@@ -155,6 +161,11 @@ namespace winrt::Gridex::implementation
         void SelectRow(int index);
         void HighlightRow(int index);
         void CopySelectedRowToClipboard();
+        // Copy the FULL value of the right-clicked cell to the clipboard.
+        // Reads from data_.rows directly so multi-KB cells (where the
+        // grid visual was truncated to MAX_CELL_DISPLAY_CHARS) still
+        // round-trip every byte.
+        void CopyCellToClipboard();
         void SyncHeaderScroll();
         // Inline edit: row is a horizontal StackPanel; cell at column k is
         // child at index k+1 (index 0 = row number). We swap that child

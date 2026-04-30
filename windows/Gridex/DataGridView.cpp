@@ -26,14 +26,15 @@ namespace winrt::Gridex::implementation
     static muxc::StackPanel findRowPanelByDataIndex(
         muxc::Panel const& container, int dataIdx);
 
-    // Cap on characters fed to a row's TextBlock. The full value is kept in
-    // data_.rows so DetailsPanel, copy, and inline edit still see everything
-    // — but TextBlock's CharacterEllipsis trimming has to measure the whole
-    // string to know where to clip, and multi-KB HTML/text cells make the
-    // first measure pass dominate BuildRows(). 80 chars is enough preview
-    // for any column at default width (~150-300px) and keeps measure cost
-    // bounded; the rest of the value is one click away in DetailsPanel.
-    static constexpr size_t MAX_CELL_DISPLAY_CHARS = 80;
+    // Cap on characters fed to a row's TextBlock. Original 80-char limit
+    // forced users into "right-click → Copy cell" because the cell's
+    // underlying Text was the truncated string — Ctrl+C / drag-select
+    // only saw 80 chars. Bumped to 4096 so the common case (paragraph-
+    // sized text fields, most JSON/URLs) round-trips on a normal cell
+    // copy. Above 4096 we still truncate to keep the layout measure
+    // pass bounded for multi-KB HTML / log-line cells; "Copy cell"
+    // menu always reads from data_.rows directly so it gets every byte.
+    static constexpr size_t MAX_CELL_DISPLAY_CHARS = 4096;
 
     void DataGridView::EnsureCellStyles()
     {
@@ -94,6 +95,19 @@ namespace winrt::Gridex::implementation
         {
             muxc::MenuFlyout contextMenu;
 
+            // Copy cell — reads the FULL value out of data_.rows so the
+            // user gets every byte even though the cell visual was
+            // truncated at MAX_CELL_DISPLAY_CHARS.
+            muxc::MenuFlyoutItem copyCellItem;
+            copyCellItem.Text(L"Copy cell");
+            muxc::FontIcon copyIcon;
+            copyIcon.Glyph(L"\xE8C8");
+            copyCellItem.Icon(copyIcon);
+            copyCellItem.Click([this](auto&&, auto&&) { CopyCellToClipboard(); });
+            contextMenu.Items().Append(copyCellItem);
+
+            contextMenu.Items().Append(muxc::MenuFlyoutSeparator{});
+
             muxc::MenuFlyoutItem refreshItem;
             refreshItem.Text(L"Refresh");
             muxc::FontIcon refreshIcon;
@@ -136,10 +150,12 @@ namespace winrt::Gridex::implementation
             });
             contextMenu.Items().Append(viewRelItem);
 
-            // Gate Delete + View Relationship at flyout open time so the
-            // menu reflects the grid's actual state each right-click.
-            contextMenu.Opening([this, deleteItem, viewRelItem, viewRelSeparator](auto&&, auto&&)
+            // Gate Delete + View Relationship + Copy cell at flyout open
+            // time so the menu reflects the grid's actual state each
+            // right-click.
+            contextMenu.Opening([this, copyCellItem, deleteItem, viewRelItem, viewRelSeparator](auto&&, auto&&)
             {
+                copyCellItem.IsEnabled(selectedRow_ >= 0 && contextCol_ >= 0);
                 deleteItem.IsEnabled(!readOnly_ && selectedRow_ >= 0);
                 bool showViewRel = static_cast<bool>(OnViewRelationshipsRequested);
                 auto vis = showViewRel ? mux::Visibility::Visible
@@ -789,6 +805,11 @@ namespace winrt::Gridex::implementation
             if (isNull || val.empty())
                 cellLbl.Opacity(0.4);
 
+            // Stash the column index on the cell so the context menu's
+            // "Copy cell" handler can recover the column name and pull
+            // the full untruncated value out of data_.rows.
+            cellLbl.Tag(winrt::box_value(static_cast<int32_t>(ci)));
+
             rowPanel.Children().Append(cellLbl);
         }
 
@@ -799,6 +820,33 @@ namespace winrt::Gridex::implementation
                        mux::Input::TappedRoutedEventArgs const&)
         {
             SelectRow(ri);
+        });
+
+        // Right-click → also select the row + remember which cell was
+        // hit so the context menu's "Copy cell" item knows what to copy.
+        rowPanel.RightTapped(
+            [this, ri](winrt::Windows::Foundation::IInspectable const&,
+                       mux::Input::RightTappedRoutedEventArgs const& e)
+        {
+            SelectRow(ri);
+            contextCol_ = -1;
+            // Walk up the OriginalSource chain looking for the cell
+            // TextBlock — its Tag carries the column index.
+            auto src = e.OriginalSource().try_as<mux::DependencyObject>();
+            while (src)
+            {
+                if (auto tb = src.try_as<muxc::TextBlock>())
+                {
+                    auto tag = tb.Tag();
+                    if (tag)
+                    {
+                        try { contextCol_ = winrt::unbox_value<int32_t>(tag); }
+                        catch (...) {}
+                    }
+                    break;
+                }
+                src = mux::Media::VisualTreeHelper::GetParent(src);
+            }
         });
 
         // DoubleTap → inline edit. CRITICAL: do NOT capture the row panel
@@ -1187,6 +1235,27 @@ namespace winrt::Gridex::implementation
         winrt::Windows::ApplicationModel::DataTransfer::DataPackage dataPackage;
         dataPackage.SetText(winrt::hstring(tsv));
         winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(dataPackage);
+    }
+
+    void DataGridView::CopyCellToClipboard()
+    {
+        if (selectedRow_ < 0 || contextCol_ < 0) return;
+        if (selectedRow_ >= static_cast<int>(data_.rows.size())) return;
+        if (contextCol_ >= static_cast<int>(data_.columnNames.size())) return;
+
+        const auto& colName = data_.columnNames[contextCol_];
+        auto& row = data_.rows[selectedRow_];
+        auto it = row.find(colName);
+        std::wstring text;
+        if (it != row.end())
+        {
+            // Render NULL sentinel as visible "NULL" so paste targets see
+            // a real string and not an empty clipboard payload.
+            text = DBModels::isNullCell(it->second) ? std::wstring(L"NULL") : it->second;
+        }
+        winrt::Windows::ApplicationModel::DataTransfer::DataPackage pkg;
+        pkg.SetText(winrt::hstring(text));
+        winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(pkg);
     }
 
     // ── Scroll sync ────────────────────────────────────
