@@ -346,4 +346,62 @@ final class PostgreSQLAdapterIntegrationTests: XCTestCase {
         _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
         try await adapter.disconnect()
     }
+
+    // MARK: - ExplainOptions — server accepts the option lists we build
+
+    /// Sanity check that `EXPLAIN (BUFFERS true, COSTS true, FORMAT JSON, ...)`
+    /// — the shape produced when a user toggles options in the new dropdown —
+    /// is something a real PG server actually parses. The pure-logic
+    /// ExplainOptionsTests cover SQL shape; this one covers wire compatibility.
+    func test_explainOptions_pgAcceptsBuiltOptionLists() async throws {
+        try skipIfNoServer(port: 55434)
+
+        let cfg = makeBaseConfig(host: "127.0.0.1", port: 55434, sslMode: .disabled)
+        let adapter = PostgreSQLAdapter()
+        try await adapter.connect(config: cfg, password: nil)
+
+        let table = "gridex_explain_opts_\(UUID().uuidString.prefix(8).lowercased())"
+        do {
+            _ = try await adapter.executeRaw(sql: "CREATE TABLE \(table) (id int)")
+            _ = try await adapter.executeRaw(sql: "INSERT INTO \(table) VALUES (1), (2), (3)")
+
+            // Plan-only with extra detail — should never modify data.
+            var planOnly = ExplainOptions.default
+            planOnly.buffers = true
+            planOnly.verbose = true
+            planOnly.summary = true
+            planOnly.format  = .json
+            let planSQL = DatabaseType.postgresql.explainSQL(
+                for: "SELECT * FROM \(table)",
+                options: planOnly
+            )!
+            let planRes = try await adapter.executeRaw(sql: planSQL)
+            XCTAssertFalse(planRes.rows.isEmpty,
+                "EXPLAIN with bool toggles + JSON format must return plan rows")
+
+            // Actual execution with timing — should run the SELECT, not modify
+            // the table. Asserts the cross-disable rules in `sanitized()` don't
+            // strip Timing when ANALYZE is on.
+            var withAnalyze = ExplainOptions.default
+            withAnalyze.analyze = true
+            withAnalyze.timing  = true
+            withAnalyze.buffers = true
+            let analyzeSQL = DatabaseType.postgresql.explainSQL(
+                for: "SELECT count(*) FROM \(table)",
+                options: withAnalyze
+            )!
+            XCTAssertTrue(analyzeSQL.contains("TIMING true"),
+                "Timing must survive sanitize when Analyze is on")
+            let analyzeRes = try await adapter.executeRaw(sql: analyzeSQL)
+            XCTAssertFalse(analyzeRes.rows.isEmpty,
+                "EXPLAIN ANALYZE must return plan rows including actual times")
+        } catch {
+            _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+            try? await adapter.disconnect()
+            throw error
+        }
+
+        _ = try? await adapter.executeRaw(sql: "DROP TABLE IF EXISTS \(table)")
+        try await adapter.disconnect()
+    }
 }
