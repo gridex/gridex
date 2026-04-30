@@ -19,7 +19,24 @@ struct QueryEditorView: View {
     @State private var isExecuting = false
     @State private var splitRatio: CGFloat = 0.5
 
+    /// EXPLAIN options surfaced in the dropdown next to the Explain button.
+    /// Persisted per-connection via UserDefaults so a fix applied in one
+    /// session sticks across restarts.
+    @State private var explainOptions: ExplainOptions = .default
+
+    /// PG server major version (`SHOW server_version_num` / 10000), used to
+    /// grey out options the server doesn't support (Memory needs PG 17+, etc.)
+    @State private var pgServerMajorVersion: Int?
+
+    /// Raw EXPLAIN output (text or JSON, depending on `explainOutputFormat`).
+    /// Non-nil means the results pane should render the read-only Explain
+    /// browser instead of the data grid. Cleared by every regular Run.
+    @State private var explainOutput: String?
+    @State private var explainOutputFormat: ExplainOptions.Format = .text
+    @State private var explainOutputAnalyzed: Bool = false
+
     private var isRedis: Bool { appState.activeConfig?.databaseType == .redis }
+    private var isPostgres: Bool { appState.activeConfig?.databaseType == .postgresql }
 
     var body: some View {
         VSplitView {
@@ -69,14 +86,28 @@ struct QueryEditorView: View {
                     .help(isRedis ? "Run Redis command (⌘R)" : "Run statement at cursor (⌘R)")
 
                     if !isRedis {
-                        Button(action: explainQuery) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "lightbulb")
-                                Text("Explain")
+                        // Split: primary button runs EXPLAIN with the current
+                        // options; the chevron beside opens the toggle menu.
+                        // For non-PG engines the menu is hidden — they have
+                        // no per-option syntax to surface.
+                        HStack(spacing: 0) {
+                            Button(action: explainQuery) {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "lightbulb")
+                                    Text("Explain")
+                                }
+                            }
+                            .controlSize(.small)
+                            .pointerCursor()
+
+                            if isPostgres {
+                                ExplainOptionsMenu(
+                                    options: $explainOptions,
+                                    serverMajorVersion: pgServerMajorVersion
+                                )
+                                .padding(.leading, 2)
                             }
                         }
-                        .controlSize(.small)
-                        .pointerCursor()
                     }
                 }
                 .padding(.horizontal, 8)
@@ -131,6 +162,12 @@ struct QueryEditorView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
+                } else if let output = explainOutput {
+                    ExplainOutputView(
+                        raw: output,
+                        format: explainOutputFormat,
+                        analyzed: explainOutputAnalyzed
+                    )
                 } else if !resultViewModel.columns.isEmpty {
                     AppKitDataGrid(
                         viewModel: resultViewModel,
@@ -155,10 +192,14 @@ struct QueryEditorView: View {
             if let saved = appState.queryEditorText[tabId] {
                 sqlText = saved
             }
+            loadExplainOptionsForActiveConnection()
         }
         .onChange(of: sqlText) { _, newValue in
             // Persist so tab switches don't lose the query
             appState.queryEditorText[tabId] = newValue
+        }
+        .onChange(of: appState.activeConnectionId) { _, _ in
+            loadExplainOptionsForActiveConnection()
         }
         .onReceive(NotificationCenter.default.publisher(for: .init("pasteQueryToEditor"))) { notif in
             // Only the currently active query editor tab handles the paste
@@ -192,6 +233,10 @@ struct QueryEditorView: View {
 
     private func executeQuery() {
         guard let adapter = appState.activeAdapter else { return }
+
+        // A regular Run wipes any previous EXPLAIN output so the data grid
+        // can take over the results pane again.
+        explainOutput = nil
 
         // Decide: run a single statement at cursor, or a full multi-statement script.
         // Heuristic: if the text contains `GO` batch separators (SQL Server) or
@@ -374,11 +419,19 @@ struct QueryEditorView: View {
         isExecuting = true
         errorMessage = nil
 
-        guard let explainSQL = adapter.databaseType.explainSQL(for: sql) else {
+        // Options apply only to PG (other engines ignore the param).
+        let optsForBuild = isPostgres ? explainOptions : .default
+        guard let explainSQL = adapter.databaseType.explainSQL(for: sql, options: optsForBuild) else {
             errorMessage = "EXPLAIN is not supported for \(adapter.databaseType.displayName) connections."
             isExecuting = false
             return
         }
+
+        // Persist whatever the user just used so the next session restores it.
+        if isPostgres, let connId = appState.activeConnectionId {
+            persistExplainOptions(explainOptions, for: connId)
+        }
+
         Task {
             let start = Date()
             do {
@@ -386,15 +439,76 @@ struct QueryEditorView: View {
                 let duration = Date().timeIntervalSince(start)
                 appState.logQuery(sql: explainSQL, duration: duration)
                 appState.recordQueryHistory(sql: explainSQL, duration: duration, rowCount: result.rowCount)
-                applyResult(result)
+
+                // PG returns the plan as one row per text line (FORMAT TEXT)
+                // or one row containing the whole document (FORMAT JSON).
+                // Either way, joining the first cell of every row yields the
+                // raw output we hand to ExplainOutputView.
+                let raw = result.rows
+                    .compactMap { $0.first?.stringValue }
+                    .joined(separator: "\n")
+                explainOutput = raw
+                explainOutputFormat = isPostgres ? optsForBuild.format : .text
+                explainOutputAnalyzed = isPostgres ? optsForBuild.analyze : false
+                resultViewModel.columns = []  // hide grid; show explain panel
+                resultViewModel.rows = []
+                resultRowCount = 0
             } catch {
                 let duration = Date().timeIntervalSince(start)
                 appState.logQuery(sql: explainSQL, duration: duration)
                 appState.recordQueryHistory(sql: explainSQL, duration: duration, error: error.localizedDescription)
                 errorMessage = error.localizedDescription
+                explainOutput = nil
             }
             isExecuting = false
         }
+    }
+
+    // MARK: - EXPLAIN options persistence + version detection
+
+    /// Load saved options for the active connection (and probe server version
+    /// for PG, so the menu can grey-out unavailable options).
+    private func loadExplainOptionsForActiveConnection() {
+        guard let connId = appState.activeConnectionId else {
+            explainOptions = .default
+            pgServerMajorVersion = nil
+            return
+        }
+        let key = ExplainOptions.userDefaultsKey(connectionId: connId)
+        if let data = UserDefaults.standard.data(forKey: key),
+           let saved = try? JSONDecoder().decode(ExplainOptions.self, from: data) {
+            explainOptions = saved
+        } else {
+            explainOptions = .default
+        }
+
+        guard isPostgres, let adapter = appState.activeAdapter else {
+            pgServerMajorVersion = nil
+            return
+        }
+        Task {
+            // `serverVersion()` returns the long banner; extract the major.
+            // Failure → leave nil → menu permits everything (server enforces).
+            let version = (try? await adapter.serverVersion()) ?? ""
+            await MainActor.run {
+                pgServerMajorVersion = Self.parsePostgresMajor(from: version)
+            }
+        }
+    }
+
+    private func persistExplainOptions(_ opts: ExplainOptions, for connId: UUID) {
+        guard let data = try? JSONEncoder().encode(opts) else { return }
+        UserDefaults.standard.set(data, forKey: ExplainOptions.userDefaultsKey(connectionId: connId))
+    }
+
+    /// Pull the major from the `version()` banner.
+    /// Examples: "PostgreSQL 16.2 on …" → 16; "PostgreSQL 9.6.24 …" → 9.
+    static func parsePostgresMajor(from banner: String) -> Int? {
+        // Look for the first integer after "PostgreSQL ".
+        guard let range = banner.range(of: "PostgreSQL ") else { return nil }
+        let tail = banner[range.upperBound...]
+        let digits = tail.prefix { $0.isNumber }
+        return Int(digits)
     }
 
     /// Populate the DataGridViewState with query results so AppKitDataGrid can render them
