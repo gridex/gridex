@@ -28,6 +28,12 @@ struct QueryEditorView: View {
     /// grey out options the server doesn't support (Memory needs PG 17+, etc.)
     @State private var pgServerMajorVersion: Int?
 
+    /// Raw EXPLAIN output (text or JSON, depending on `explainOutputFormat`).
+    /// Non-nil means the results pane should render the read-only Explain
+    /// browser instead of the data grid. Cleared by every regular Run.
+    @State private var explainOutput: String?
+    @State private var explainOutputFormat: ExplainOptions.Format = .text
+
     private var isRedis: Bool { appState.activeConfig?.databaseType == .redis }
     private var isPostgres: Bool { appState.activeConfig?.databaseType == .postgresql }
 
@@ -155,6 +161,8 @@ struct QueryEditorView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding()
+                } else if let output = explainOutput {
+                    ExplainOutputView(raw: output, format: explainOutputFormat)
                 } else if !resultViewModel.columns.isEmpty {
                     AppKitDataGrid(
                         viewModel: resultViewModel,
@@ -220,6 +228,10 @@ struct QueryEditorView: View {
 
     private func executeQuery() {
         guard let adapter = appState.activeAdapter else { return }
+
+        // A regular Run wipes any previous EXPLAIN output so the data grid
+        // can take over the results pane again.
+        explainOutput = nil
 
         // Decide: run a single statement at cursor, or a full multi-statement script.
         // Heuristic: if the text contains `GO` batch separators (SQL Server) or
@@ -422,12 +434,25 @@ struct QueryEditorView: View {
                 let duration = Date().timeIntervalSince(start)
                 appState.logQuery(sql: explainSQL, duration: duration)
                 appState.recordQueryHistory(sql: explainSQL, duration: duration, rowCount: result.rowCount)
-                applyResult(result)
+
+                // PG returns the plan as one row per text line (FORMAT TEXT)
+                // or one row containing the whole document (FORMAT JSON).
+                // Either way, joining the first cell of every row yields the
+                // raw output we hand to ExplainOutputView.
+                let raw = result.rows
+                    .compactMap { $0.first?.stringValue }
+                    .joined(separator: "\n")
+                explainOutput = raw
+                explainOutputFormat = isPostgres ? optsForBuild.format : .text
+                resultViewModel.columns = []  // hide grid; show explain panel
+                resultViewModel.rows = []
+                resultRowCount = 0
             } catch {
                 let duration = Date().timeIntervalSince(start)
                 appState.logQuery(sql: explainSQL, duration: duration)
                 appState.recordQueryHistory(sql: explainSQL, duration: duration, error: error.localizedDescription)
                 errorMessage = error.localizedDescription
+                explainOutput = nil
             }
             isExecuting = false
         }
