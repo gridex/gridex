@@ -74,6 +74,16 @@
                                FontSize="10"
                                Foreground="White" />
                 </Border>
+                <!-- Environment tag badge (Production / Staging / ...). Color
+                     varies by tag value so prod/dev pop visually different. -->
+                <Border x:Name="EnvTagBadge"
+                        CornerRadius="4"
+                        Padding="6,1"
+                        Visibility="Collapsed">
+                    <TextBlock x:Name="EnvTagBadgeText"
+                               FontSize="10"
+                               Foreground="White" />
+                </Border>
             </StackPanel>
             <TextBlock x:Name="SubtitleText"
                        FontSize="12"

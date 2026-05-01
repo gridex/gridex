@@ -36,6 +36,28 @@ namespace winrt::Gridex::implementation
             ColorTagBar().Background(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(gray));
             TagBadge().Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
         }
+
+        // Environment tag badge — picks a recognizable colour per
+        // well-known tag so prod is visually distinct from dev/staging
+        // at a glance. Unknown tags fall back to slate gray.
+        if (!config.tag.empty())
+        {
+            winrt::Windows::UI::Color bg;
+            const auto& t = config.tag;
+            if      (t == L"Production")  bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 220, 38, 38);   // red
+            else if (t == L"Staging")     bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 234, 88, 12);   // orange
+            else if (t == L"Development") bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 22, 163, 74);   // green
+            else if (t == L"Testing")     bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 124, 58, 237);  // purple
+            else if (t == L"Local")       bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 75, 85, 99);    // slate
+            else                          bg = winrt::Windows::UI::ColorHelper::FromArgb(255, 100, 100, 100); // gray fallback
+            EnvTagBadge().Background(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(bg));
+            EnvTagBadgeText().Text(winrt::hstring(config.tag));
+            EnvTagBadge().Visibility(winrt::Microsoft::UI::Xaml::Visibility::Visible);
+        }
+        else
+        {
+            EnvTagBadge().Visibility(winrt::Microsoft::UI::Xaml::Visibility::Collapsed);
+        }
     }
 
     void ConnectionCard::ContextConnect_Click(

@@ -30,7 +30,7 @@ namespace DBModels
                 "sort_order, created_at, last_connected_at, connection_uri, "
                 "mongo_options, "
                 "ssh_host, ssh_port, ssh_username, ssh_password_enc, "
-                "ssh_auth_method, ssh_key_path, mcp_mode "
+                "ssh_auth_method, ssh_key_path, mcp_mode, tag "
                 "FROM connections ORDER BY sort_order, name";
 
             sqlite3_stmt* stmt = nullptr;
@@ -75,6 +75,9 @@ namespace DBModels
                     // Column 24: per-connection MCP mode. Defaults to
                     // Locked (0) for rows created before the migration.
                     c.mcpMode = static_cast<MCPConnectionMode>(sqlite3_column_int(stmt, 24));
+                    // Column 25: free-form environment tag. Empty
+                    // string for legacy rows pre-migration.
+                    c.tag = ColText16(stmt, 25);
                     results.push_back(c);
                 }
                 sqlite3_finalize(stmt);
@@ -101,10 +104,10 @@ namespace DBModels
                 "sort_order, created_at, last_connected_at, connection_uri, "
                 "mongo_options, "
                 "ssh_host, ssh_port, ssh_username, ssh_password_enc, "
-                "ssh_auth_method, ssh_key_path, mcp_mode) "
+                "ssh_auth_method, ssh_key_path, mcp_mode, tag) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0, "
                 "COALESCE((SELECT created_at FROM connections WHERE id=?), datetime('now')), "
-                "datetime('now'), ?, ?, ?,?,?,?,?,?,?)";
+                "datetime('now'), ?, ?, ?,?,?,?,?,?,?,?)";
 
             sqlite3_stmt* stmt = nullptr;
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK)
@@ -149,6 +152,8 @@ namespace DBModels
                 // Placeholder 23: per-connection MCP mode. Defaults
                 // to Locked so new rows never auto-expose data to AI.
                 sqlite3_bind_int(stmt, 23, static_cast<int>(c.mcpMode));
+                // Placeholder 24: free-form environment tag.
+                BindText(stmt, 24, ToUtf8(c.tag));
                 sqlite3_step(stmt);
                 sqlite3_finalize(stmt);
             }
@@ -225,6 +230,12 @@ namespace DBModels
             // Default 0 keeps existing connections firewalled from AI until the
             // user explicitly opens them up in the MCP Connections tab.
             sqlite3_exec(db, "ALTER TABLE connections ADD COLUMN mcp_mode INTEGER DEFAULT 0", nullptr, nullptr, nullptr);
+            // Migration: free-form environment tag (Production / Staging /
+            // Development / Testing / Local / "" for None) picked in the
+            // ConnectionFormDialog's TagCombo. Was rendered in XAML but
+            // never persisted — first run after this migration adds the
+            // column with empty default; existing connections get '' too.
+            sqlite3_exec(db, "ALTER TABLE connections ADD COLUMN tag TEXT DEFAULT ''", nullptr, nullptr, nullptr);
         }
 
         static std::wstring GetDbPath()

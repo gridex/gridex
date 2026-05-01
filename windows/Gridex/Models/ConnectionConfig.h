@@ -47,6 +47,11 @@ namespace DBModels
         bool sslEnabled = false;
         SSLMode sslMode = SSLMode::Preferred;
         std::optional<ColorTag> colorTag;
+        // Free-form environment tag picked from the form's TagCombo
+        // (Production / Staging / Development / Testing / Local).
+        // Empty = "None". Stored as a plain string so we can extend
+        // the dropdown later without a schema migration.
+        std::wstring tag;
         std::wstring group;
         std::wstring filePath;  // SQLite file path
         std::wstring connectionUri;  // MongoDB URI (mongodb:// or mongodb+srv://)
