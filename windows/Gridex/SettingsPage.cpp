@@ -5,6 +5,7 @@
 #include "SettingsPage.h"
 #include "Models/AppSettings.h"
 #include "Models/AiService.h"
+#include "Services/ChatGPTOAuth/ChatGPTOAuthService.h"
 #include "Models/ShortcutsCatalog.h"
 #include "GridexVersion.h"
 #include "UpdateService.h"
@@ -47,6 +48,134 @@ namespace winrt::Gridex::implementation
             OllamaEndpointBox().Text(winrt::hstring(s.ollamaEndpoint));
             EditorFontSizeBox().Value(static_cast<double>(s.editorFontSize));
             RowLimitBox().Value(static_cast<double>(s.rowLimit));
+
+            // Helper: show/hide provider-specific panels (API key /
+            // OAuth sign-in / Ollama endpoint) based on selection.
+            // Indices: 0 Anthropic, 1 OpenAI, 2 Ollama, 3 Gemini,
+            // 4 OpenRouter, 5 ChatGPT.
+            auto updateProviderUI = [this]()
+            {
+                int idx = AiProviderCombo().SelectedIndex();
+                bool isChatGPT = (idx == 5);
+                bool isOllama  = (idx == 2);
+
+                ApiKeyPanel().Visibility(isChatGPT
+                    ? mux::Visibility::Collapsed
+                    : mux::Visibility::Visible);
+                SignInPanel().Visibility(isChatGPT
+                    ? mux::Visibility::Visible
+                    : mux::Visibility::Collapsed);
+                // Ollama endpoint is only meaningful for the Ollama
+                // provider — hide it for everyone else so the form
+                // doesn't carry stale state across provider switches.
+                OllamaEndpointPanel().Visibility(isOllama
+                    ? mux::Visibility::Visible
+                    : mux::Visibility::Collapsed);
+
+                if (isChatGPT)
+                {
+                    auto& svc = ChatGPT::OAuthService::Instance();
+                    if (svc.IsSignedIn())
+                    {
+                        auto email = svc.CurrentEmail();
+                        std::wstring statusText = email.empty()
+                            ? L"Signed in"
+                            : L"Signed in as " + email;
+                        ChatGPTStatusText().Text(winrt::hstring(statusText));
+                        ChatGPTSignInBtn().Visibility(mux::Visibility::Collapsed);
+                        ChatGPTSignOutBtn().Visibility(mux::Visibility::Visible);
+                    }
+                    else
+                    {
+                        ChatGPTStatusText().Text(L"Not signed in");
+                        ChatGPTSignInBtn().Visibility(mux::Visibility::Visible);
+                        ChatGPTSignOutBtn().Visibility(mux::Visibility::Collapsed);
+                    }
+                }
+            };
+
+            // Apply on load
+            updateProviderUI();
+
+            // Re-apply when user changes the provider ComboBox
+            AiProviderCombo().SelectionChanged(
+                [this, updateProviderUI](winrt::Windows::Foundation::IInspectable const&,
+                                         muxc::SelectionChangedEventArgs const&)
+                {
+                    updateProviderUI();
+                });
+
+            // Sign in button
+            ChatGPTSignInBtn().Click(
+                [this, updateProviderUI](winrt::Windows::Foundation::IInspectable const&,
+                                         mux::RoutedEventArgs const&)
+                {
+                    ChatGPTSignInBtn().IsEnabled(false);
+                    ChatGPTStatusText().Text(L"Opening browser…");
+
+                    auto dispatcher = this->DispatcherQueue();
+                    ChatGPT::OAuthService::Instance().SignIn(
+                        [this, dispatcher, updateProviderUI](bool success, std::wstring emailOrError)
+                        {
+                            dispatcher.TryEnqueue([this, success, emailOrError, updateProviderUI, dispatcher]()
+                            {
+                                ChatGPTSignInBtn().IsEnabled(true);
+                                if (!success)
+                                {
+                                    ChatGPTStatusText().Text(
+                                        winrt::hstring(L"Sign-in failed: " + emailOrError));
+                                    return;
+                                }
+                                updateProviderUI();
+
+                                // Stale model from a previous provider
+                                // doesn't apply to ChatGPT — wipe the
+                                // field and fetch the live model list
+                                // from /backend-api/codex/models for
+                                // this account.
+                                ModelBox().Items().Clear();
+                                ModelBox().Text(L"");
+                                ModelFetchStatusText().Visibility(mux::Visibility::Visible);
+                                ModelFetchStatusText().Text(L"Fetching models…");
+
+                                DBModels::AiConfig cfg;
+                                cfg.provider = DBModels::AiProvider::ChatGPT;
+                                std::thread([cfg, dispatcher, weak = get_weak()]()
+                                {
+                                    auto res = DBModels::AiService::FetchModels(cfg);
+                                    dispatcher.TryEnqueue([weak, res]()
+                                    {
+                                        auto self = weak.get();
+                                        if (!self) return;
+                                        if (!res.success)
+                                        {
+                                            self->ModelFetchStatusText().Text(
+                                                winrt::hstring(L"Fetch failed: " + res.errorMessage));
+                                            return;
+                                        }
+                                        for (const auto& m : res.models)
+                                            self->ModelBox().Items().Append(
+                                                winrt::box_value(winrt::hstring(m)));
+                                        if (!res.models.empty())
+                                            self->ModelBox().Text(winrt::hstring(res.models.front()));
+                                        self->ModelFetchStatusText().Text(
+                                            winrt::hstring(L"Loaded "
+                                                + std::to_wstring(res.models.size())
+                                                + L" model(s)"));
+                                    });
+                                }).detach();
+                            });
+                        });
+                });
+
+            // Sign out button
+            ChatGPTSignOutBtn().Click(
+                [this, updateProviderUI](winrt::Windows::Foundation::IInspectable const&,
+                                         mux::RoutedEventArgs const&)
+                {
+                    ChatGPT::OAuthService::Instance().SignOut();
+                    updateProviderUI();
+                });
 
             // Refresh models: hit the provider's list endpoint on a
             // worker thread, populate ModelBox items on success. Keep

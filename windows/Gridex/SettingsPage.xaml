@@ -88,15 +88,30 @@
                                 <ComboBoxItem Content="Ollama (Local)" />
                                 <ComboBoxItem Content="Google Gemini" />
                                 <ComboBoxItem Content="OpenRouter" />
+                                <ComboBoxItem Content="OpenAI (Sign in)" />
                             </ComboBox>
                         </StackPanel>
 
-                        <StackPanel Spacing="4">
+                        <StackPanel x:Name="ApiKeyPanel" Spacing="4">
                             <TextBlock Text="API Key" FontSize="14" />
                             <PasswordBox x:Name="ApiKeyBox"
                                          PlaceholderText="Enter your API key..."
                                          Width="400"
                                          HorizontalAlignment="Left" />
+                        </StackPanel>
+
+                        <!-- Shown only when AiProviderCombo index = 5 (ChatGPT / OpenAI Sign in) -->
+                        <StackPanel x:Name="SignInPanel" Spacing="8" Visibility="Collapsed">
+                            <TextBlock Text="ChatGPT Account" FontSize="14" />
+                            <TextBlock x:Name="ChatGPTStatusText"
+                                       Text="Not signed in"
+                                       FontSize="13"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="ChatGPTSignInBtn" Content="Sign in with OpenAI" />
+                                <Button x:Name="ChatGPTSignOutBtn" Content="Sign out"
+                                        Visibility="Collapsed" />
+                            </StackPanel>
                         </StackPanel>
 
                         <StackPanel Spacing="4">
