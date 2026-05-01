@@ -133,6 +133,20 @@ namespace winrt::Gridex::implementation
         config.username = std::wstring(UserInput().Text());
         config.database = std::wstring(DatabaseInput().Text());
         config.colorTag = selectedColor_;
+        // Persist the environment tag picked in TagCombo. Index 0 is
+        // "None" — store as empty string so the rest of the codebase
+        // can treat absent / "None" identically.
+        {
+            auto tagIdx = TagCombo().SelectedIndex();
+            if (tagIdx > 0)
+            {
+                auto item = TagCombo().Items().GetAt(tagIdx)
+                    .try_as<winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+                if (item)
+                    config.tag = std::wstring(winrt::unbox_value<winrt::hstring>(item.Content()));
+            }
+            // tagIdx <= 0 → leave config.tag empty (None).
+        }
         auto sslIdx = SslModeInput().SelectedIndex();
         config.sslMode = static_cast<DBModels::SSLMode>(sslIdx);
         config.sslEnabled = (sslIdx != 1);
@@ -198,6 +212,29 @@ namespace winrt::Gridex::implementation
         UriInput().Text(winrt::hstring(config.connectionUri));
         MongoOptionsInput().Text(winrt::hstring(config.mongoOptions));
         selectedColor_ = config.colorTag;
+        // Restore the environment tag dropdown selection. Match by Content
+        // string against the ComboBoxItem children; fall back to None (0)
+        // when the saved tag isn't in the current option list.
+        {
+            int target = 0;
+            if (!config.tag.empty())
+            {
+                auto items = TagCombo().Items();
+                for (uint32_t i = 0; i < items.Size(); ++i)
+                {
+                    auto cbi = items.GetAt(i)
+                        .try_as<winrt::Microsoft::UI::Xaml::Controls::ComboBoxItem>();
+                    if (!cbi) continue;
+                    auto content = winrt::unbox_value<winrt::hstring>(cbi.Content());
+                    if (std::wstring(content) == config.tag)
+                    {
+                        target = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+            TagCombo().SelectedIndex(target);
+        }
         if (config.sshConfig.has_value())
         {
             SshToggle().IsChecked(true);

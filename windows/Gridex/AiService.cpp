@@ -1,9 +1,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <windows.h>
+#include <winhttp.h>
+#pragma comment(lib, "Winhttp.lib")
 #include "Models/AiService.h"
+#include "Services/ChatGPTOAuth/ChatGPTOAuthService.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <sstream>
+#include <functional>
 
 // cpp-httplib for HTTP client — suppress deprecated SSL API warnings
 #pragma warning(push)
@@ -11,6 +16,81 @@
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include <httplib.h>
 #pragma warning(pop)
+
+namespace {
+    // Native-Win32 HTTPS GET helper. Replaces httplib::SSLClient for
+    // ChatGPT calls — vcpkg httplib 0.40.0 vs OpenSSL 3.x triggers a
+    // SSL_shutdown crash on the worker thread (`s = 0x2`). WinHTTP
+    // sidesteps OpenSSL entirely.
+    struct WinHttpResult { int status = 0; std::string body; };
+
+    WinHttpResult WinHttpsRequest(const std::wstring& host,
+                                  const std::wstring& method,
+                                  const std::wstring& path,
+                                  const std::vector<std::wstring>& headers,
+                                  const std::string& body,
+                                  const std::function<bool(const char*, size_t)>* chunkCb = nullptr)
+    {
+        WinHttpResult out;
+        HINTERNET hSession = ::WinHttpOpen(
+            L"Gridex/AiService",
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!hSession) return out;
+        HINTERNET hConnect = ::WinHttpConnect(
+            hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+        if (!hConnect) { ::WinHttpCloseHandle(hSession); return out; }
+        HINTERNET hReq = ::WinHttpOpenRequest(
+            hConnect, method.c_str(), path.c_str(), nullptr,
+            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+            WINHTTP_FLAG_SECURE);
+        if (!hReq) { ::WinHttpCloseHandle(hConnect); ::WinHttpCloseHandle(hSession); return out; }
+
+        // Long timeout for streaming responses.
+        ::WinHttpSetTimeouts(hReq, 30000, 30000, 30000, 120000);
+
+        std::wstring hdrBlob;
+        for (auto& h : headers) { hdrBlob += h; hdrBlob += L"\r\n"; }
+
+        BOOL ok = ::WinHttpSendRequest(hReq,
+            hdrBlob.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : hdrBlob.c_str(),
+            hdrBlob.empty() ? 0 : (DWORD)-1L,
+            body.empty() ? nullptr : (LPVOID)body.data(),
+            (DWORD)body.size(), (DWORD)body.size(), 0);
+        if (ok) ok = ::WinHttpReceiveResponse(hReq, nullptr);
+
+        if (ok)
+        {
+            DWORD statusCode = 0, statusLen = sizeof(statusCode);
+            ::WinHttpQueryHeaders(hReq,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusLen,
+                WINHTTP_NO_HEADER_INDEX);
+            out.status = (int)statusCode;
+
+            DWORD avail = 0;
+            while (::WinHttpQueryDataAvailable(hReq, &avail) && avail > 0)
+            {
+                std::string chunk(avail, '\0');
+                DWORD read = 0;
+                if (!::WinHttpReadData(hReq, chunk.data(), avail, &read)) break;
+                chunk.resize(read);
+                if (chunkCb)
+                {
+                    if (!(*chunkCb)(chunk.data(), chunk.size())) break;
+                }
+                else
+                {
+                    out.body.append(chunk);
+                }
+            }
+        }
+        ::WinHttpCloseHandle(hReq);
+        ::WinHttpCloseHandle(hConnect);
+        ::WinHttpCloseHandle(hSession);
+        return out;
+    }
+}
 
 namespace DBModels
 {
@@ -56,6 +136,7 @@ namespace DBModels
         case AiProvider::Ollama:     return CallOllama(messages, systemPrompt);
         case AiProvider::Gemini:     return CallGemini(messages, systemPrompt);
         case AiProvider::OpenRouter: return CallOpenRouter(messages, systemPrompt);
+        case AiProvider::ChatGPT:    return CallChatGPT(messages, systemPrompt);
         default: return L"Unsupported AI provider";
         }
     }
@@ -410,6 +491,144 @@ namespace DBModels
         return L"No response content";
     }
 
+    // ── ChatGPT Subscription (Codex Responses API) ─────
+    //
+    // Uses OAuth bearer token from ChatGPT::OAuthService.
+    // POST https://chatgpt.com/backend-api/codex/responses with SSE streaming.
+    // Body shape mirrors Codex CLI's /responses wire format — see
+    // macos/Services/AI/Providers/ChatGPTProvider.swift for the reference impl.
+    std::wstring AiService::CallChatGPT(
+        const std::vector<ChatMessage>& messages,
+        const std::wstring& systemPrompt)
+    {
+        auto bearer = ChatGPT::OAuthService::Instance().BearerToken();
+        if (bearer.empty())
+            return L"Error: Not signed in to ChatGPT. Go to Settings and click Sign in.";
+
+        auto model = trimWs(config_.model);
+        if (model.empty()) model = L"gpt-4o";
+
+        // Build input messages — system role goes to top-level "instructions".
+        // Each content item uses typed parts (input_text / output_text) as
+        // required by the Responses API. Do NOT send temperature or
+        // max_output_tokens — GPT-5 family rejects them (returns HTTP 400).
+        nlohmann::json inputMsgs = nlohmann::json::array();
+        for (auto& m : messages)
+        {
+            if (m.role == L"system") continue; // hoisted to "instructions"
+            std::string partType = (m.role == L"assistant") ? "output_text" : "input_text";
+            nlohmann::json msg;
+            msg["type"] = "message";
+            msg["role"] = toUtf8(m.role);
+            msg["content"] = nlohmann::json::array({
+                nlohmann::json{{"type", partType}, {"text", toUtf8(m.content)}}
+            });
+            inputMsgs.push_back(msg);
+        }
+
+        nlohmann::json body;
+        body["model"]        = toUtf8(model);
+        body["instructions"] = toUtf8(systemPrompt);
+        body["input"]        = inputMsgs;
+        body["stream"]       = true;
+        body["store"]        = false;
+
+        std::vector<std::wstring> headers = {
+            L"Authorization: Bearer " + fromUtf8(bearer),
+            L"Content-Type: application/json",
+            L"OpenAI-Beta: responses=v1",
+        };
+        // ChatGPT-Account-ID is required for /responses on accounts
+        // that have multiple workspaces. Mac sends it whenever the
+        // bundle has the claim — mirror that.
+        auto accountId = ChatGPT::OAuthService::Instance().AccountId();
+        if (!accountId.empty())
+            headers.push_back(L"ChatGPT-Account-ID: " + fromUtf8(accountId));
+
+        // Accumulate SSE deltas into full response text.
+        std::string accumulated;
+        bool streamError = false;
+        std::string streamErrorMsg;
+
+        // WinHTTP streaming POST: chunkCb fires per WinHttpReadData read.
+        std::function<bool(const char*, size_t)> chunkCb =
+            [&](const char* data, size_t len) -> bool
+            {
+                // Parse SSE lines from this chunk
+                std::string chunk(data, len);
+                std::istringstream ss(chunk);
+                std::string line;
+                std::string currentEvent;
+
+                while (std::getline(ss, line))
+                {
+                    // Strip trailing \r
+                    if (!line.empty() && line.back() == '\r')
+                        line.pop_back();
+
+                    if (line.empty()) { currentEvent.clear(); continue; }
+
+                    if (line.rfind("event: ", 0) == 0)
+                    {
+                        currentEvent = line.substr(7);
+                        continue;
+                    }
+                    if (line.rfind(": ", 0) == 0) continue; // SSE comment
+                    if (line.rfind("data: ", 0) != 0) continue;
+
+                    std::string payload = line.substr(6);
+                    if (payload == "[DONE]") return true;
+
+                    if (currentEvent == "response.output_text.delta")
+                    {
+                        try
+                        {
+                            auto j = nlohmann::json::parse(payload);
+                            if (j.contains("delta") && j["delta"].is_string())
+                                accumulated += j["delta"].get<std::string>();
+                        }
+                        catch (...) {}
+                    }
+                    else if (currentEvent == "response.error")
+                    {
+                        streamError = true;
+                        streamErrorMsg = payload;
+                        return false; // abort stream
+                    }
+                    else if (currentEvent == "response.completed")
+                    {
+                        return true;
+                    }
+                }
+                return true; // continue receiving
+            };
+
+        auto res = WinHttpsRequest(L"chatgpt.com", L"POST",
+            L"/backend-api/codex/responses", headers, body.dump(), &chunkCb);
+
+        if (res.status == 0)
+            return L"Error: Failed to connect to ChatGPT backend";
+
+        if (res.status == 401 || res.status == 403)
+        {
+            // Token rejected — wipe and tell user to re-authenticate
+            ChatGPT::OAuthService::Instance().SignOut();
+            return L"Error: Session expired. Go to Settings and sign in to ChatGPT again.";
+        }
+
+        if (res.status != 200)
+            return fromUtf8("Error " + std::to_string(res.status) +
+                            " from ChatGPT: " + res.body.substr(0, 500));
+
+        if (streamError)
+            return fromUtf8("ChatGPT stream error: " + streamErrorMsg);
+
+        if (accumulated.empty())
+            return L"No response content";
+
+        return fromUtf8(accumulated);
+    }
+
     // ── Fetch available models per provider ────────────
     //
     // Each provider exposes a different listing endpoint and response
@@ -593,6 +812,62 @@ namespace DBModels
                     for (auto& m : json["data"])
                         if (m.contains("id"))
                             r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::ChatGPT:
+            {
+                // GET https://chatgpt.com/backend-api/codex/models with bearer token.
+                // Response: {"models": [{"slug": "...", "name": "...", ...}, ...]}
+                auto bearer = ChatGPT::OAuthService::Instance().BearerToken();
+                if (bearer.empty())
+                {
+                    r.errorMessage = L"Not signed in to ChatGPT. Sign in via Settings.";
+                    return r;
+                }
+                std::vector<std::wstring> hdrs = {
+                    L"Authorization: Bearer " + fromUtf8(bearer),
+                };
+                // /backend-api/codex/models rejects the request with
+                // HTTP 400 ({"type":"missing","msg":"Field required"})
+                // when client_version is absent. Mac sends "1.0.0";
+                // mirror that. ChatGPT-Account-ID is required by some
+                // endpoints — pass through when we have it.
+                auto accountId = ChatGPT::OAuthService::Instance().AccountId();
+                if (!accountId.empty())
+                    hdrs.push_back(L"ChatGPT-Account-ID: " + fromUtf8(accountId));
+                auto res = WinHttpsRequest(L"chatgpt.com", L"GET",
+                    L"/backend-api/codex/models?client_version=1.0.0",
+                    hdrs, "");
+                if (res.status == 0)
+                {
+                    r.errorMessage = L"ChatGPT models request failed (no response).";
+                    return r;
+                }
+                if (res.status == 401 || res.status == 403)
+                {
+                    ChatGPT::OAuthService::Instance().SignOut();
+                    r.errorMessage = L"Session expired — sign in to ChatGPT again.";
+                    return r;
+                }
+                if (res.status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res.status) + ": " + res.body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res.body);
+                if (json.contains("models") && json["models"].is_array())
+                {
+                    for (auto& m : json["models"])
+                    {
+                        if (!m.contains("slug")) continue;
+                        // Filter to user-listable models only
+                        bool supported  = m.value("supported_in_api", true);
+                        std::string vis = m.value("visibility", "list");
+                        if (!supported || vis != "list") continue;
+                        r.models.push_back(fromUtf8(m["slug"].get<std::string>()));
+                    }
                 }
                 break;
             }

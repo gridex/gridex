@@ -84,6 +84,11 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ChangeTracker.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\CredentialManager.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\AiService.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Models\ChatGPTTokenBundle.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\ChatGPTOAuthConstants.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\PKCE.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\JwtDecoder.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\ChatGPTOAuthService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\AppSettings.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\DumpRestoreService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ERDiagramService.h" />
@@ -309,6 +314,15 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)AiService.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\PKCE.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\JwtDecoder.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)Services\ChatGPTOAuth\ChatGPTOAuthService.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="$(MSBuildThisFileDirectory)ExportService.cpp">

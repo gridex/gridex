@@ -16,6 +16,7 @@ namespace DBModels
         Ollama     = 2,
         Gemini     = 3,
         OpenRouter = 4,
+        ChatGPT    = 5,  // Subscription-based via OAuth (no API key)
     };
 
     struct AiConfig
@@ -86,6 +87,9 @@ namespace DBModels
             const std::vector<ChatMessage>& messages,
             const std::wstring& systemPrompt);
         std::wstring CallOpenRouter(
+            const std::vector<ChatMessage>& messages,
+            const std::wstring& systemPrompt);
+        std::wstring CallChatGPT(
             const std::vector<ChatMessage>& messages,
             const std::wstring& systemPrompt);
 
