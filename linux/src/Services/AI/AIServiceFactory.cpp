@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "Services/AI/Providers/AnthropicProvider.h"
+#include "Services/AI/Providers/ChatGPTProvider.h"
 #include "Services/AI/Providers/GeminiProvider.h"
 #include "Services/AI/Providers/OllamaProvider.h"
 #include "Services/AI/Providers/OpenAIProvider.h"
@@ -27,6 +28,11 @@ AIServiceFactory::createAIService(const std::string& providerName,
     }
     if (providerName == "Gemini") {
         return std::make_unique<GeminiProvider>(apiKey, baseUrl);
+    }
+    if (providerName == "ChatGPT") {
+        // apiKey is unused — credentials live in libsecret as an OAuth bundle
+        // populated by the Sign in with ChatGPT flow.
+        return std::make_unique<ChatGPTProvider>(apiKey, baseUrl);
     }
     throw std::invalid_argument("AIServiceFactory: unknown provider '" + providerName + "'");
 }

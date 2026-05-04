@@ -12,6 +12,11 @@ add_library(gridex-services STATIC
     AI/Providers/OpenAIProvider.cpp
     AI/Providers/OllamaProvider.cpp
     AI/Providers/GeminiProvider.cpp
+    AI/Providers/ChatGPTProvider.cpp
+    AI/Auth/PKCE.cpp
+    AI/Auth/JwtDecoder.cpp
+    AI/Auth/OAuthLoopbackServer.cpp
+    AI/Auth/ChatGPTOAuthService.cpp
     Export/ExportService.cpp
     Export/DatabaseDumpRunner.cpp
     MCP/MCPServer.cpp
