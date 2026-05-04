@@ -1,16 +1,9 @@
-include(FetchContent)
-
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBSSH REQUIRED IMPORTED_TARGET libssh)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Network)
-
-# nlohmann/json — header-only, fetched at configure time.
-FetchContent_Declare(json
-    URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
-)
-FetchContent_MakeAvailable(json)
+# nlohmann/json is fetched at the top-level CMakeLists; the target
+# nlohmann_json::nlohmann_json is already available here.
 
 add_library(gridex-services STATIC
     SSH/SSHTunnelManager.cpp

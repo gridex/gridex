@@ -16,11 +16,13 @@ enum class DatabaseType {
     Redis,
     MongoDB,
     MSSQL,
+    ClickHouse,
 };
 
-inline constexpr std::array<DatabaseType, 6> kAllDatabaseTypes = {
-    DatabaseType::PostgreSQL, DatabaseType::MySQL,   DatabaseType::SQLite,
-    DatabaseType::Redis,      DatabaseType::MongoDB, DatabaseType::MSSQL,
+inline constexpr std::array<DatabaseType, 7> kAllDatabaseTypes = {
+    DatabaseType::PostgreSQL, DatabaseType::MySQL,    DatabaseType::SQLite,
+    DatabaseType::Redis,      DatabaseType::MongoDB,  DatabaseType::MSSQL,
+    DatabaseType::ClickHouse,
 };
 
 inline std::string_view rawValue(DatabaseType t) {
@@ -31,11 +33,13 @@ inline std::string_view rawValue(DatabaseType t) {
         case DatabaseType::Redis:      return "redis";
         case DatabaseType::MongoDB:    return "mongodb";
         case DatabaseType::MSSQL:      return "mssql";
+        case DatabaseType::ClickHouse: return "clickhouse";
     }
     return "";
 }
 
 inline std::optional<DatabaseType> databaseTypeFromRaw(std::string_view raw) {
+    if (raw == "clickhouse") return DatabaseType::ClickHouse;
     if (raw == "postgresql") return DatabaseType::PostgreSQL;
     if (raw == "mysql")      return DatabaseType::MySQL;
     if (raw == "sqlite")     return DatabaseType::SQLite;
@@ -53,6 +57,7 @@ inline std::string_view displayName(DatabaseType t) {
         case DatabaseType::Redis:      return "Redis";
         case DatabaseType::MongoDB:    return "MongoDB";
         case DatabaseType::MSSQL:      return "SQL Server";
+        case DatabaseType::ClickHouse: return "ClickHouse";
     }
     return "";
 }
@@ -65,6 +70,7 @@ inline constexpr int defaultPort(DatabaseType t) {
         case DatabaseType::Redis:      return 6379;
         case DatabaseType::MongoDB:    return 27017;
         case DatabaseType::MSSQL:      return 1433;
+        case DatabaseType::ClickHouse: return 8123;  // 8443 when sslEnabled
     }
     return 0;
 }
@@ -77,6 +83,7 @@ inline SQLDialect sqlDialect(DatabaseType t) {
         case DatabaseType::Redis:      return SQLDialect::Redis;
         case DatabaseType::MongoDB:    return SQLDialect::MongoDB;
         case DatabaseType::MSSQL:      return SQLDialect::MSSQL;
+        case DatabaseType::ClickHouse: return SQLDialect::ClickHouse;
     }
     return SQLDialect::SQLite;
 }
@@ -87,6 +94,7 @@ inline constexpr bool isSQL(DatabaseType t) {
         case DatabaseType::MySQL:
         case DatabaseType::SQLite:
         case DatabaseType::MSSQL:
+        case DatabaseType::ClickHouse:
             return true;
         case DatabaseType::Redis:
         case DatabaseType::MongoDB:
@@ -104,6 +112,7 @@ inline constexpr bool supportsSchemas(DatabaseType t) {
         case DatabaseType::SQLite:
         case DatabaseType::Redis:
         case DatabaseType::MongoDB:
+        case DatabaseType::ClickHouse:
             return false;
     }
     return false;

@@ -3,6 +3,7 @@
 #include <string>
 
 #include "Core/Errors/GridexError.h"
+#include "Data/Adapters/ClickHouse/ClickhouseAdapter.h"
 #include "Data/Adapters/MSSQL/MssqlAdapter.h"
 #include "Data/Adapters/MongoDB/MongodbAdapter.h"
 #include "Data/Adapters/MySQL/MysqlAdapter.h"
@@ -26,6 +27,8 @@ std::unique_ptr<IDatabaseAdapter> createAdapter(DatabaseType type) {
             return std::make_unique<RedisAdapter>();
         case DatabaseType::MongoDB:
             return std::make_unique<MongodbAdapter>();
+        case DatabaseType::ClickHouse:
+            return std::make_unique<ClickhouseAdapter>();
     }
     throw ConfigurationError("Unknown DatabaseType");
 }
