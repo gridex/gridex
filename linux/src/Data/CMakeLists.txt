@@ -33,6 +33,7 @@ FetchContent_MakeAvailable(mongo-cxx-driver)
 
 add_library(gridex-data STATIC
     Adapters/AdapterFactory.cpp
+    Adapters/ClickHouse/ClickhouseAdapter.cpp
     Adapters/MSSQL/MssqlAdapter.cpp
     Adapters/MySQL/MysqlAdapter.cpp
     Adapters/MongoDB/MongodbAdapter.cpp
@@ -49,6 +50,8 @@ target_include_directories(gridex-data PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
+find_package(Qt6 6.4 REQUIRED COMPONENTS Network)
+
 target_link_libraries(gridex-data
     PUBLIC  gridex-core
     PRIVATE
@@ -62,4 +65,8 @@ target_link_libraries(gridex-data
         # the "mongo::" namespace prefix (that prefix is only created after install).
         # Use a generator expression to prefer static when available.
         $<IF:$<TARGET_EXISTS:mongocxx_static>,mongocxx_static,mongocxx_shared>
+        # ClickHouse adapter speaks the HTTP API — Qt Network for transport,
+        # nlohmann/json (already fetched in src/Services/) for JSONCompact parse.
+        Qt6::Network
+        nlohmann_json::nlohmann_json
 )
