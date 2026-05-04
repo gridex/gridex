@@ -1,6 +1,16 @@
 #include "Presentation/Views/Settings/SettingsDialog.h"
 
+#include "Core/Models/AI/ChatGPTTokenBundle.h"
+#include "Services/AI/Auth/ChatGPTOAuthService.h"
+
+#include <nlohmann/json.hpp>
+
 #include <QApplication>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QFrame>
@@ -11,7 +21,6 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPointer>
-#include <QProgressBar>
 #include <QPushButton>
 #include <QSettings>
 #include <QStackedWidget>
@@ -29,7 +38,7 @@ namespace gridex {
 
 namespace {
 
-constexpr const char* kProviders[] = {"Anthropic", "OpenAI", "Ollama", "Gemini"};
+constexpr const char* kProviders[] = {"Anthropic", "OpenAI", "Ollama", "Gemini", "ChatGPT"};
 
 QString endpointKey(const QString& provider) {
     return QStringLiteral("ai/endpoint/") + provider;
@@ -48,6 +57,8 @@ QString endpointPlaceholder(const QString& provider) {
 }
 
 }  // namespace
+
+SettingsDialog::~SettingsDialog() = default;
 
 SettingsDialog::SettingsDialog(SecretStore* secretStore, QWidget* parent)
     : QDialog(parent), secretStore_(secretStore) {
@@ -122,6 +133,7 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     form->setHorizontalSpacing(12);
     form->setVerticalSpacing(10);
+    aiForm_ = form;  // captured for runtime row-visibility toggling
 
     // Provider
     providerCombo_ = new QComboBox(page);
@@ -140,12 +152,26 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     connect(modelCombo_, &QComboBox::currentTextChanged,
             this, &SettingsDialog::onModelChanged);
     mrH->addWidget(modelCombo_, 1);
-    modelSpinner_ = new QProgressBar(modelRow);
-    modelSpinner_->setFixedSize(80, 16);
-    modelSpinner_->setRange(0, 0);  // indeterminate animation
-    modelSpinner_->setTextVisible(false);
+    // Tiny Braille-glyph spinner — replaces the 80×16 QProgressBar bar with
+    // a single character that ticks at ~12fps next to the model combo.
+    modelSpinner_ = new QLabel(modelRow);
+    modelSpinner_->setFixedWidth(14);
+    modelSpinner_->setAlignment(Qt::AlignCenter);
+    modelSpinner_->setStyleSheet("color: #89b4fa; font-size: 14px; font-weight: 600;");
     modelSpinner_->hide();
     mrH->addWidget(modelSpinner_);
+    spinnerTimer_ = new QTimer(this);
+    spinnerTimer_->setInterval(80);
+    static const QStringList kFrames = {
+        QStringLiteral("⠋"), QStringLiteral("⠙"), QStringLiteral("⠹"),
+        QStringLiteral("⠸"), QStringLiteral("⠼"), QStringLiteral("⠴"),
+        QStringLiteral("⠦"), QStringLiteral("⠧"), QStringLiteral("⠇"),
+        QStringLiteral("⠏"),
+    };
+    connect(spinnerTimer_, &QTimer::timeout, this, [this]() {
+        modelSpinner_->setText(kFrames[spinnerFrame_]);
+        spinnerFrame_ = (spinnerFrame_ + 1) % kFrames.size();
+    });
     modelStatus_ = new QLabel(modelRow);
     modelStatus_->setForegroundRole(QPalette::PlaceholderText);
     mrH->addWidget(modelStatus_);
@@ -178,11 +204,53 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     });
     keyH->addWidget(eye);
     form->addRow(tr("API Key:"), keyRow);
+    apiKeyRow_ = keyRow;
+    if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(keyRow))) {
+        // Capture label so toggling visibility hides both halves of the row.
+        keyRow->setProperty("formLabel", QVariant::fromValue<QObject*>(lbl));
+    }
+
+    // ChatGPT OAuth — replaces API Key when provider == ChatGPT.
+    oauthRow_ = new QWidget(page);
+    auto* oauthH = new QHBoxLayout(oauthRow_);
+    oauthH->setContentsMargins(0, 0, 0, 0);
+    oauthH->setSpacing(8);
+    oauthStatus_ = new QLabel(oauthRow_);
+    oauthStatus_->setForegroundRole(QPalette::PlaceholderText);
+    signInBtn_   = new QPushButton(tr("Sign in with ChatGPT"), oauthRow_);
+    signInBtn_->setObjectName(QStringLiteral("primaryButton"));
+    signOutBtn_  = new QPushButton(tr("Sign out"), oauthRow_);
+    signOutBtn_->hide();
+    oauthH->addWidget(oauthStatus_, 1);
+    oauthH->addWidget(signInBtn_);
+    oauthH->addWidget(signOutBtn_);
+    form->addRow(tr("ChatGPT account:"), oauthRow_);
+    // Hide both label and field by default — onProviderChanged() flips them
+    // when the user picks ChatGPT.
+    if (auto* lbl = qobject_cast<QLabel*>(form->labelForField(oauthRow_))) lbl->hide();
+    oauthRow_->hide();
+    connect(signInBtn_,  &QPushButton::clicked, this, &SettingsDialog::onOAuthSignInClicked);
+    connect(signOutBtn_, &QPushButton::clicked, this, &SettingsDialog::onOAuthSignOutClicked);
+
+    oauthService_ = std::make_unique<ChatGPTOAuthService>(secretStore_);
+    connect(oauthService_.get(), &ChatGPTOAuthService::signInCompleted,
+            this, [this](const QString&, const ChatGPTTokenBundle&) {
+        refreshOAuthStatus();
+        fetchChatGPTModels();
+    });
+    connect(oauthService_.get(), &ChatGPTOAuthService::signInFailed,
+            this, [this](const QString&, const QString& msg) {
+        signInBtn_->setEnabled(true);
+        signInBtn_->setText(tr("Sign in with ChatGPT"));
+        oauthStatus_->setText(QString("<span style='color:#f38ba8;'>%1</span>").arg(msg));
+        oauthStatus_->setTextFormat(Qt::RichText);
+    });
 
     // Custom endpoint
     endpointEdit_ = new QLineEdit(page);
     endpointEdit_->setClearButtonEnabled(true);
     form->addRow(tr("Custom endpoint:"), endpointEdit_);
+    endpointRow_ = endpointEdit_;
 
     root->addLayout(form);
     root->addStretch();
@@ -233,7 +301,7 @@ void SettingsDialog::onKeyEditTimeout() {
 
 void SettingsDialog::fetchModels(const QString& provider, const QString& apiKey) {
     // Show spinner + status while fetching.
-    modelSpinner_->show();
+    modelSpinner_->show(); spinnerFrame_ = 0; spinnerTimer_->start();
     modelStatus_->setText(tr("Loading models…"));
     modelCombo_->setEnabled(false);
 
@@ -269,7 +337,7 @@ void SettingsDialog::fetchModels(const QString& provider, const QString& apiKey)
             }
             modelCombo_->blockSignals(false);
 
-            modelSpinner_->hide();
+            spinnerTimer_->stop(); modelSpinner_->hide();
             modelCombo_->setEnabled(true);
             if (models.empty()) {
                 const bool hasKey = !apiKeyEdit_->text().trimmed().isEmpty();
@@ -293,7 +361,151 @@ void SettingsDialog::fetchModels(const QString& provider, const QString& apiKey)
 }
 
 void SettingsDialog::onProviderChanged(const QString& provider) {
-    loadForProvider(provider);
+    const bool isChatGPT = (provider == QLatin1String("ChatGPT"));
+
+    // Toggle the API-key + custom-endpoint rows out of the form when the
+    // user picks the OAuth-based ChatGPT provider; show the OAuth row
+    // instead. Both halves of a QFormLayout row (label + field) need to be
+    // hidden together, hence the labelForField lookups.
+    if (aiForm_) {
+        auto setRowVisible = [&](QWidget* row, bool visible) {
+            if (!row) return;
+            if (auto* lbl = qobject_cast<QLabel*>(aiForm_->labelForField(row))) {
+                lbl->setVisible(visible);
+            }
+            row->setVisible(visible);
+        };
+        setRowVisible(apiKeyRow_,   !isChatGPT);
+        setRowVisible(endpointRow_, !isChatGPT);
+        setRowVisible(oauthRow_,    isChatGPT);
+    }
+
+    if (isChatGPT) {
+        refreshOAuthStatus();
+        if (oauthService_ && oauthService_->status().signedIn) {
+            fetchChatGPTModels();
+        } else {
+            modelCombo_->clear();
+            modelStatus_->setText(tr("Sign in to load models."));
+        }
+    } else {
+        loadForProvider(provider);
+    }
+}
+
+void SettingsDialog::fetchChatGPTModels() {
+    if (!oauthService_) return;
+    auto bundle = oauthService_->currentBundle();
+    if (!bundle) return;
+
+    modelSpinner_->show(); spinnerFrame_ = 0; spinnerTimer_->start();
+    modelStatus_->setText(tr("Loading models…"));
+    modelCombo_->setEnabled(false);
+    modelCombo_->clear();
+
+    QUrl url(QStringLiteral("https://chatgpt.com/backend-api/codex/models"));
+    QUrlQuery q;
+    q.addQueryItem("client_version", "1.0.0");
+    url.setQuery(q);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("Authorization",
+                     QByteArrayLiteral("Bearer ") + QByteArray::fromStdString(bundle->accessToken));
+    if (bundle->accountId) {
+        req.setRawHeader("ChatGPT-Account-ID",
+                         QByteArray::fromStdString(*bundle->accountId));
+    }
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    auto* nam = new QNetworkAccessManager(this);
+    auto* reply = nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, nam, reply]() {
+        reply->deleteLater();
+        nam->deleteLater();
+        spinnerTimer_->stop(); modelSpinner_->hide();
+        modelCombo_->setEnabled(true);
+
+        int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status == 401 || status == 403) {
+            modelStatus_->setText(tr("Sign-in expired — sign in again."));
+            return;
+        }
+        if (status < 200 || status >= 300) {
+            modelStatus_->setText(tr("HTTP %1 on /models").arg(status));
+            return;
+        }
+        QByteArray data = reply->readAll();
+        try {
+            auto j = nlohmann::json::parse(data.toStdString());
+            if (!j.contains("models") || !j["models"].is_array()) {
+                modelStatus_->setText(tr("/models response missing 'models' array"));
+                return;
+            }
+            QSettings s;
+            const QString savedModel = s.value("ai/model").toString();
+            modelCombo_->blockSignals(true);
+            int count = 0;
+            for (const auto& m : j["models"]) {
+                if (!m.contains("slug") || !m["slug"].is_string()) continue;
+                bool supported  = m.value("supported_in_api", true);
+                std::string vis = m.value("visibility", std::string("list"));
+                if (!supported || vis != "list") continue;
+                QString slug = QString::fromStdString(m["slug"].get<std::string>());
+                QString name = m.contains("name") && m["name"].is_string()
+                    ? QString::fromStdString(m["name"].get<std::string>()) : slug;
+                modelCombo_->addItem(name, slug);
+                ++count;
+            }
+            if (!savedModel.isEmpty()) {
+                int idx = modelCombo_->findData(savedModel);
+                if (idx < 0) idx = modelCombo_->findText(savedModel);
+                if (idx >= 0) modelCombo_->setCurrentIndex(idx);
+            }
+            modelCombo_->blockSignals(false);
+            modelStatus_->setText(count == 0
+                ? tr("No models returned.")
+                : tr("%1 models").arg(count));
+        } catch (const std::exception& e) {
+            modelStatus_->setText(tr("Could not parse /models response: ") + e.what());
+        }
+    });
+}
+
+void SettingsDialog::refreshOAuthStatus() {
+    if (!oauthService_) return;
+    auto status = oauthService_->status();
+    if (status.signedIn) {
+        QString line = status.email.isEmpty() ? tr("Signed in") : status.email;
+        if (!status.planType.isEmpty()) {
+            line += QString(" <span style='color:#a6e3a1;'>(%1)</span>").arg(status.planType);
+        }
+        oauthStatus_->setText(QString("<span style='color:#a6e3a1;'>●</span> %1").arg(line));
+        oauthStatus_->setTextFormat(Qt::RichText);
+        signInBtn_->hide();
+        signOutBtn_->show();
+    } else {
+        oauthStatus_->setText(tr("Not signed in"));
+        oauthStatus_->setTextFormat(Qt::PlainText);
+        signInBtn_->show();
+        signInBtn_->setEnabled(true);
+        signInBtn_->setText(tr("Sign in with ChatGPT"));
+        signOutBtn_->hide();
+    }
+}
+
+void SettingsDialog::onOAuthSignInClicked() {
+    if (!oauthService_) return;
+    signInBtn_->setEnabled(false);
+    signInBtn_->setText(tr("Waiting for browser…"));
+    oauthStatus_->setText(tr("Browser opened — complete sign-in there."));
+    oauthService_->signIn();
+}
+
+void SettingsDialog::onOAuthSignOutClicked() {
+    if (!oauthService_) return;
+    oauthService_->signOut();
+    refreshOAuthStatus();
 }
 
 void SettingsDialog::onModelChanged(const QString& /*modelName*/) {
