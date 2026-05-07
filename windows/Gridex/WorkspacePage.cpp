@@ -1424,6 +1424,17 @@ namespace winrt::Gridex::implementation
             LoadSidebarFromDB();
             LoadDatabasePicker();
 
+            // Wire the sticky New-database button at the bottom of the
+            // DbPicker flyout. LoadDatabasePicker only manages
+            // visibility; the click handler is permanent.
+            NewDatabaseBtn().Click([this](
+                winrt::Windows::Foundation::IInspectable const&,
+                mux::RoutedEventArgs const&)
+            {
+                DbPickerFlyout().Hide();
+                ShowCreateDatabaseDialogAsync();
+            });
+
             auto adapter = connMgr_.getActiveAdapter();
             if (adapter)
             {
@@ -2456,29 +2467,165 @@ namespace winrt::Gridex::implementation
         auto adapter = connMgr_.getActiveAdapter();
         if (!adapter) return;
 
+        const auto dbType = state_.connection.databaseType;
+        const bool supportsCreate =
+            dbType == DBModels::DatabaseType::PostgreSQL ||
+            dbType == DBModels::DatabaseType::MySQL      ||
+            dbType == DBModels::DatabaseType::MSSQLServer ||
+            dbType == DBModels::DatabaseType::ClickHouse ||
+            dbType == DBModels::DatabaseType::MongoDB;
+
         try
         {
             auto dbs = adapter->listDatabases();
-            DbPickerFlyout().Items().Clear();
+            auto panel = DbPickerItemsPanel();
+            panel.Children().Clear();
 
             for (auto& dbName : dbs)
             {
-                muxc::MenuFlyoutItem item;
-                item.Text(winrt::hstring(dbName));
+                // Render each DB as a flat Button styled like a menu
+                // item -- Flyout does not accept MenuFlyoutItem children.
+                muxc::Button item;
+                item.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+                item.HorizontalContentAlignment(mux::HorizontalAlignment::Left);
+                item.Background(muxm::SolidColorBrush(
+                    winrt::Windows::UI::Colors::Transparent()));
+                item.BorderThickness(mux::Thickness{0,0,0,0});
+                item.Padding(mux::Thickness{12,6,12,6});
 
-                // Highlight current
+                muxc::TextBlock lbl;
+                lbl.Text(winrt::hstring(dbName));
+                lbl.FontSize(13);
                 if (dbName == state_.connection.database)
-                    item.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+                    lbl.FontWeight(winrt::Windows::UI::Text::FontWeights::Bold());
+                item.Content(lbl);
 
-                item.Click([this, dbName](winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
+                item.Click([this, dbName]
+                    (winrt::Windows::Foundation::IInspectable const&,
+                     mux::RoutedEventArgs const&)
                 {
+                    DbPickerFlyout().Hide();
                     SwitchDatabase(dbName);
                 });
 
-                DbPickerFlyout().Items().Append(item);
+                panel.Children().Append(item);
             }
+
+            // Sticky New-database button lives OUTSIDE the scroll
+            // region (defined in XAML). Toggle visibility -- engines
+            // without DB-level DDL (SQLite, Redis) hide it entirely
+            // so we do not surface a guaranteed failure.
+            NewDatabaseBtn().Visibility(supportsCreate
+                ? mux::Visibility::Visible
+                : mux::Visibility::Collapsed);
         }
         catch (...) {}
+    }
+
+    winrt::fire_and_forget WorkspacePage::ShowCreateDatabaseDialogAsync()
+    {
+        auto self = get_strong();
+        const auto dbType = state_.connection.databaseType;
+
+        muxc::TextBox nameBox;
+        nameBox.PlaceholderText(L"new_database");
+        nameBox.Width(300);
+
+        muxc::StackPanel content;
+        content.Spacing(8);
+        content.Children().Append(nameBox);
+
+        muxc::TextBlock note;
+        note.FontSize(11);
+        note.Opacity(0.6);
+        note.TextWrapping(mux::TextWrapping::Wrap);
+        note.Text(L"Issues `CREATE DATABASE \"<name>\"`. Identifier is "
+                  L"quoted automatically — no need to escape it yourself.");
+        content.Children().Append(note);
+
+        muxc::ContentDialog dlg;
+        dlg.Title(winrt::box_value(winrt::hstring(L"New database")));
+        dlg.Content(content);
+        dlg.PrimaryButtonText(L"Create");
+        dlg.CloseButtonText(L"Cancel");
+        dlg.DefaultButton(muxc::ContentDialogButton::Primary);
+        dlg.XamlRoot(this->XamlRoot());
+
+        muxc::ContentDialogResult result{ muxc::ContentDialogResult::None };
+        try { result = co_await dlg.ShowAsync(); } catch (...) { co_return; }
+        if (result != muxc::ContentDialogResult::Primary) co_return;
+
+        std::wstring dbName = std::wstring(nameBox.Text());
+        // Trim — pasted names often carry trailing spaces.
+        while (!dbName.empty() && (dbName.front() == L' ' || dbName.front() == L'\t')) dbName.erase(0, 1);
+        while (!dbName.empty() && (dbName.back()  == L' ' || dbName.back()  == L'\t')) dbName.pop_back();
+        if (dbName.empty()) co_return;
+
+        // Quote identifier per dialect. PostgreSQL / SQLite / MSSQL use
+        // double quotes (MSSQL also accepts [name]); MySQL / ClickHouse
+        // use backticks. MongoDB has no DDL — adapter::execute on a
+        // CREATE DATABASE there will fail, so we'd want a dedicated
+        // path; left as a follow-up.
+        wchar_t qOpen, qClose;
+        if (dbType == DBModels::DatabaseType::MySQL ||
+            dbType == DBModels::DatabaseType::ClickHouse)
+        {
+            qOpen = qClose = L'`';
+        }
+        else
+        {
+            qOpen = qClose = L'"';
+        }
+
+        std::wstring quoted;
+        quoted.reserve(dbName.size() + 4);
+        quoted.push_back(qOpen);
+        for (wchar_t c : dbName)
+        {
+            // Defense-in-depth: escape any embedded quote chars even
+            // though the dialog should never produce them.
+            if (c == qClose) quoted.push_back(qClose);
+            quoted.push_back(c);
+        }
+        quoted.push_back(qClose);
+
+        std::wstring sql = L"CREATE DATABASE " + quoted;
+
+        try
+        {
+            auto adapter = connMgr_.getActiveAdapter();
+            if (!adapter) co_return;
+            auto r = adapter->execute(sql);
+            LogQuery(r);
+            if (!r.success)
+            {
+                muxc::ContentDialog err;
+                err.Title(winrt::box_value(winrt::hstring(L"Create database failed")));
+                err.Content(winrt::box_value(winrt::hstring(r.error)));
+                err.CloseButtonText(L"OK");
+                err.XamlRoot(this->XamlRoot());
+                err.ShowAsync();
+                co_return;
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            muxc::ContentDialog err;
+            err.Title(winrt::box_value(winrt::hstring(L"Create database failed")));
+            int sz = MultiByteToWideChar(CP_UTF8, 0, ex.what(), -1, nullptr, 0);
+            std::wstring msg(sz, L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, ex.what(), -1, &msg[0], sz);
+            err.Content(winrt::box_value(winrt::hstring(msg)));
+            err.CloseButtonText(L"OK");
+            err.XamlRoot(this->XamlRoot());
+            err.ShowAsync();
+            co_return;
+        }
+
+        // Refresh the picker so the new database shows up, then switch
+        // to it so the sidebar / breadcrumb reflect the new context.
+        LoadDatabasePicker();
+        SwitchDatabase(dbName);
     }
 
     void WorkspacePage::SwitchDatabase(const std::wstring& dbName)

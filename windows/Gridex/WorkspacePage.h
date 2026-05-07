@@ -153,6 +153,11 @@ namespace winrt::Gridex::implementation
         // ── Database/Schema Picker ──────────────────
         void LoadDatabasePicker();
         void SwitchDatabase(const std::wstring& dbName);
+        // Show "New database" ContentDialog → execute CREATE DATABASE
+        // on the active adapter. Refreshes the picker and switches to
+        // the new DB on success. Engines without DB-level DDL (SQLite,
+        // Redis) hide the menu entry entirely.
+        winrt::fire_and_forget ShowCreateDatabaseDialogAsync();
 
         // ── Filter ──────────────────────────────────
         void ApplyFilter(const std::wstring& column, const std::wstring& op, const std::wstring& value);
