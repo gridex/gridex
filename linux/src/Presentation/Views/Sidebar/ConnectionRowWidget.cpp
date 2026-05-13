@@ -3,38 +3,45 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QString>
-#include <QVBoxLayout>
+#include <QStyle>
+
+#include "Presentation/Theme/ThemeManager.h"
 
 namespace gridex {
 
 namespace {
 
-// Brand-inspired palette per DB type — matches macOS DatabaseTypeIcon hues.
-struct IconSpec { QString hex; QString letter; };
-IconSpec iconSpec(DatabaseType t) {
+// Two-letter engine badge matching panels.jsx ENGINE_LABEL / ENGINE_COLOR.
+struct EngineSpec { QString bg; QString fg; QString label; };
+EngineSpec engineSpec(DatabaseType t) {
     switch (t) {
-        case DatabaseType::PostgreSQL: return {"#336791", "P"};
-        case DatabaseType::MySQL:      return {"#F29111", "M"};
-        case DatabaseType::SQLite:     return {"#003B57", "S"};
-        case DatabaseType::Redis:      return {"#DC382D", "R"};
-        case DatabaseType::MongoDB:    return {"#4DB33D", "M"};
-        case DatabaseType::MSSQL:      return {"#CC2927", "T"};
+        case DatabaseType::PostgreSQL: return {"#5c8ec5", "#0a0d10", "PG"};
+        case DatabaseType::MySQL:      return {"#e0a347", "#0a0d10", "MY"};
+        case DatabaseType::SQLite:     return {"#6dbf6b", "#0a0d10", "SL"};
+        case DatabaseType::Redis:      return {"#dc382d", "#fff",    "RD"};
+        case DatabaseType::MongoDB:    return {"#4dab51", "#0a0d10", "MG"};
+        case DatabaseType::MSSQL:      return {"#cc2927", "#fff",    "MS"};
+        case DatabaseType::ClickHouse: return {"#f8c842", "#0a0d10", "CH"};
     }
-    return {"#888888", "?"};
+    return {"#7d8185", "#fff", "??"};
 }
 
-QString subtitleFor(const ConnectionConfig& c) {
-    if (c.databaseType == DatabaseType::SQLite) {
-        return c.filePath ? QString::fromUtf8(c.filePath->c_str()) : QStringLiteral("No file");
-    }
-    QString s = QString::fromUtf8(c.displayHost().c_str());
-    if (c.database && !c.database->empty()) {
-        s += QStringLiteral(" / ") + QString::fromUtf8(c.database->c_str());
-    }
-    return s;
+QString tooltipFor(const ConnectionConfig& c) {
+    QString host = QString::fromUtf8(c.displayHost().c_str());
+    QString db   = c.database ? QString::fromUtf8(c.database->c_str()) : QString();
+    QString type = QString::fromUtf8(std::string(displayName(c.databaseType)).c_str());
+    // Tooltip subtle text follows the theme's muted token so the popup
+    // stays readable in both light and dark.
+    const QString mutedHex = ThemeManager::instance().isDark()
+        ? QStringLiteral("#7d8185") : QStringLiteral("#6a6e74");
+    QString lines = QString("<b>%1</b><br><span style='color:%2'>%3</span>")
+                        .arg(QString::fromUtf8(c.name.c_str()), mutedHex, type);
+    if (!host.isEmpty()) lines += QString("<br><tt>%1</tt>").arg(host);
+    if (!db.isEmpty())   lines += QString("<br><tt>db: %1</tt>").arg(db);
+    return lines;
 }
 
-}
+}  // namespace
 
 ConnectionRowWidget::ConnectionRowWidget(const ConnectionConfig& config, QWidget* parent)
     : QWidget(parent), connectionId_(QString::fromUtf8(config.id.c_str())) {
@@ -45,67 +52,51 @@ ConnectionRowWidget::ConnectionRowWidget(const ConnectionConfig& config, QWidget
 void ConnectionRowWidget::buildUi(const ConnectionConfig& config) {
     setAutoFillBackground(true);
     setAttribute(Qt::WA_StyledBackground, true);
+    setProperty("gxRole", QStringLiteral("conn-row"));
+    setProperty("gxActive", false);
+    setToolTip(tooltipFor(config));
 
     auto* root = new QHBoxLayout(this);
-    root->setContentsMargins(10, 8, 10, 8);
-    root->setSpacing(12);
+    root->setContentsMargins(4, 2, 8, 2);
+    root->setSpacing(8);
 
-    // --- 1) Color bar (3×28) ---
+    // 1) Thin colour bar (3×16) — env hint when colorTag is set.
     colorBar_ = new QLabel(this);
-    colorBar_->setFixedSize(3, 28);
+    colorBar_->setFixedSize(3, 16);
     if (config.colorTag) {
         const auto rgb = rgbColor(*config.colorTag);
         colorBar_->setStyleSheet(QString("background-color: rgb(%1,%2,%3); border-radius: 1px;")
                                      .arg(rgb.r).arg(rgb.g).arg(rgb.b));
+    } else {
+        colorBar_->setStyleSheet("background: transparent;");
     }
     root->addWidget(colorBar_);
 
-    // --- 2) DB type icon (32×32 rounded square with letter) ---
-    const auto spec = iconSpec(config.databaseType);
-    iconBox_ = new QWidget(this);
-    iconBox_->setFixedSize(32, 32);
-    iconBox_->setStyleSheet(QString("background-color: %1; border-radius: 7px;").arg(spec.hex));
-    auto* iconLay = new QVBoxLayout(iconBox_);
-    iconLay->setContentsMargins(0, 0, 0, 0);
-    iconLetter_ = new QLabel(spec.letter, iconBox_);
-    iconLetter_->setAlignment(Qt::AlignCenter);
-    iconLay->addWidget(iconLetter_);
-    root->addWidget(iconBox_);
+    // 2) Engine badge (20×14 chip, two-letter code).
+    const auto spec = engineSpec(config.databaseType);
+    engineBadge_ = new QLabel(spec.label, this);
+    engineBadge_->setFixedSize(20, 14);
+    engineBadge_->setAlignment(Qt::AlignCenter);
+    engineBadge_->setStyleSheet(QString(
+        "background-color: %1; color: %2; "
+        "font-family: 'JetBrains Mono', monospace; "
+        "font-size: 9px; font-weight: 700; letter-spacing: 0.02em; "
+        "border-radius: 2px;").arg(spec.bg, spec.fg));
+    root->addWidget(engineBadge_);
 
-    // --- 3) Name + env badge + subtitle ---
-    auto* textCol = new QVBoxLayout();
-    textCol->setContentsMargins(0, 0, 0, 0);
-    textCol->setSpacing(3);
-
-    auto* nameRow = new QHBoxLayout();
-    nameRow->setContentsMargins(0, 0, 0, 0);
-    nameRow->setSpacing(6);
+    // 3) Name — flex, ellipsis-truncated.
     nameLabel_ = new QLabel(QString::fromUtf8(config.name.c_str()), this);
-    nameRow->addWidget(nameLabel_);
+    nameLabel_->setObjectName(QStringLiteral("gxConnRowName"));
+    nameLabel_->setTextFormat(Qt::PlainText);
+    nameLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    nameLabel_->setMinimumWidth(50);
+    root->addWidget(nameLabel_, 1);
 
-    if (config.colorTag) {
-        const auto rgb = rgbColor(*config.colorTag);
-        envBadge_ = new QLabel(QString::fromUtf8(std::string(environmentHint(*config.colorTag)).c_str()).toUpper(), this);
-        envBadge_->setStyleSheet(
-            QString("color: rgb(%1,%2,%3); font-size: 9px; font-weight: 700;"
-                    "letter-spacing: 0.3px;"
-                    "background-color: rgba(%1,%2,%3,36); padding: 1px 5px; border-radius: 3px;")
-                .arg(rgb.r).arg(rgb.g).arg(rgb.b));
-        nameRow->addWidget(envBadge_);
-    }
-    nameRow->addStretch();
-    textCol->addLayout(nameRow);
-
-    subtitle_ = new QLabel(subtitleFor(config), this);
-    subtitle_->setTextFormat(Qt::PlainText);
-    textCol->addWidget(subtitle_);
-    root->addLayout(textCol, 1);
-
-    // --- 4) DB type label ---
-    typeLabel_ = new QLabel(
-        QString::fromUtf8(std::string(displayName(config.databaseType)).c_str()).toUpper(),
-        this);
-    root->addWidget(typeLabel_);
+    // 4) Connection-status dot (grey when offline; PR A2 hooks live status).
+    statusDot_ = new QLabel(this);
+    statusDot_->setObjectName(QStringLiteral("gxConnRowDot"));
+    statusDot_->setFixedSize(7, 7);
+    root->addWidget(statusDot_, 0, Qt::AlignVCenter);
 }
 
 void ConnectionRowWidget::setSelected(bool selected) {
@@ -115,8 +106,9 @@ void ConnectionRowWidget::setSelected(bool selected) {
 }
 
 void ConnectionRowWidget::applyPalette() {
-    // Hover + selection background are drawn by the QListWidget::item rule in
-    // style.qss — the custom row widget just paints its children.
+    setProperty("gxActive", selected_);
+    style()->unpolish(this);
+    style()->polish(this);
 }
 
-}
+}  // namespace gridex

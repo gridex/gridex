@@ -15,6 +15,7 @@ class QStandardItemModel;
 class QTreeView;
 class QTreeWidget;
 class QTreeWidgetItem;
+class QToolButton;
 class QPushButton;
 
 namespace gridex { class TableGridView; }
@@ -26,11 +27,20 @@ class SavedQueryRepository;
 class WorkspaceState;
 
 // Left sidebar shown inside WorkspaceView once a connection is open.
-// Mirrors macOS SidebarView layout:
-//   [tab bar: Items | Queries | History]
-//   [search bar]
-//   [tree: schemas (expand -> tables lazy loaded)]
-//   [bottom bar: schema selector ▾ | DB info | disconnect]
+//
+// PR A2 rewrite (2026-05): Visual structure mirrors the design's
+// FlatSidebar from project/panels.jsx:
+//   - 280px fixed width, gx-bg-1 (#11151a) background
+//   - Header strip: "SCHEMA" label + plug / refresh / collapse buttons
+//   - Activity-tab strip (Items / Queries / History / Saved)
+//   - Filter row with search-glyph
+//   - QTreeView with custom delegate painting engine pill + status dot
+//     on the root row, GxIcons on db/schema/table/view/fn nodes, and
+//     row-count badges trailing each table row
+//   - Bottom strip: schema combo + db info + new-table / disconnect
+//
+// Public API (constructor, methods, signals, slots) is preserved verbatim
+// — WorkspaceView.cpp consumes this surface and must not change.
 class WorkspaceSidebar : public QWidget {
     Q_OBJECT
 
@@ -58,7 +68,6 @@ private slots:
     void onConnectionClosed();
     void onItemExpanded(const QModelIndex& index);
     void onItemDoubleClicked(const QModelIndex& index);
-    void onTabClicked(int tab);
     void onSearchChanged(const QString& text);
     void onSchemaChanged(int index);
     void onContextMenuRequested(const QPoint& pos);
@@ -66,6 +75,11 @@ private slots:
 
 private:
     void buildUi();
+    QWidget* buildItemsPage();
+    QWidget* buildHeaderStrip();
+    QWidget* buildFilterRow(QWidget* parent);
+    QWidget* buildBottomBar(QWidget* parent);
+
     void loadSchemas();
     void loadTablesForSchema(QStandardItem* schemaItem, const QString& schemaName);
     void loadFunctionsForSchema(QStandardItem* parent, const QString& schemaName);
@@ -73,6 +87,9 @@ private:
     void reloadActiveSchema();
     void loadHistoryFromDb();
     void reloadSavedQueriesTree();
+
+    // Add a "Tables (N)" / "Views (N)" / "Functions (N)" header row.
+    QStandardItem* appendFolderRow(QStandardItem* parent, const QString& label, int count);
 
     // Data import / backup actions (wired via context menu).
     void runSqlFile();
@@ -84,18 +101,15 @@ private:
     std::shared_ptr<AppDatabase> appDb_;
     std::unique_ptr<SavedQueryRepository> savedQueryRepo_;
 
-    // Tab bar (0=Items, 1=Queries, 2=History, 3=Saved)
-    QPushButton* itemsTabBtn_   = nullptr;
-    QPushButton* queriesTabBtn_ = nullptr;
-    QPushButton* historyTabBtn_ = nullptr;
-    QPushButton* savedTabBtn_   = nullptr;
-    QStackedWidget* body_ = nullptr;
-    int activeTab_ = 0;
+    // Header strip
+    QToolButton* hdNewConnBtn_  = nullptr;
+    QToolButton* hdRefreshBtn_  = nullptr;
+    QToolButton* hdCollapseBtn_ = nullptr;
 
-    // Items tab
+    // Items (Schema) page
     QLineEdit*      searchEdit_     = nullptr;
     QStackedWidget* itemsViewStack_ = nullptr;   // 0=tree, 1=grid
-    QPushButton*    gridToggleBtn_  = nullptr;
+    QToolButton*    gridToggleBtn_  = nullptr;
     QTreeView*      tree_           = nullptr;
     QStandardItemModel* model_      = nullptr;
     TableGridView*  tableGrid_      = nullptr;
@@ -106,10 +120,12 @@ private:
     QPushButton* disconnectBtn_  = nullptr;
     QPushButton* newTableBtn_    = nullptr;
 
-    // History tab
+    // History / Saved queries: data sinks kept alive but not in the
+    // visible layout — the visible UI moved up to the activity-bar
+    // History/Snippets panels. logQuery / promptSaveQuery still write
+    // into these so the public API on this class doesn't regress while
+    // SidebarPanelStack's history/snippets panels are still placeholders.
     QListWidget* historyList_    = nullptr;
-
-    // Saved queries tab
     QTreeWidget* savedTree_      = nullptr;
 };
 

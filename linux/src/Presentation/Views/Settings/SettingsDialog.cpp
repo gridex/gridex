@@ -74,11 +74,15 @@ void SettingsDialog::buildUi() {
     setWindowTitle(tr("Preferences"));
     setMinimumSize(720, 440);
 
+    // Styling lives in resources/style-gx{,-light}.qss under the Settings
+    // dialog section (selectors keyed on gxSettings* object names below).
+
     auto* root = new QHBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
     navList_ = new QListWidget(this);
+    navList_->setObjectName(QStringLiteral("gxSettingsNav"));
     navList_->setFixedWidth(180);
     navList_->setFrameShape(QFrame::NoFrame);
     navList_->addItem(tr("AI Providers"));
@@ -86,10 +90,12 @@ void SettingsDialog::buildUi() {
     root->addWidget(navList_);
 
     auto* div = new QFrame(this);
+    div->setObjectName(QStringLiteral("gxSettingsDivider"));
     div->setFrameShape(QFrame::VLine);
     root->addWidget(div);
 
     pages_ = new QStackedWidget(this);
+    pages_->setObjectName(QStringLiteral("gxSettingsPages"));
     root->addWidget(pages_, 1);
 
     auto* aiPage = new QWidget(pages_);
@@ -111,12 +117,7 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     root->setSpacing(14);
 
     auto* title = new QLabel(tr("AI Providers"), page);
-    {
-        QFont f = title->font();
-        f.setPointSize(14);
-        f.setWeight(QFont::DemiBold);
-        title->setFont(f);
-    }
+    title->setObjectName(QStringLiteral("gxSettingsTitle"));
     root->addWidget(title);
 
     auto* desc = new QLabel(
@@ -124,15 +125,15 @@ void SettingsDialog::buildAiPage(QWidget* page) {
            "system keychain (libsecret); endpoints override the default base "
            "URL (useful for self-hosted or OpenAI-compatible servers)."),
         page);
+    desc->setObjectName(QStringLiteral("gxSettingsDesc"));
     desc->setWordWrap(true);
-    desc->setForegroundRole(QPalette::PlaceholderText);
     root->addWidget(desc);
 
     auto* form = new QFormLayout();
     form->setLabelAlignment(Qt::AlignRight);
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(10);
+    form->setVerticalSpacing(4);  // gx-form 4px row spacing
     aiForm_ = form;  // captured for runtime row-visibility toggling
 
     // Provider
@@ -157,7 +158,10 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     modelSpinner_ = new QLabel(modelRow);
     modelSpinner_->setFixedWidth(14);
     modelSpinner_->setAlignment(Qt::AlignCenter);
-    modelSpinner_->setStyleSheet("color: #89b4fa; font-size: 14px; font-weight: 600;");
+    modelSpinner_->setProperty("gxText", QStringLiteral("accent"));
+    QFont sf = modelSpinner_->font();
+    sf.setPointSizeF(14.0); sf.setBold(true);
+    modelSpinner_->setFont(sf);
     modelSpinner_->hide();
     mrH->addWidget(modelSpinner_);
     spinnerTimer_ = new QTimer(this);
@@ -218,7 +222,7 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     oauthStatus_ = new QLabel(oauthRow_);
     oauthStatus_->setForegroundRole(QPalette::PlaceholderText);
     signInBtn_   = new QPushButton(tr("Sign in with ChatGPT"), oauthRow_);
-    signInBtn_->setObjectName(QStringLiteral("primaryButton"));
+    signInBtn_->setProperty("gxKind", QStringLiteral("primary"));
     signOutBtn_  = new QPushButton(tr("Sign out"), oauthRow_);
     signOutBtn_->hide();
     oauthH->addWidget(oauthStatus_, 1);
@@ -266,7 +270,7 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     btnH->addWidget(closeBtn);
 
     saveBtn_ = new QPushButton(tr("Save"), btnRow);
-    saveBtn_->setObjectName(QStringLiteral("primaryButton"));
+    saveBtn_->setProperty("gxKind", QStringLiteral("primary"));
     saveBtn_->setDefault(true);
     connect(saveBtn_, &QPushButton::clicked, this, &SettingsDialog::onSaveClicked);
     btnH->addWidget(saveBtn_);
@@ -518,19 +522,14 @@ void SettingsDialog::buildAppearancePage(QWidget* page) {
     root->setSpacing(14);
 
     auto* title = new QLabel(tr("Appearance"), page);
-    {
-        QFont f = title->font();
-        f.setPointSize(14);
-        f.setWeight(QFont::DemiBold);
-        title->setFont(f);
-    }
+    title->setObjectName(QStringLiteral("gxSettingsTitle"));
     root->addWidget(title);
 
     auto* form = new QFormLayout();
     form->setLabelAlignment(Qt::AlignRight);
     form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
     form->setHorizontalSpacing(12);
-    form->setVerticalSpacing(10);
+    form->setVerticalSpacing(4);
 
     themeCombo_ = new QComboBox(page);
     themeCombo_->addItem(tr("Light"),         QStringLiteral("Light"));

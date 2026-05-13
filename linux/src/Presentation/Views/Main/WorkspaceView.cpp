@@ -163,6 +163,17 @@ void WorkspaceView::buildUi() {
     topH->addWidget(detailsBtn_);
 
     mv->addWidget(topBar);
+    // The legacy toolbar buttons (sidebar toggle ☰, connection dot ●,
+    // ER, DB switcher, details ⊟) have moved to GxToolbar / activity
+    // bar / shortcuts. We HIDE them individually so the WorkspaceTabBar
+    // — which lives in the same row — stays visible.
+    sidebarBtn_->hide();
+    connDotBtn_->hide();
+    erDiagramBtn_->hide();
+    dbSwitcherBtn_->hide();
+    detailsBtn_->hide();
+    topBar->setFixedHeight(30);
+    topH->setContentsMargins(0, 0, 0, 0);
 
     // Item 1: 28px connection info bar (hidden until connection opens)
     infoBar_ = new QLabel(mainHost);
@@ -182,6 +193,11 @@ void WorkspaceView::buildUi() {
 
     statusBar_ = new StatusBarView(mainHost);
     mv->addWidget(statusBar_);
+    // Hidden — MainWindow's GxStatusBar is the single source of status
+    // truth in the new IDE shell. Setter calls below (setConnection,
+    // setSchema, setRowCount, setQueryTime) still run so we can wire
+    // them to GxStatusBar later without touching call sites.
+    statusBar_->hide();
 
     root->addWidget(mainHost);
 
@@ -200,6 +216,24 @@ void WorkspaceView::buildUi() {
     root->setSizes({280, 800, 340});
 }
 
+void WorkspaceView::triggerActiveRun() {
+    if (!mainStack_) return;
+    if (auto* qe = qobject_cast<QueryEditorView*>(mainStack_->currentWidget())) {
+        qe->onRunClicked();
+    }
+}
+
+void WorkspaceView::triggerActiveExport() {
+    if (!mainStack_) return;
+    if (auto* qe = qobject_cast<QueryEditorView*>(mainStack_->currentWidget())) {
+        qe->exportResultAsCsv();
+    }
+}
+
+void WorkspaceView::openDatabaseSwitcher() {
+    onOpenDatabaseSwitcher();
+}
+
 void WorkspaceView::toggleDetailsPanel() {
     const bool show = !detailsPanel_->isVisible();
     detailsPanel_->setVisible(show);
@@ -208,10 +242,25 @@ void WorkspaceView::toggleDetailsPanel() {
 }
 
 void WorkspaceView::toggleSidebar() {
+    // Sidebar may have been re-homed into SidebarPanelStack — guard against
+    // a null/reparented sidebar so this no longer crashes on the toggle.
+    if (!sidebar_) return;
     const bool show = !sidebar_->isVisible();
     sidebar_->setVisible(show);
-    leftDiv_->setVisible(show);
-    sidebarBtn_->setChecked(show);
+    if (leftDiv_) leftDiv_->setVisible(show);
+    if (sidebarBtn_) sidebarBtn_->setChecked(show);
+}
+
+WorkspaceSidebar* WorkspaceView::takeSidebar() {
+    // Pull `sidebar_` out of the QSplitter without resetting its pointer —
+    // callers (the SidebarPanelStack host) will reparent + show it inside
+    // their own layout. The internal wires made in buildUi() stay live
+    // because `sidebar_` is still the same object.
+    auto* s = sidebar_;
+    if (s && rootSplitter_) {
+        s->setParent(nullptr);
+    }
+    return s;
 }
 
 void WorkspaceView::onTableSelected(const QString& schema, const QString& table) {
@@ -308,7 +357,10 @@ void WorkspaceView::onTableSelected(const QString& schema, const QString& table)
                 model->setData(idx, newValue, Qt::EditRole);
             });
 
-    const auto tabId = tabBar_->addTab(qualified);
+    // Tab label is just the table name — the schema is implicit (visible
+    // in the sidebar tree and the status bar). Full schema-qualified name
+    // still lives in the `gridex_table` property used for de-dup.
+    const auto tabId = tabBar_->addTab(table);
     tabWidgets_[tabId.toStdString()] = dg;
     mainStack_->setCurrentWidget(dg);
     dg->loadTable(schema, table);
@@ -523,18 +575,11 @@ void WorkspaceView::onConnectionOpened() {
     infoBar_->setText(infoText);
     infoBar_->setVisible(true);
 
-    // Show ER Diagram button now that a connection is live.
-    erDiagramBtn_->setVisible(true);
-
-    // Show database switcher button with current database name.
-    {
-        QString dbLabel = QStringLiteral("DB");
-        const QString dbName = cfg.database
-            ? QString::fromUtf8(cfg.database->c_str()) : QString{};
-        if (!dbName.isEmpty()) dbLabel = dbName;
-        dbSwitcherBtn_->setText(QStringLiteral("⬡ %1 ▾").arg(dbLabel));
-        dbSwitcherBtn_->setVisible(true);
-    }
+    // ER-diagram + database-switcher buttons live on GxToolbar now —
+    // leave the legacy buttons hidden so they don't leak back into the
+    // tab strip when a connection opens.
+    erDiagramBtn_->setVisible(false);
+    dbSwitcherBtn_->setVisible(false);
 
     // Connection dot → active (Catppuccin green via style.qss).
     connDotBtn_->setProperty("connected", true);

@@ -18,6 +18,11 @@ public:
     void setMode(Mode mode, QApplication* app);
     Mode mode() const;
 
+    // Effective dark-vs-light decision after Auto resolution. Use for
+    // widgets that paint outside the QSS pipeline (e.g. QStyledItemDelegate
+    // or paintEvent overrides) and need a colour at draw time.
+    bool isDark() const;
+
 signals:
     void themeChanged();
 
@@ -27,7 +32,8 @@ private:
     ThemeManager& operator=(const ThemeManager&) = delete;
 
     void applyQss(QApplication* app, const QString& path);
-    void applyForCurrentSystem(QApplication* app);
+    void applyGxForMode(QApplication* app);
+    void applyLegacyForSystem(QApplication* app);
 
     Mode mode_ = Mode::Auto;
     QApplication* app_ = nullptr;

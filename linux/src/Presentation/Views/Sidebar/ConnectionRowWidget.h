@@ -8,10 +8,13 @@ class QLabel;
 
 namespace gridex {
 
-// Single connection row matching macOS ConnectionRow layout:
-//   [colorBar 3x28] [DBIcon 32x32] [Name + envBadge + subtitle] [spacer] [TYPE]
-// Selection + hover are driven by the parent QListWidget's state through
-// setSelected(bool).
+// Compact connection row sized for the 280px IDE sidebar. Mirrors the
+// design's panels.jsx layout:
+//   [3px env color bar] [engine badge 18×14] [name] [conn-status dot 6px]
+//
+// Host:port / database / DB-type details move into the row's tooltip
+// instead of being rendered inline — keeps the row at the same 22-28px
+// height as every other tree row in the sidebar.
 class ConnectionRowWidget : public QWidget {
     Q_OBJECT
 
@@ -28,13 +31,10 @@ private:
     QString connectionId_;
     bool    selected_ = false;
 
-    QLabel* colorBar_  = nullptr;
-    QWidget* iconBox_  = nullptr;
-    QLabel* iconLetter_ = nullptr;
-    QLabel* nameLabel_ = nullptr;
-    QLabel* envBadge_  = nullptr;
-    QLabel* subtitle_  = nullptr;
-    QLabel* typeLabel_ = nullptr;
+    QLabel* colorBar_   = nullptr;
+    QLabel* engineBadge_ = nullptr;
+    QLabel* nameLabel_  = nullptr;
+    QLabel* statusDot_  = nullptr;
 };
 
 }

@@ -34,16 +34,13 @@
 #include "Presentation/Views/FilterBar/FilterBarView.h"
 #include "Presentation/Views/QueryLog/QueryLogPanel.h"
 #include "Presentation/Views/TableStructure/TableStructureView.h"
+#include "Presentation/Views/Chrome/GxIcons.h"
 #include "Services/Export/ExportService.h"
 
 namespace gridex {
 
-namespace {
-
-// Button styling lives in resources/style.qss — tag buttons with objectName
-// (primaryButton / commitButton / discardButton) instead of inline sheets.
-
-}  // namespace
+// All DataGrid chrome lives in resources/style-gx{,-light}.qss under the
+// "DataGrid" section.
 
 DataGridView::DataGridView(QWidget* parent) : QWidget(parent) {
     buildUi();
@@ -56,15 +53,17 @@ void DataGridView::buildUi() {
 
     // ===================== Top 28px DataGridToolbar =====================
     auto* topBar = new QWidget(this);
+    topBar->setObjectName(QStringLiteral("DataGridTopBar"));
+    topBar->setAttribute(Qt::WA_StyledBackground, true);
     topBar->setFixedHeight(28);
-    topBar->setAutoFillBackground(true);
     topBar->setProperty("compact", true);  // shrinks descendant buttons/inputs
     auto* topH = new QHBoxLayout(topBar);
     topH->setContentsMargins(12, 0, 12, 0);
     topH->setSpacing(8);
 
     pendingStub_ = new QLabel(QString{}, topBar);
-    pendingStub_->setStyleSheet(QStringLiteral("color: #f9e2af;"));  // warn (catppuccin yellow)
+    pendingStub_->setObjectName(QStringLiteral("gxDataGridPending"));
+    pendingStub_->setProperty("gxText", QStringLiteral("warning"));
     pendingStub_->hide();
     topH->addWidget(pendingStub_);
 
@@ -91,17 +90,16 @@ void DataGridView::buildUi() {
 
     topH->addStretch();
 
-    reloadBtn_ = new QPushButton(QStringLiteral("⟳"), topBar);
+    reloadBtn_ = new QPushButton(topBar);
+    reloadBtn_->setObjectName(QStringLiteral("dataGridReload"));
+    reloadBtn_->setIcon(GxIcons::glyph(QStringLiteral("refresh")));
+    reloadBtn_->setIconSize(QSize(13, 13));
     reloadBtn_->setToolTip(tr("Reload"));
     reloadBtn_->setFixedSize(24, 22);
     connect(reloadBtn_, &QPushButton::clicked, this, &DataGridView::reload);
     topH->addWidget(reloadBtn_);
 
     root->addWidget(topBar);
-
-    auto* topDiv = new QFrame(this);
-    topDiv->setFrameShape(QFrame::HLine);
-    root->addWidget(topDiv);
 
     // ===================== Filter bar (hidden until toggled) =====================
     filterBar_ = new FilterBarView(this);
@@ -125,6 +123,7 @@ void DataGridView::buildUi() {
             });
 
     filterBarDiv_ = new QFrame(this);
+    filterBarDiv_->setObjectName(QStringLiteral("gxFilterBarDiv"));
     filterBarDiv_->setFrameShape(QFrame::HLine);
     filterBarDiv_->setVisible(false);
 
@@ -136,9 +135,11 @@ void DataGridView::buildUi() {
 
     // Page 0 — data table
     tableView_ = new QTableView(this);
+    tableView_->setObjectName(QStringLiteral("DataGridTable"));
     tableView_->setFrameShape(QFrame::NoFrame);
     tableView_->setAlternatingRowColors(true);
-    tableView_->setShowGrid(true);
+    tableView_->setShowGrid(false);
+    tableView_->horizontalHeader()->setObjectName(QStringLiteral("DataGridHeader"));
     tableView_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tableView_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     // Task 6: enable cell editing via double-click or F2
@@ -192,13 +193,10 @@ void DataGridView::buildUi() {
     root->addWidget(vSplit, 1);
 
     // ===================== Bottom 34px BottomTabBar =====================
-    auto* botDiv = new QFrame(this);
-    botDiv->setFrameShape(QFrame::HLine);
-    root->addWidget(botDiv);
-
     auto* bot = new QWidget(this);
+    bot->setObjectName(QStringLiteral("DataGridBotBar"));
+    bot->setAttribute(Qt::WA_StyledBackground, true);
     bot->setFixedHeight(34);
-    bot->setAutoFillBackground(true);
     bot->setProperty("compact", true);  // shrinks descendant buttons/inputs
     auto* botH = new QHBoxLayout(bot);
     botH->setContentsMargins(10, 5, 10, 5);
@@ -230,6 +228,7 @@ void DataGridView::buildUi() {
 
     // Task 2: [+ Row] button — enabled
     addRowBtn_ = new QPushButton(QStringLiteral("+ Row"), bot);
+    addRowBtn_->setObjectName(QStringLiteral("dataGridGenericBtn"));
     addRowBtn_->setToolTip(tr("Insert a new empty row"));
     addRowBtn_->setEnabled(true);
     connect(addRowBtn_, &QPushButton::clicked, this, &DataGridView::onAddRow);
@@ -239,12 +238,16 @@ void DataGridView::buildUi() {
 
     // Row count label
     pageLabel_ = new QLabel(tr("No rows"), bot);
+    pageLabel_->setObjectName(QStringLiteral("dataGridPageLabel"));
     botH->addWidget(pageLabel_);
 
     botH->addStretch();
 
     // Filters button — now functional
-    filtersBtn_ = new QPushButton(QStringLiteral("⚟ Filters"), bot);
+    filtersBtn_ = new QPushButton(tr("Filters"), bot);
+    filtersBtn_->setObjectName(QStringLiteral("dataGridGenericBtn"));
+    filtersBtn_->setIcon(GxIcons::glyph(QStringLiteral("search")));
+    filtersBtn_->setIconSize(QSize(11, 11));
     filtersBtn_->setCheckable(true);
     filtersBtn_->setToolTip(tr("Toggle filter bar"));
     connect(filtersBtn_, &QPushButton::clicked, this, &DataGridView::onFiltersToggled);
@@ -256,19 +259,24 @@ void DataGridView::buildUi() {
     exportMenu_->addAction(tr("JSON…"), this, &DataGridView::onExportJson);
     exportMenu_->addAction(tr("SQL…"),  this, &DataGridView::onExportSql);
 
-    exportBtn_ = new QPushButton(QStringLiteral("Export ▾"), bot);
+    exportBtn_ = new QPushButton(tr("Export"), bot);
+    exportBtn_->setObjectName(QStringLiteral("dataGridGenericBtn"));
+    exportBtn_->setIcon(GxIcons::glyph(QStringLiteral("export")));
+    exportBtn_->setIconSize(QSize(11, 11));
     exportBtn_->setToolTip(tr("Export current data"));
     exportBtn_->setMenu(exportMenu_);
     botH->addWidget(exportBtn_);
 
     // Pagination
     prevBtn_ = new QPushButton(QStringLiteral("‹"), bot);
+    prevBtn_->setObjectName(QStringLiteral("dataGridGenericBtn"));
     prevBtn_->setFixedSize(28, 22);
     prevBtn_->setToolTip(tr("Previous page"));
     connect(prevBtn_, &QPushButton::clicked, this, &DataGridView::onPrevPage);
     botH->addWidget(prevBtn_);
 
     nextBtn_ = new QPushButton(QStringLiteral("›"), bot);
+    nextBtn_->setObjectName(QStringLiteral("dataGridGenericBtn"));
     nextBtn_->setFixedSize(28, 22);
     nextBtn_->setToolTip(tr("Next page"));
     connect(nextBtn_, &QPushButton::clicked, this, &DataGridView::onNextPage);
@@ -276,8 +284,10 @@ void DataGridView::buildUi() {
 
     // Rows-per-page spin
     auto* rowsLbl = new QLabel(tr("Rows"), bot);
+    rowsLbl->setObjectName(QStringLiteral("dataGridPageLabel"));
     botH->addWidget(rowsLbl);
     limitSpin_ = new QSpinBox(bot);
+    limitSpin_->setObjectName(QStringLiteral("dataGridLimit"));
     limitSpin_->setRange(100, 100000);
     limitSpin_->setSingleStep(100);
     limitSpin_->setValue(1000);
@@ -663,13 +673,18 @@ void DataGridView::onCommit() {
     fetchAndRender();
 
     // Show transient ✓ confirmation in the top toolbar for 3 seconds.
-    pendingStub_->setStyleSheet(QStringLiteral("color: #a6e3a1;"));  // success green
+    auto setPendingState = [this](const char* state) {
+        pendingStub_->setProperty("gxText", QString::fromLatin1(state));
+        pendingStub_->style()->unpolish(pendingStub_);
+        pendingStub_->style()->polish(pendingStub_);
+    };
+    setPendingState("success");
     pendingStub_->setText(tr("✓ Committed — %1").arg(parts.join(QStringLiteral(", "))));
     pendingStub_->setVisible(true);
-    QTimer::singleShot(3000, this, [this] {
+    QTimer::singleShot(3000, this, [this, setPendingState] {
         pendingStub_->setText(QString{});
         pendingStub_->setVisible(false);
-        pendingStub_->setStyleSheet(QStringLiteral("color: #f9e2af;"));  // reset to warn
+        setPendingState("warning");
     });
 }
 

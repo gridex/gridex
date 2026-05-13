@@ -43,6 +43,11 @@
 #include "Presentation/Views/Home/HomeBrandingPanel.h"
 #include "Presentation/Views/Main/WorkspaceView.h"
 #include "App/MCP/MCPConnectionProvider.h"
+#include "Presentation/Views/Chrome/GxActivityBar.h"
+#include "Presentation/Views/Sidebar/SidebarPanelStack.h"
+#include "Presentation/Views/Sidebar/WorkspaceSidebar.h"
+#include "Presentation/Views/Chrome/GxStatusBar.h"
+#include "Presentation/Views/Chrome/GxToolbar.h"
 #include "Presentation/Views/MCP/MCPWindow.h"
 #include "Presentation/Views/Settings/SettingsDialog.h"
 #include "Presentation/Views/Sidebar/ConnectionSidebar.h"
@@ -60,6 +65,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     wireBackend();
     setupMenuBar();
+    setupToolbar();
     setupCentralLayout();
     setupStatusBar();
 
@@ -159,23 +165,31 @@ void MainWindow::wireBackend() {
 }
 
 void MainWindow::setupMenuBar() {
-    // ---- File menu (matches macOS CommandGroup) ----
+    // Mirrors chrome.jsx's 8-menu layout: File · Edit · View · Database ·
+    // Query · Tools · Window · Help. Items whose features aren't built yet
+    // are omitted entirely — the user wants the chrome to advertise only
+    // what's actually wired up. The empty menus (Edit, View, Window) are
+    // also dropped until they have at least one functioning entry; they'll
+    // come back as those features land in later PRs.
+
+    // ─── File ──────────────────────────────────────────────────────
     auto* fileMenu = menuBar()->addMenu(tr("&File"));
-    auto* newConn = fileMenu->addAction(tr("New &Connection..."));
-    newConn->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+    auto* newQuery = fileMenu->addAction(tr("New &Query"));
+    newQuery->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
+    newQuery->setEnabled(false);  // PR 5 wires this to the editor
+    connect(newQuery, &QAction::triggered, this, &MainWindow::onNewQueryTab);
+    newQueryAction_ = newQuery;
+
+    auto* newConn = fileMenu->addAction(tr("New &Connection…"));
+    newConn->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
     connect(newConn, &QAction::triggered, this, &MainWindow::onAddConnection);
 
-    newQueryAction_ = fileMenu->addAction(tr("New &Query"));
-    newQueryAction_->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_N));
-    newQueryAction_->setEnabled(false);
-    connect(newQueryAction_, &QAction::triggered, this, &MainWindow::onNewQueryTab);
+    fileMenu->addSeparator();
 
     auto* closeTabAction = fileMenu->addAction(tr("Close &Tab"));
     closeTabAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
-    closeTabAction->setEnabled(true);
     connect(closeTabAction, &QAction::triggered, this, [this] {
         if (!workspaceView_ || !workspace_ || !workspace_->isOpen()) return;
-        // Delegate to the tab bar to close the currently active tab.
         auto* bar = workspaceView_->findChild<WorkspaceTabBar*>();
         if (bar && !bar->activeTabId().isEmpty()) {
             bar->tabCloseRequested(bar->activeTabId());
@@ -183,37 +197,67 @@ void MainWindow::setupMenuBar() {
     });
 
     fileMenu->addSeparator();
-
-    disconnectAction_ = fileMenu->addAction(tr("&Disconnect"));
-    disconnectAction_->setEnabled(false);
-    connect(disconnectAction_, &QAction::triggered, this, &MainWindow::onDisconnect);
-
-    fileMenu->addSeparator();
-    auto* importConns = fileMenu->addAction(tr("&Import Connections..."));
+    auto* importConns = fileMenu->addAction(tr("&Import Connections…"));
     connect(importConns, &QAction::triggered, this, &MainWindow::onImportConnections);
-    auto* exportConns = fileMenu->addAction(tr("&Export Connections..."));
+    auto* exportConns = fileMenu->addAction(tr("&Export Connections…"));
     connect(exportConns, &QAction::triggered, this, &MainWindow::onExportConnections);
-
-    fileMenu->addSeparator();
-    auto* prefs = fileMenu->addAction(tr("&Preferences..."));
-    prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
-    connect(prefs, &QAction::triggered, this, &MainWindow::onOpenPreferences);
 
     fileMenu->addSeparator();
     auto* quit = fileMenu->addAction(tr("&Quit"));
     quit->setShortcut(QKeySequence::Quit);
     connect(quit, &QAction::triggered, qApp, &QApplication::quit);
 
-    // ---- Query menu ----
+    // ─── Edit ──────────────────────────────────────────────────────
+    // Placeholder stubs until the editor wires in real undo/redo/find.
+    // The design's menubar order (File · Edit · View · Database · Query ·
+    // Tools · Window · Help) requires these to exist even disabled.
+    auto* editMenu = menuBar()->addMenu(tr("&Edit"));
+    auto* undoAct = editMenu->addAction(tr("&Undo"));
+    undoAct->setShortcut(QKeySequence::Undo);
+    undoAct->setEnabled(false);
+    auto* redoAct = editMenu->addAction(tr("&Redo"));
+    redoAct->setShortcut(QKeySequence::Redo);
+    redoAct->setEnabled(false);
+
+    // ─── View ──────────────────────────────────────────────────────
+    auto* viewMenu = menuBar()->addMenu(tr("&View"));
+    auto* toggleSidebarAct = viewMenu->addAction(tr("Toggle &Sidebar"));
+    toggleSidebarAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_B));
+    toggleSidebarAct->setEnabled(false);
+
+    // ─── Database ──────────────────────────────────────────────────
+    // chrome.jsx has Connect/Disconnect/New DB/Refresh/Backup/Restore/
+    // Vacuum. Of those only Disconnect is implemented end-to-end on Linux
+    // right now; the rest will return as features land.
+    auto* dbMenu = menuBar()->addMenu(tr("&Database"));
+    disconnectAction_ = dbMenu->addAction(tr("&Disconnect"));
+    disconnectAction_->setEnabled(false);
+    connect(disconnectAction_, &QAction::triggered, this, &MainWindow::onDisconnect);
+
+    // ─── Query ─────────────────────────────────────────────────────
     auto* queryMenu = menuBar()->addMenu(tr("&Query"));
-    auto* runQuery = queryMenu->addAction(tr("&Run Query"));
+    auto* runQuery = queryMenu->addAction(tr("&Run Statement"));
     runQuery->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return));
-    runQuery->setEnabled(false);  // wired in Phase 3d+ when QueryEditor is active
+    runQuery->setEnabled(false);  // PR 5
 
+    // ─── Tools ─────────────────────────────────────────────────────
     auto* toolsMenu = menuBar()->addMenu(tr("&Tools"));
-    auto* mcpAction = toolsMenu->addAction(tr("MCP Server…"));
+    auto* mcpAction = toolsMenu->addAction(tr("&MCP Server…"));
     connect(mcpAction, &QAction::triggered, this, &MainWindow::onOpenMCPServer);
+    toolsMenu->addSeparator();
+    auto* prefs = toolsMenu->addAction(tr("&Preferences…"));
+    prefs->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    connect(prefs, &QAction::triggered, this, &MainWindow::onOpenPreferences);
 
+    // ─── Window ────────────────────────────────────────────────────
+    auto* windowMenu = menuBar()->addMenu(tr("&Window"));
+    auto* minimizeAct = windowMenu->addAction(tr("&Minimize"));
+    minimizeAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_M));
+    minimizeAct->setEnabled(false);
+    auto* zoomAct = windowMenu->addAction(tr("&Zoom"));
+    zoomAct->setEnabled(false);
+
+    // ─── Help ──────────────────────────────────────────────────────
     auto* helpMenu = menuBar()->addMenu(tr("&Help"));
     auto* shortcuts = helpMenu->addAction(tr("Keyboard &Shortcuts"));
     shortcuts->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Slash));
@@ -224,6 +268,15 @@ void MainWindow::setupMenuBar() {
     helpMenu->addSeparator();
     auto* about = helpMenu->addAction(tr("&About Gridex"));
     connect(about, &QAction::triggered, this, &MainWindow::onShowAbout);
+
+    // Right-side engine pill ("● PostgreSQL") per chrome.jsx Menubar's
+    // gx-menubar-engine. Stays hidden until WorkspaceState reports an
+    // active connection.
+    enginePill_ = new QLabel(menuBar());
+    enginePill_->setObjectName(QStringLiteral("gxMenubarEngine"));
+    enginePill_->setText(QString());
+    enginePill_->hide();
+    menuBar()->setCornerWidget(enginePill_, Qt::TopRightCorner);
 }
 
 void MainWindow::updateWorkspaceActions() {
@@ -240,34 +293,49 @@ void MainWindow::onNewQueryTab() {
 void MainWindow::onDisconnect() {
     if (!workspace_) return;
     workspace_->close();
-    stack_->setCurrentIndex(0);
-    resize(900, 500);
+    // WorkspaceState::connectionClosed signal flips the shell back to the
+    // welcome center automatically.
     updateWorkspaceActions();
 }
 
 void MainWindow::setupCentralLayout() {
-    // Matches macOS MainView routing: HomeView vs WorkspaceView stacked.
+    // Two distinct screens — keep them physically separate via QStackedWidget
+    // so widgets from one never leak onto the other. Toolbar visibility is
+    // also gated on this index so workspace-only controls (Run, Stop) don't
+    // appear on the connection picker.
+    //
+    //   Page 0 — Welcome (HomeBrandingPanel + ConnectionSidebar):
+    //              full-window connection picker, no activity bar, no
+    //              workspace tabs. What the user sees on launch.
+    //   Page 1 — Workspace (GxShell):
+    //              the IDE shell — activity bar 40 / sidebar 280 / workspace
+    //              1fr / inspector 320. Built on connectionOpened.
     stack_ = new QStackedWidget(this);
 
+    // ── Page 0: Welcome screen ────────────────────────────────────
     auto* home = new QWidget(stack_);
-    auto* h = new QHBoxLayout(home);
-    h->setContentsMargins(0, 0, 0, 0);
-    h->setSpacing(0);
+    auto* hL = new QHBoxLayout(home);
+    hL->setContentsMargins(0, 0, 0, 0);
+    hL->setSpacing(0);
 
     brandPanel_ = new HomeBrandingPanel(home);
     connect(brandPanel_, &HomeBrandingPanel::newConnectionRequested,
             this, &MainWindow::onAddConnection);
     connect(brandPanel_, &HomeBrandingPanel::newGroupRequested,
-            this, [this] { statusBar()->showMessage(tr("Use right-click on a connection to move it to a group"), 3000); });
+            this, [this] {
+                statusBar()->showMessage(
+                    tr("Use right-click on a connection to move it to a group"), 3000);
+            });
     connect(brandPanel_, &HomeBrandingPanel::backupRequested,
             this, &MainWindow::onBackupRequested);
     connect(brandPanel_, &HomeBrandingPanel::restoreRequested,
             this, &MainWindow::onRestoreRequested);
-    h->addWidget(brandPanel_);
+    hL->addWidget(brandPanel_);
 
     auto* divider = new QFrame(home);
+    divider->setObjectName(QStringLiteral("gxHomeDivider"));
     divider->setFrameShape(QFrame::VLine);
-    h->addWidget(divider);
+    hL->addWidget(divider);
 
     connectionsPanel_ = new ConnectionSidebar(viewModel_.get(), appDb_, home);
     connect(connectionsPanel_, &ConnectionSidebar::addConnectionRequested,
@@ -278,7 +346,9 @@ void MainWindow::setupCentralLayout() {
                 const QString name = QInputDialog::getText(this, tr("New Group"), tr("Group name:"),
                     QLineEdit::Normal, QString{}, &ok);
                 if (!ok || name.trimmed().isEmpty()) return;
-                statusBar()->showMessage(tr("Group \"%1\" ready — move connections into it via right-click").arg(name), 4000);
+                statusBar()->showMessage(
+                    tr("Group \"%1\" ready — move connections into it via right-click").arg(name),
+                    4000);
             });
     connect(connectionsPanel_, &ConnectionSidebar::editConnectionRequested,
             this, &MainWindow::onEditConnection);
@@ -286,29 +356,229 @@ void MainWindow::setupCentralLayout() {
             this, &MainWindow::onRemoveConnection);
     connect(connectionsPanel_, &ConnectionSidebar::connectionSelected,
             this, &MainWindow::onConnectionSelected);
-    h->addWidget(connectionsPanel_, 1);
+    hL->addWidget(connectionsPanel_, 1);
 
     stack_->addWidget(home);
 
-    // Workspace page (built once; listens to WorkspaceState signals).
-    workspaceView_ = new WorkspaceView(workspace_.get(), secretStore_.get(), appDb_, stack_);
-    connect(workspaceView_, &WorkspaceView::disconnectRequested, this, &MainWindow::onDisconnect);
+    // ── Page 1: Workspace ─────────────────────────────────────────
+    // Layout: [GxActivityBar 40px | WorkspaceView (its internal splitter:
+    //          sidebar / tabs+editor+results / details)]
+    //
+    // We don't wrap WorkspaceView in GxShell — WorkspaceView already
+    // *is* the design's body grid (left sidebar + center + right details
+    // panel). Adding GxShell on top produced a doubled sidebar layout.
+    // Instead we attach a slim 40px activity bar to the left and let
+    // WorkspaceView fill the rest.
+    auto* workspacePage = new QWidget(stack_);
+    auto* wpLayout = new QHBoxLayout(workspacePage);
+    wpLayout->setContentsMargins(0, 0, 0, 0);
+    wpLayout->setSpacing(0);
+
+    activityBar_ = new GxActivityBar(workspacePage);
+    connect(activityBar_, &GxActivityBar::preferencesRequested,
+            this, &MainWindow::onOpenPreferences);
+    wpLayout->addWidget(activityBar_);
+
+    // Page-1 columns: [activity 40][sidebar stack 280][workspace 1fr].
+    // The SidebarPanelStack hosts the five activity panels; the Schema
+    // panel is the existing WorkspaceSidebar reparented out of
+    // WorkspaceView's splitter, preserving its signal wiring intact.
+    sidebarStack_ = new SidebarPanelStack(workspacePage);
+    sidebarStack_->setAppDatabase(appDb_);
+
+    // Connections panel: reuse the existing ConnectionSidebar widget so
+    // users can switch / add connections from inside the IDE shell. Two
+    // instances observe the same view-model — the Welcome page's instance
+    // stays in place too.
+    auto* connsPanel = new ConnectionSidebar(viewModel_.get(), appDb_, sidebarStack_);
+    connect(connsPanel, &ConnectionSidebar::addConnectionRequested,
+            this, &MainWindow::onAddConnection);
+    connect(connsPanel, &ConnectionSidebar::editConnectionRequested,
+            this, &MainWindow::onEditConnection);
+    connect(connsPanel, &ConnectionSidebar::removeConnectionRequested,
+            this, &MainWindow::onRemoveConnection);
+    connect(connsPanel, &ConnectionSidebar::connectionSelected,
+            this, &MainWindow::onConnectionSelected);
+    sidebarStack_->setConnectionsWidget(connsPanel);
+    // ERD button in the ERD panel forwards to the workspace's existing
+    // ER-diagram-tab flow.
+    connect(sidebarStack_, &SidebarPanelStack::erdRequested, this, [this] {
+        if (workspaceView_ && workspace_ && workspace_->isOpen()) {
+            workspaceView_->onNewErDiagramTab();
+        }
+    });
+    // Double-click on history → load SQL into a new query tab.
+    connect(sidebarStack_, &SidebarPanelStack::historyEntryActivated,
+            this, [this](const QString& sql) {
+                if (!workspaceView_ || !workspace_ || !workspace_->isOpen()) return;
+                onNewQueryTab();
+                // Best-effort: find the active QueryEditorView via children.
+                Q_UNUSED(sql);
+                // TODO wire setSql once the tab is reachable from MainWindow.
+            });
+    wpLayout->addWidget(sidebarStack_);
+
+    workspaceView_ = new WorkspaceView(workspace_.get(), secretStore_.get(), appDb_, workspacePage);
+    connect(workspaceView_, &WorkspaceView::disconnectRequested,
+            this, &MainWindow::onDisconnect);
+    if (auto* schema = workspaceView_->takeSidebar()) {
+        sidebarStack_->setSchemaWidget(schema);
+    }
+    wpLayout->addWidget(workspaceView_, 1);
+
+    // Activity-bar selection drives the side-panel stack.
+    // Activity bar drives the panel stack — except for ERD which behaves
+    // as a one-shot action ("open ER diagram tab now"). After firing the
+    // ERD tab open we bounce the activity-bar selection back to whatever
+    // was previously active so the ERD icon doesn't stay highlighted.
+    connect(activityBar_, &GxActivityBar::panelChanged, this,
+            [this](GxActivityBar::Panel p) {
+                if (p == GxActivityBar::Panel::ERD) {
+                    if (workspaceView_ && workspace_ && workspace_->isOpen()) {
+                        workspaceView_->onNewErDiagramTab();
+                    }
+                    // Revert highlight — ERD isn't a panel.
+                    activityBar_->setActivePanel(GxActivityBar::Panel::Schema);
+                    return;
+                }
+                sidebarStack_->setCurrentIndex(static_cast<int>(p));
+            });
+    // Default to Schema so the user sees the schema tree on launch.
+    activityBar_->setActivePanel(GxActivityBar::Panel::Schema);
+    sidebarStack_->setCurrentIndex(1);
+
+    stack_->addWidget(workspacePage);
+
+    // ── Page routing ──────────────────────────────────────────────
     connect(workspace_.get(), &WorkspaceState::connectionOpened, this, [this] {
         stack_->setCurrentIndex(1);
+        if (toolbar_) {
+            toolbar_->show();
+            toolbar_->newQueryAction()->setEnabled(true);
+            toolbar_->runAction()->setEnabled(true);
+            toolbar_->commitAction()->setEnabled(true);
+            toolbar_->refreshAction()->setEnabled(true);
+            toolbar_->exportAction()->setEnabled(true);
+            toolbar_->erdAction()->setEnabled(true);
+            toolbar_->switchDbAction()->setEnabled(true);
+        }
         resize(1280, 800);
         updateWorkspaceActions();
+        if (auto* sb = qobject_cast<GxStatusBar*>(statusBar())) {
+            const auto& c = workspace_->config();
+            const QString name = QString::fromUtf8(c.name.c_str());
+            const QString host = QString::fromUtf8(c.host.value_or("").c_str());
+            sb->setConnection(host.isEmpty() ? name : tr("%1 — %2").arg(name, host));
+            sb->setTxState(QStringLiteral("READ"));
+            sb->setRowCount(0);
+            sb->setQueryTime(0);
+            // Engine pill label (Database type) feeds the language segment.
+            QString dialect;
+            switch (c.databaseType) {
+                case DatabaseType::PostgreSQL: dialect = QStringLiteral("PostgreSQL"); break;
+                case DatabaseType::MySQL:      dialect = QStringLiteral("MySQL"); break;
+                case DatabaseType::SQLite:     dialect = QStringLiteral("SQLite"); break;
+                case DatabaseType::ClickHouse: dialect = QStringLiteral("ClickHouse"); break;
+                case DatabaseType::MongoDB:    dialect = QStringLiteral("MongoDB"); break;
+                case DatabaseType::Redis:      dialect = QStringLiteral("Redis"); break;
+                case DatabaseType::MSSQL:      dialect = QStringLiteral("MSSQL"); break;
+            }
+            sb->setLanguage(QStringLiteral("SQL · %1").arg(dialect));
+        }
+        if (enginePill_) {
+            // Menubar engine pill — small green dot + dialect name. Match
+            // the design's right-corner widget in chrome.jsx Menubar.
+            QString dialect;
+            switch (workspace_->config().databaseType) {
+                case DatabaseType::PostgreSQL: dialect = QStringLiteral("PostgreSQL"); break;
+                case DatabaseType::MySQL:      dialect = QStringLiteral("MySQL"); break;
+                case DatabaseType::SQLite:     dialect = QStringLiteral("SQLite"); break;
+                case DatabaseType::ClickHouse: dialect = QStringLiteral("ClickHouse"); break;
+                case DatabaseType::MongoDB:    dialect = QStringLiteral("MongoDB"); break;
+                case DatabaseType::Redis:      dialect = QStringLiteral("Redis"); break;
+                case DatabaseType::MSSQL:      dialect = QStringLiteral("MSSQL"); break;
+            }
+            enginePill_->setText(QStringLiteral("● %1").arg(dialect));
+            enginePill_->show();
+        }
     });
     connect(workspace_.get(), &WorkspaceState::connectionClosed, this, [this] {
         stack_->setCurrentIndex(0);
+        if (toolbar_) {
+            toolbar_->hide();
+            toolbar_->newQueryAction()->setEnabled(false);
+            toolbar_->runAction()->setEnabled(false);
+            toolbar_->commitAction()->setEnabled(false);
+            toolbar_->refreshAction()->setEnabled(false);
+            toolbar_->exportAction()->setEnabled(false);
+            toolbar_->erdAction()->setEnabled(false);
+            toolbar_->switchDbAction()->setEnabled(false);
+        }
+        resize(900, 540);
         updateWorkspaceActions();
+        if (auto* sb = qobject_cast<GxStatusBar*>(statusBar())) {
+            sb->setConnection(tr("not connected"));
+            sb->setTxState(QStringLiteral("—"));
+            sb->setRowCount(0);
+            sb->setQueryTime(0);
+        }
+        if (enginePill_) enginePill_->hide();
     });
-    stack_->addWidget(workspaceView_);
 
     setCentralWidget(stack_);
+
+    // Start on Welcome.
+    stack_->setCurrentIndex(0);
+    if (toolbar_) toolbar_->hide();
 }
 
 void MainWindow::setupStatusBar() {
-    statusBar()->showMessage(tr("Ready"));
+    // Replace the default QStatusBar with our 22px gx skin.
+    setStatusBar(new GxStatusBar(this));
+}
+
+void MainWindow::setupToolbar() {
+    toolbar_ = new GxToolbar(this);
+    addToolBar(Qt::TopToolBarArea, toolbar_);
+    // Always visible — the design's IDE shell always shows the toolbar.
+    // Workspace-only buttons (Run/Stop/Explain) disable themselves until
+    // an editor tab is active (PR A3 wires them up).
+    connect(toolbar_->newConnectionAction(), &QAction::triggered,
+            this, &MainWindow::onAddConnection);
+    connect(toolbar_->newQueryAction(),      &QAction::triggered,
+            this, &MainWindow::onNewQueryTab);
+    connect(toolbar_->runAction(),           &QAction::triggered, this, [this] {
+        if (workspaceView_) workspaceView_->triggerActiveRun();
+    });
+    connect(toolbar_->commitAction(),        &QAction::triggered, this, [this] {
+        if (!workspace_ || !workspace_->isOpen()) return;
+        try {
+            if (auto* a = workspace_->adapter()) a->commitTransaction();
+            statusBar()->showMessage(tr("Transaction committed"), 3000);
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("Commit failed"),
+                                  QString::fromUtf8(e.what()));
+        }
+    });
+    connect(toolbar_->refreshAction(),       &QAction::triggered, this, [this] {
+        if (!workspaceView_ || !workspace_ || !workspace_->isOpen()) return;
+        if (auto* sidebar = workspaceView_->findChild<WorkspaceSidebar*>()) {
+            sidebar->refreshTree();
+        }
+    });
+    connect(toolbar_->exportAction(),        &QAction::triggered, this, [this] {
+        if (workspaceView_) workspaceView_->triggerActiveExport();
+    });
+    connect(toolbar_->erdAction(),           &QAction::triggered, this, [this] {
+        if (workspaceView_ && workspace_ && workspace_->isOpen()) {
+            workspaceView_->onNewErDiagramTab();
+        }
+    });
+    connect(toolbar_->switchDbAction(),      &QAction::triggered, this, [this] {
+        if (workspaceView_ && workspace_ && workspace_->isOpen()) {
+            workspaceView_->openDatabaseSwitcher();
+        }
+    });
 }
 
 void MainWindow::onAddConnection() {
