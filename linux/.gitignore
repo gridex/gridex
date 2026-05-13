@@ -20,3 +20,6 @@ AppDir/
 image.png
 *.screenshot.png
 dist/
+
+# Wrangler local emulator cache + auth state
+.wrangler/
