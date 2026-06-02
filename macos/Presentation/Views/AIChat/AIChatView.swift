@@ -4,6 +4,7 @@
 // SwiftUI AI chat panel with streaming responses.
 
 import SwiftUI
+import os
 
 // Observable message class — mutations don't trigger ForEach diffing
 final class ChatDisplayMessage: ObservableObject, Identifiable {
@@ -23,6 +24,8 @@ final class ChatDisplayMessage: ObservableObject, Identifiable {
 }
 
 struct AIChatView: View {
+    private static let log = Logger(subsystem: "com.gridex.gridex", category: "AIChat")
+
     @EnvironmentObject private var appState: AppState
     @AppStorage("ai.activeProviderID") private var activeProviderID: String = ""
     @AppStorage("ai.activeModel")      private var activeModel: String = ""
@@ -605,17 +608,25 @@ struct AIChatView: View {
     private func refreshAPIKeyState() {
         // Multi-provider path: an active provider ID is set.
         if !activeProviderID.isEmpty, let uuid = UUID(uuidString: activeProviderID) {
-            let key = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(uuid.uuidString)")
-            // Ollama has no key but is still usable → treat presence of an active ID as ready
-            // unless we can verify the config requires a key and none is set.
             Task {
                 let config = try? await DependencyContainer.shared.llmProviderRepository.fetchByID(uuid)
-                await MainActor.run {
-                    if let config, config.enabled {
-                        apiKeyLoaded = !config.type.requiresAPIKey || (key != nil && !key!.isEmpty)
-                    } else {
-                        apiKeyLoaded = false
+                let ready: Bool
+                if let config, config.enabled {
+                    switch config.type {
+                    case .chatGPT:
+                        ready = (try? DependencyContainer.shared.keychainService
+                            .loadChatGPTTokens(providerId: uuid)) != nil
+                    default:
+                        let key = try? DependencyContainer.shared.keychainService.load(key: "ai.apikey.\(uuid.uuidString)")
+                        // Ollama has no key but is still usable; API-key providers
+                        // need a non-empty stored key.
+                        ready = !config.type.requiresAPIKey || (key != nil && !key!.isEmpty)
                     }
+                } else {
+                    ready = false
+                }
+                await MainActor.run {
+                    apiKeyLoaded = ready
                 }
             }
             return
@@ -638,7 +649,23 @@ struct AIChatView: View {
                 key: ProviderEditSheet.keychainKey(id: uuid)
             )) ?? ""
             if config.type.requiresAPIKey, apiKey.isEmpty { return nil }
-            let service = ProviderFactory.make(config: config, apiKey: apiKey)
+            // ChatGPT (Sign in) requires the OAuth service; if not signed in,
+            // the Keychain bundle is missing — fail clearly instead of crashing.
+            if config.type == .chatGPT {
+                guard (try? DependencyContainer.shared.keychainService
+                    .loadChatGPTTokens(providerId: uuid)) != nil else {
+                    Self.log.notice("Active ChatGPT provider \(uuid.uuidString, privacy: .public) has no token bundle; marking AI chat not ready")
+                    await MainActor.run {
+                        apiKeyLoaded = false
+                    }
+                    return nil
+                }
+            }
+            let service = ProviderFactory.make(
+                config: config,
+                apiKey: apiKey,
+                chatGPTOAuthService: DependencyContainer.shared.chatGPTOAuthService
+            )
             let modelToUse = activeModel.isEmpty ? config.model : activeModel
             return (service, modelToUse)
         }
@@ -739,6 +766,14 @@ struct AIChatView: View {
                 )
                 for try await token in stream {
                     assistantMsg.content += token
+                }
+            } catch GridexError.aiAPIKeyMissing {
+                await MainActor.run {
+                    apiKeyLoaded = false
+                    refreshAPIKeyState()
+                }
+                if assistantMsg.content.isEmpty {
+                    assistantMsg.content = "Error: \(GridexError.aiAPIKeyMissing.localizedDescription)"
                 }
             } catch {
                 if assistantMsg.content.isEmpty {

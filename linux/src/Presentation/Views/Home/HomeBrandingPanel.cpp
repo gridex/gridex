@@ -9,17 +9,24 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 
+#include "Presentation/Views/Chrome/GxIcons.h"
+
 namespace gridex {
 
 namespace {
 
-// One bottom-panel action row: icon (emoji fallback) + title. Match macOS HomeActionButton.
-QPushButton* makeActionButton(const QString& emoji, const QString& title, QWidget* parent) {
+// Bottom-panel action row: 14px SVG icon + label, left-aligned, flat with
+// hover bg from the gx palette. Replaces emoji-glyph buttons that rendered
+// as missing-char boxes on dark theme.
+QPushButton* makeActionButton(const QString& iconName, const QString& title, QWidget* parent) {
     auto* btn = new QPushButton(parent);
     btn->setCursor(Qt::PointingHandCursor);
     btn->setFlat(true);
-    btn->setMinimumHeight(32);
-    btn->setText(QStringLiteral("  %1   %2").arg(emoji, title));
+    btn->setMinimumHeight(34);
+    btn->setIcon(GxIcons::glyph(iconName));
+    btn->setIconSize({14, 14});
+    btn->setText(title);
+    btn->setProperty("gxRole", QStringLiteral("home-action"));
     return btn;
 }
 
@@ -48,10 +55,9 @@ void HomeBrandingPanel::buildUi() {
     QPixmap src(QStringLiteral(":/logo.png"));
     if (src.isNull()) {
         logo->setText(QStringLiteral("G"));
+        logo->setObjectName(QStringLiteral("gxHomeLogoFallback"));
         logo->setAlignment(Qt::AlignCenter);
         logo->setFixedSize(100, 100);
-        logo->setStyleSheet("background-color: #378add; color: white; "
-                            "border-radius: 20px; font-size: 48px; font-weight: 700;");
     } else {
         logo->setFixedSize(100, 100);
         logo->setPixmap(src.scaled(100, 100, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -82,8 +88,8 @@ void HomeBrandingPanel::buildUi() {
     actions->setContentsMargins(20, 0, 20, 0);
     actions->setSpacing(2);
 
-    auto* backup  = makeActionButton(QStringLiteral("⬆"), tr("Backup database…"), this);
-    auto* restore = makeActionButton(QStringLiteral("⬇"), tr("Restore database…"), this);
+    auto* backup  = makeActionButton(QStringLiteral("export"), tr("Backup database…"), this);
+    auto* restore = makeActionButton(QStringLiteral("save"),   tr("Restore database…"), this);
     connect(backup,  &QPushButton::clicked, this, &HomeBrandingPanel::backupRequested);
     connect(restore, &QPushButton::clicked, this, &HomeBrandingPanel::restoreRequested);
     actions->addWidget(backup);
@@ -93,8 +99,8 @@ void HomeBrandingPanel::buildUi() {
     div->setFrameShape(QFrame::HLine);
     actions->addWidget(div);
 
-    auto* newConn  = makeActionButton(QStringLiteral("⊕"), tr("New Connection"), this);
-    auto* newGroup = makeActionButton(QStringLiteral("🗀⁺"), tr("New Group"), this);
+    auto* newConn  = makeActionButton(QStringLiteral("plug"),   tr("New Connection"), this);
+    auto* newGroup = makeActionButton(QStringLiteral("folder"), tr("New Group"), this);
     connect(newConn,  &QPushButton::clicked, this, &HomeBrandingPanel::newConnectionRequested);
     connect(newGroup, &QPushButton::clicked, this, &HomeBrandingPanel::newGroupRequested);
     actions->addWidget(newConn);

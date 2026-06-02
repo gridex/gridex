@@ -1,5 +1,7 @@
 #include "Presentation/Views/Sidebar/ConnectionSidebar.h"
 
+#include "Presentation/Views/Chrome/GxIcons.h"
+
 #include <QAction>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -26,10 +28,13 @@ constexpr int kRoleIsGroup      = Qt::UserRole + 2;
 constexpr int kPageEmpty = 0;
 constexpr int kPageTree  = 1;
 
-QPushButton* makeToolbarButton(const QString& icon, const QString& tooltip, QWidget* parent) {
-    auto* btn = new QPushButton(icon, parent);
+QPushButton* makeToolbarButton(const QString& iconName, const QString& tooltip, QWidget* parent) {
+    auto* btn = new QPushButton(parent);
     btn->setToolTip(tooltip);
     btn->setFixedSize(28, 28);
+    btn->setFlat(true);
+    btn->setIcon(GxIcons::glyph(iconName));
+    btn->setIconSize({14, 14});
     return btn;
 }
 }
@@ -63,11 +68,11 @@ void ConnectionSidebar::buildUi() {
             this, &ConnectionSidebar::onSearchChanged);
     h->addWidget(searchEdit_, 1);
 
-    auto* addBtn = makeToolbarButton(QStringLiteral("+"), tr("New Connection"), toolbar);
+    auto* addBtn = makeToolbarButton(QStringLiteral("plug"), tr("New Connection"), toolbar);
     connect(addBtn, &QPushButton::clicked, this, &ConnectionSidebar::addConnectionRequested);
     h->addWidget(addBtn);
 
-    auto* groupBtn = makeToolbarButton(QStringLiteral("🗀⁺"), tr("New Group"), toolbar);
+    auto* groupBtn = makeToolbarButton(QStringLiteral("folder"), tr("New Group"), toolbar);
     connect(groupBtn, &QPushButton::clicked, this, &ConnectionSidebar::newGroupRequested);
     h->addWidget(groupBtn);
 

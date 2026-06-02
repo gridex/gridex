@@ -17,10 +17,20 @@ class AIChatView;
 class SecretStore;
 class WorkspaceState;
 
-// Right sidebar panel matching macOS DetailsPanel:
-//   [Details | Assistant] tab bar
-//   Details tab: search + selected row field list (column: value pairs)
-//   Assistant tab: AIChatView
+// Right inspector panel matching .gx-inspect in gridex.css.
+//
+// Layout (mirrors panels.jsx Inspector):
+//   gx-insp-hd        header strip (bg-2): icon + title + sub
+//   gx-insp-tabs      5 tabs: Columns / Indexes / Keys / Triggers / DDL
+//                     (plus an extra "Assistant" tab for the AI chat that
+//                     replaced the previous two-tab Details/Assistant
+//                     layout)
+//   gx-insp-body      stacked content for the active tab
+//
+// Public API is preserved verbatim: setSelectedRow / clearSelectedRow /
+// fieldEdited still drive the row inspector — which now lives under the
+// "Columns" tab as the row-mode view. Indexes/Keys/Triggers/DDL render
+// placeholders until their schema-introspection wiring lands.
 class DetailsPanel : public QWidget {
     Q_OBJECT
 
@@ -39,7 +49,7 @@ public slots:
     void clearSelectedRow();
 
 signals:
-    // Emitted when user edits a field value in the Details tab.
+    // Emitted when user edits a field value in the row inspector.
     // columnIndex is the position in the current fields array.
     void fieldEdited(int columnIndex, const QString& newValue);
 
@@ -51,16 +61,22 @@ private:
     void buildUi();
     void rebuildDetailsList();
 
+    QPushButton* makeTabButton(const QString& title, int index, QWidget* parent);
+
     int activeTab_ = 0;
 
-    // Tab bar
-    QPushButton* detailsTabBtn_ = nullptr;
+    // Tab bar (6 tabs: 5 inspector tabs + Assistant)
+    QPushButton* colsTabBtn_      = nullptr;
+    QPushButton* idxTabBtn_       = nullptr;
+    QPushButton* keysTabBtn_      = nullptr;
+    QPushButton* trigTabBtn_      = nullptr;
+    QPushButton* ddlTabBtn_       = nullptr;
     QPushButton* assistantTabBtn_ = nullptr;
 
     // Stacked content
     QStackedWidget* stack_ = nullptr;
 
-    // Details tab
+    // Page 0 — Columns / row inspector
     QWidget*     detailsPage_  = nullptr;
     QLineEdit*   searchEdit_   = nullptr;
     QScrollArea* scrollArea_   = nullptr;
@@ -68,7 +84,7 @@ private:
     QVBoxLayout* fieldsLayout_ = nullptr;
     QLabel*      emptyLabel_   = nullptr;
 
-    // Assistant tab
+    // Page 5 — AI chat
     AIChatView* chatView_ = nullptr;
 
     std::vector<FieldEntry> currentFields_;

@@ -1,5 +1,7 @@
 #include "Presentation/Views/QueryEditor/QueryEditorView.h"
 
+#include <vector>
+
 #include <QAction>
 #include <QApplication>
 #include <QElapsedTimer>
@@ -13,17 +15,24 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFont>
+#include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QPaintEvent>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScreen>
 #include <QSplitter>
+#include <QStackedWidget>
+#include <QStyle>
+#include <QTabBar>
 #include <QTableView>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -31,6 +40,9 @@
 #include <QTimer>
 #include <QtConcurrent/QtConcurrent>
 #include <QVBoxLayout>
+
+#include "Presentation/Theme/ThemeManager.h"
+#include "Presentation/Views/Chrome/GxIcons.h"
 
 #include "Core/Errors/GridexError.h"
 #include "Core/Protocols/Database/IDatabaseAdapter.h"
@@ -45,19 +57,82 @@ namespace gridex {
 
 namespace {
 
-// QPlainTextEdit subclass that suppresses the built-in placeholder while an
-// IME composition (preedit text) is active. Qt's paintEvent only checks
-// document()->isEmpty() when deciding whether to draw the placeholder, not
-// whether the current block has preedit text — so typing Vietnamese Telex/VNI
-// leaves the placeholder overlapping the composing character until commit
-// (space/punctuation). We swap placeholder text with "" for the duration of
-// the paint, then restore it, so callers observe no state change.
-class IMEAwareTextEdit : public QPlainTextEdit {
+class GxEditor;
+
+// Line-number gutter painted to the left of the editor viewport.
+// Width is driven by current line count; current-line gets the accent
+// color matching .gx-ln.is-cursor in the design.
+class LineGutter : public QWidget {
+public:
+    explicit LineGutter(GxEditor* editor);
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    GxEditor* editor_;
+};
+
+// QPlainTextEdit subclass that:
+//  - suppresses the built-in placeholder during IME preedit (Vietnamese
+//    Telex/VNI would otherwise overlap the composing character),
+//  - reserves left margin for the gutter and paints the current-line
+//    highlight band matching .gx-cline.is-cursor.
+class GxEditor : public QPlainTextEdit {
 public:
     using QPlainTextEdit::QPlainTextEdit;
 
+    // LineGutter paints using firstVisibleBlock / blockBoundingGeometry /
+    // contentOffset / blockBoundingRect, all of which are protected on
+    // QPlainTextEdit. Friend access keeps the gutter implementation simple.
+    friend class LineGutter;
+
+    int gutterWidth() const {
+        int digits = 1;
+        int max = qMax(1, blockCount());
+        while (max >= 10) { max /= 10; ++digits; }
+        const int ch = fontMetrics().horizontalAdvance(QLatin1Char('9'));
+        return 12 + ch * digits + 8;
+    }
+
+    void setGutter(LineGutter* g) {
+        gutter_ = g;
+        updateMargins();
+        connect(this, &QPlainTextEdit::blockCountChanged, this, [this](int){ updateMargins(); });
+        connect(this, &QPlainTextEdit::updateRequest, this,
+                [this](const QRect& rect, int dy) {
+                    if (!gutter_) return;
+                    if (dy) gutter_->scroll(0, dy);
+                    else gutter_->update(0, rect.y(), gutter_->width(), rect.height());
+                });
+        connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]{
+            if (gutter_) gutter_->update();
+            viewport()->update();
+        });
+    }
+
+    void updateMargins() {
+        setViewportMargins(gutter_ ? gutterWidth() : 0, 0, 0, 0);
+        if (gutter_) {
+            const QRect cr = contentsRect();
+            gutter_->setGeometry(QRect(cr.left(), cr.top(), gutterWidth(), cr.height()));
+        }
+    }
+
 protected:
     void paintEvent(QPaintEvent* event) override {
+        // Caret-line band — paint behind text. Uses bg-1 against the bg-0
+        // editor background so the band is subtly visible in both themes.
+        {
+            QPainter p(viewport());
+            const QRect cur = cursorRect();
+            QRect band(0, cur.top(), viewport()->width(), cur.height());
+            const QColor bg1 = ThemeManager::instance().isDark()
+                ? QColor(0x11, 0x15, 0x1a)
+                : QColor(0xf4, 0xf5, 0xf7);
+            p.fillRect(band, bg1);
+        }
         const bool suppress = document()->isEmpty() && hasPreeditText();
         QString savedPlaceholder;
         if (suppress) {
@@ -70,10 +145,16 @@ protected:
         }
     }
 
+    void resizeEvent(QResizeEvent* event) override {
+        QPlainTextEdit::resizeEvent(event);
+        if (gutter_) {
+            const QRect cr = contentsRect();
+            gutter_->setGeometry(QRect(cr.left(), cr.top(), gutterWidth(), cr.height()));
+        }
+    }
+
     void inputMethodEvent(QInputMethodEvent* event) override {
         QPlainTextEdit::inputMethodEvent(event);
-        // Force viewport repaint so placeholder is cleared as soon as
-        // preedit appears (instead of lagging until the next paint trigger).
         viewport()->update();
     }
 
@@ -82,15 +163,92 @@ private:
         auto* layout = textCursor().block().layout();
         return layout && !layout->preeditAreaText().isEmpty();
     }
+
+    LineGutter* gutter_ = nullptr;
 };
 
+using IMEAwareTextEdit = GxEditor;  // kept for back-compat in this TU
+
+LineGutter::LineGutter(GxEditor* editor) : QWidget(editor), editor_(editor) {
+    setAttribute(Qt::WA_StyledBackground, false);
+}
+
+QSize LineGutter::sizeHint() const {
+    return QSize(editor_ ? editor_->gutterWidth() : 32, 0);
+}
+
+void LineGutter::paintEvent(QPaintEvent* event) {
+    if (!editor_) return;
+    QPainter p(this);
+
+    // Resolve token palette at paint time so a Light/Dark switch redraws
+    // the gutter without needing a widget rebuild.
+    const bool dark = ThemeManager::instance().isDark();
+    const QColor bg0    = dark ? QColor(0x09, 0x0e, 0x12) : QColor(0xff, 0xff, 0xff);
+    const QColor border = dark ? QColor(0x2e, 0x33, 0x39) : QColor(0xc5, 0xca, 0xd1);
+    const QColor bg1    = dark ? QColor(0x11, 0x15, 0x1a) : QColor(0xf4, 0xf5, 0xf7);
+    const QColor accent = dark ? QColor(0x00, 0xb8, 0xe1) : QColor(0x00, 0x98, 0xbd);
+    const QColor faint  = dark ? QColor(0x55, 0x58, 0x5c) : QColor(0x93, 0x98, 0xa0);
+
+    p.fillRect(event->rect(), bg0);
+    p.setPen(border);
+    p.drawLine(width() - 1, 0, width() - 1, height());
+
+    QTextBlock block = editor_->firstVisibleBlock();
+    int blockNumber  = block.blockNumber();
+    int top    = qRound(editor_->blockBoundingGeometry(block).translated(editor_->contentOffset()).top());
+    int bottom = top + qRound(editor_->blockBoundingRect(block).height());
+    const int curLine = editor_->textCursor().blockNumber();
+
+    QFont f = editor_->font();
+    p.setFont(f);
+
+    while (block.isValid() && top <= event->rect().bottom()) {
+        if (block.isVisible() && bottom >= event->rect().top()) {
+            const bool isCur = (blockNumber == curLine);
+            if (isCur) {
+                p.fillRect(0, top, width() - 1, qRound(editor_->blockBoundingRect(block).height()),
+                           bg1);
+                p.setPen(accent);
+            } else {
+                p.setPen(faint);
+            }
+            const QString number = QString::number(blockNumber + 1);
+            p.drawText(0, top, width() - 8, qRound(editor_->blockBoundingRect(block).height()),
+                       Qt::AlignRight | Qt::AlignVCenter, number);
+        }
+        block = block.next();
+        top = bottom;
+        bottom = top + qRound(editor_->blockBoundingRect(block).height());
+        ++blockNumber;
+    }
+}
+
+// All editor/result chrome lives in resources/style-gx{,-light}.qss.
+// See the "Query editor" section in each sheet.
+
 }  // namespace
+
+namespace {
+// Process-wide list of toolbar extension factories. Plain function-local
+// static so it's leak-free and avoids global-ctor ordering pitfalls.
+std::vector<QueryEditorView::ExtensionFactory>& extensionFactories() {
+    static std::vector<QueryEditorView::ExtensionFactory> v;
+    return v;
+}
+}
+
+void QueryEditorView::registerExtension(ExtensionFactory f) {
+    if (f) extensionFactories().push_back(std::move(f));
+}
 
 QueryEditorView::QueryEditorView(QWidget* parent)
     : QWidget(parent),
       provider_(std::make_unique<AutocompleteProvider>()),
       parser_(std::make_unique<SqlContextParser>()) {
     buildUi();
+    // Let extensions decorate the toolbar after it's fully constructed.
+    for (const auto& f : extensionFactories()) f(this);
 }
 
 QueryEditorView::~QueryEditorView() = default;
@@ -100,25 +258,35 @@ void QueryEditorView::buildUi() {
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // ---- Toolbar: [Run ▶] [status ...] ----
+    // ---- Toolbar: [Run ▶] [status ...] [Save] ----
     auto* top = new QWidget(this);
-    top->setFixedHeight(32);
-    top->setAutoFillBackground(true);
+    top->setObjectName(QStringLiteral("QueryEditorToolbar"));
+    top->setAttribute(Qt::WA_StyledBackground, true);
+    top->setFixedHeight(36);
     auto* topH = new QHBoxLayout(top);
-    topH->setContentsMargins(8, 0, 12, 0);
-    topH->setSpacing(10);
+    topH->setContentsMargins(10, 0, 10, 0);
+    topH->setSpacing(8);
+    toolbarLay_ = topH;
 
-    runBtn_ = new QPushButton(tr("▶ Run"), top);
-    runBtn_->setObjectName(QStringLiteral("primaryButton"));  // styled in style.qss
+    runBtn_ = new QPushButton(tr("Run statement"), top);
+    runBtn_->setObjectName(QStringLiteral("QueryEditorRun"));
+    runBtn_->setIcon(GxIcons::glyph(QStringLiteral("play"), QStringLiteral("#090e12")));
+    runBtn_->setIconSize(QSize(11, 11));
     runBtn_->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return));
+    runBtn_->setCursor(Qt::PointingHandCursor);
     runBtn_->setToolTip(tr("Execute query (Ctrl+Enter)"));
     connect(runBtn_, &QPushButton::clicked, this, &QueryEditorView::onRunClicked);
     topH->addWidget(runBtn_);
 
     statusLbl_ = new QLabel(QString{}, top);
+    statusLbl_->setObjectName(QStringLiteral("QueryEditorStatus"));
     topH->addWidget(statusLbl_, 1);
 
-    auto* saveBtn = new QPushButton(tr("⭐ Save"), top);
+    auto* saveBtn = new QPushButton(tr("Save"), top);
+    saveBtn->setObjectName(QStringLiteral("QueryEditorSave"));
+    saveBtn->setIcon(GxIcons::glyph(QStringLiteral("save")));
+    saveBtn->setIconSize(QSize(11, 11));
+    saveBtn->setCursor(Qt::PointingHandCursor);
     saveBtn->setToolTip(tr("Save this query to Saved Queries"));
     connect(saveBtn, &QPushButton::clicked, this, [this] {
         const QString sql = editor_ ? editor_->toPlainText().trimmed() : QString{};
@@ -128,22 +296,31 @@ void QueryEditorView::buildUi() {
 
     root->addWidget(top);
 
-    auto* topDiv = new QFrame(this);
-    topDiv->setFrameShape(QFrame::HLine);
-    root->addWidget(topDiv);
-
-    // ---- Splitter: editor (top) | result grid (bottom) ----
+    // ---- Splitter: editor (top) | results panel (bottom) ----
     splitter_ = new QSplitter(Qt::Vertical, this);
+    splitter_->setHandleWidth(4);
+    splitter_->setChildrenCollapsible(false);
 
-    editor_ = new IMEAwareTextEdit(splitter_);
+    editor_ = new GxEditor(splitter_);
+    editor_->setObjectName(QStringLiteral("gxSqlEditor"));
     editor_->setPlaceholderText(tr("SELECT * FROM ..."));
     editor_->setFrameShape(QFrame::NoFrame);
     editor_->setTabStopDistance(32);
-    QFont mono(QStringLiteral("Monospace"));
-    mono.setStyleHint(QFont::Monospace);
-    mono.setPointSize(12);
+    QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    // Prefer JetBrains Mono / Fira Code if present.
+    for (const auto& family : { QStringLiteral("JetBrains Mono"),
+                                QStringLiteral("Fira Code"),
+                                QStringLiteral("DejaVu Sans Mono") }) {
+        if (QFontDatabase::families().contains(family)) {
+            mono.setFamily(family);
+            break;
+        }
+    }
+    mono.setPointSize(11);
     editor_->setFont(mono);
     editor_->installEventFilter(this);
+    auto* gutter = new LineGutter(static_cast<GxEditor*>(editor_));
+    static_cast<GxEditor*>(editor_)->setGutter(gutter);
     hl_ = new SqlHighlighter(editor_->document());
     splitter_->addWidget(editor_);
 
@@ -163,22 +340,102 @@ void QueryEditorView::buildUi() {
         if (debounce_) debounce_->start();
     });
 
-    // Result grid below editor.
-    resultView_ = new QTableView(splitter_);
-    resultView_->setFrameShape(QFrame::NoFrame);
-    resultView_->setAlternatingRowColors(true);
-    resultView_->setShowGrid(true);
-    resultView_->setSelectionBehavior(QAbstractItemView::SelectItems);
-    resultView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    resultView_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
-    resultView_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    resultView_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    resultView_->horizontalHeader()->setStretchLastSection(true);
-    resultView_->verticalHeader()->setDefaultSectionSize(30);
+    // ---- Results panel: 5-tab header + content stack -----------------
+    auto* results = new QWidget(splitter_);
+    auto* resultsV = new QVBoxLayout(results);
+    resultsV->setContentsMargins(0, 0, 0, 0);
+    resultsV->setSpacing(0);
 
-    resultModel_ = new QueryResultModel(this);
-    resultView_->setModel(resultModel_);
-    splitter_->addWidget(resultView_);
+    auto* resHdr = new QWidget(results);
+    resHdr->setObjectName(QStringLiteral("QueryEditorResultsTabs"));
+    resHdr->setAttribute(Qt::WA_StyledBackground, true);
+    resHdr->setFixedHeight(28);
+    auto* resHdrH = new QHBoxLayout(resHdr);
+    resHdrH->setContentsMargins(4, 0, 8, 0);
+    resHdrH->setSpacing(0);
+
+    auto* resultsStack = new QStackedWidget(results);
+
+    // Build tab buttons + placeholder/active pages.
+    struct TabSpec { const char* id; const char* label; bool functional; };
+    const std::vector<TabSpec> specs = {
+        { "msg",     QT_TR_NOOP("Messages"),     false },
+        { "grid",    QT_TR_NOOP("Results"),      true  },
+        { "explain", QT_TR_NOOP("Explain"),      false },
+        { "plan",    QT_TR_NOOP("Plan tree"),    false },
+        { "stats",   QT_TR_NOOP("Statistics"),   false },
+    };
+
+    std::vector<QPushButton*> tabBtns;
+    tabBtns.reserve(specs.size());
+
+    int gridPageIndex = -1;
+
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+        const auto& s = specs[i];
+        auto* btn = new QPushButton(tr(s.label), resHdr);
+        btn->setProperty("gxResTab", true);
+        btn->setProperty("gxActive", false);
+        btn->setFlat(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        resHdrH->addWidget(btn);
+        tabBtns.push_back(btn);
+
+        QWidget* page = nullptr;
+        if (s.functional && QString::fromLatin1(s.id) == QLatin1String("grid")) {
+            // Real result grid.
+            resultView_ = new QTableView(resultsStack);
+            resultView_->setObjectName(QStringLiteral("QueryEditorResult"));
+            resultView_->setFrameShape(QFrame::NoFrame);
+            resultView_->setAlternatingRowColors(true);
+            resultView_->setShowGrid(false);
+            resultView_->setSelectionBehavior(QAbstractItemView::SelectItems);
+            resultView_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+            resultView_->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+            resultView_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+            resultView_->horizontalHeader()->setObjectName(QStringLiteral("QueryEditorResultHeader"));
+            resultView_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+            resultView_->horizontalHeader()->setStretchLastSection(true);
+            resultView_->verticalHeader()->setDefaultSectionSize(22);
+            resultView_->verticalHeader()->setVisible(false);
+
+            resultModel_ = new QueryResultModel(this);
+            resultView_->setModel(resultModel_);
+            page = resultView_;
+            gridPageIndex = static_cast<int>(i);
+        } else {
+            auto* ph = new QLabel(tr("%1 — no data yet. Run a query to populate.")
+                                       .arg(tr(s.label)), resultsStack);
+            ph->setObjectName(QStringLiteral("QueryEditorResultsPlaceholder"));
+            ph->setAlignment(Qt::AlignCenter);
+            ph->setAutoFillBackground(true);
+            page = ph;
+        }
+        resultsStack->addWidget(page);
+    }
+
+    resHdrH->addStretch(1);
+    resultsV->addWidget(resHdr);
+    resultsV->addWidget(resultsStack, 1);
+
+    auto activateTab = [tabBtns, resultsStack](int idx) {
+        for (std::size_t i = 0; i < tabBtns.size(); ++i) {
+            const bool a = (static_cast<int>(i) == idx);
+            tabBtns[i]->setProperty("gxActive", a);
+            tabBtns[i]->style()->unpolish(tabBtns[i]);
+            tabBtns[i]->style()->polish(tabBtns[i]);
+            tabBtns[i]->update();
+        }
+        resultsStack->setCurrentIndex(idx);
+    };
+    for (std::size_t i = 0; i < tabBtns.size(); ++i) {
+        const int idx = static_cast<int>(i);
+        QObject::connect(tabBtns[i], &QPushButton::clicked, this,
+                         [activateTab, idx] { activateTab(idx); });
+    }
+    activateTab(gridPageIndex >= 0 ? gridPageIndex : 0);
+
+    splitter_->addWidget(results);
 
     // ---- Export button overlay at bottom-right of result table ----
     exportResultMenu_ = new QMenu(resultView_);
@@ -189,8 +446,11 @@ void QueryEditorView::buildUi() {
     connect(actSql,  &QAction::triggered, this, &QueryEditorView::exportResultAsSql);
     connect(actJson, &QAction::triggered, this, &QueryEditorView::exportResultAsJson);
 
-    exportResultBtn_ = new QPushButton(QStringLiteral("⇩ Export ▾"), resultView_);
-    exportResultBtn_->setFixedSize(92, 26);
+    exportResultBtn_ = new QPushButton(tr("Export"), resultView_);
+    exportResultBtn_->setObjectName(QStringLiteral("QueryEditorExport"));
+    exportResultBtn_->setIcon(GxIcons::glyph(QStringLiteral("export")));
+    exportResultBtn_->setIconSize(QSize(11, 11));
+    exportResultBtn_->setFixedSize(96, 26);
     exportResultBtn_->setToolTip(tr("Export query result"));
     exportResultBtn_->setCursor(Qt::PointingHandCursor);
     exportResultBtn_->setMenu(exportResultMenu_);
@@ -220,6 +480,20 @@ void QueryEditorView::buildUi() {
 
 void QueryEditorView::setSql(const QString& sql) {
     if (editor_) editor_->setPlainText(sql);
+}
+
+QString QueryEditorView::currentSql() const {
+    return editor_ ? editor_->toPlainText() : QString();
+}
+
+void QueryEditorView::addToolbarWidget(QWidget* w) {
+    if (!toolbarLay_ || !w) return;
+    // Insert before the trailing Save button so toolbar order stays
+    // [Run] [status (stretch)] [ext widgets...] [Save].
+    const int trailing = 1;
+    int at = toolbarLay_->count() - trailing;
+    if (at < 0) at = toolbarLay_->count();
+    toolbarLay_->insertWidget(at, w);
 }
 
 void QueryEditorView::setAdapter(IDatabaseAdapter* adapter) {
@@ -362,12 +636,16 @@ void QueryEditorView::onRunClicked() {
             }
         }
 
-        statusLbl_->setStyleSheet(QStringLiteral("color: #a6e3a1;"));  // success (catppuccin green)
+        statusLbl_->setProperty("gxText", QStringLiteral("success"));
+        statusLbl_->style()->unpolish(statusLbl_);
+        statusLbl_->style()->polish(statusLbl_);
         statusLbl_->setText(tr("%1 rows × %2 cols · %3 ms").arg(n).arg(cols).arg(ms));
         emit queryExecuted(QString::fromStdString(sql), n, ms);
     } catch (const GridexError& e) {
         resultModel_->clear();
-        statusLbl_->setStyleSheet(QStringLiteral("color: #f38ba8;"));  // error (catppuccin red)
+        statusLbl_->setProperty("gxText", QStringLiteral("danger"));
+        statusLbl_->style()->unpolish(statusLbl_);
+        statusLbl_->style()->polish(statusLbl_);
         statusLbl_->setText(QString::fromUtf8(e.what()));
     }
 }

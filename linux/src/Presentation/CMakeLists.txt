@@ -26,6 +26,10 @@ qt_add_library(gridex-presentation STATIC
     Views/QueryEditor/QueryEditorView.cpp
     Views/QueryEditor/SqlHighlighter.cpp
     Views/Settings/SettingsDialog.cpp
+    Views/Chrome/GxToolbar.cpp
+    Views/Chrome/GxStatusBar.cpp
+    Views/Chrome/GxIcons.cpp
+    Views/Chrome/GxActivityBar.cpp
     Views/QueryEditor/Autocomplete/AutocompleteProvider.cpp
     Views/QueryEditor/Autocomplete/CompletionPopup.cpp
     Views/QueryEditor/Autocomplete/SqlContextParser.cpp
@@ -33,6 +37,7 @@ qt_add_library(gridex-presentation STATIC
     Views/Sidebar/ConnectionSidebar.cpp
     Views/ImportSQL/SqlImportWizard.cpp
     Views/Sidebar/WorkspaceSidebar.cpp
+    Views/Sidebar/SidebarPanelStack.cpp
     Views/TableList/TableGridView.cpp
     Views/StatusBar/StatusBarView.cpp
     Views/TabBar/WorkspaceTabBar.cpp
@@ -53,6 +58,8 @@ qt_add_resources(gridex-presentation "assets"
         ${CMAKE_SOURCE_DIR}/resources/logo.png
         ${CMAKE_SOURCE_DIR}/resources/style-dark.qss
         ${CMAKE_SOURCE_DIR}/resources/style-light.qss
+        ${CMAKE_SOURCE_DIR}/resources/style-gx.qss
+        ${CMAKE_SOURCE_DIR}/resources/style-gx-light.qss
 )
 
 target_include_directories(gridex-presentation PUBLIC

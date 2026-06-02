@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QWidget>
+#include <functional>
 #include <memory>
 
+class QHBoxLayout;
 class QLabel;
 class QMenu;
 class QPlainTextEdit;
@@ -33,16 +35,37 @@ public:
     void setAdapter(IDatabaseAdapter* adapter);
     void setSql(const QString& sql);
 
+    // Read-only accessors used by toolbar extensions registered via
+    // registerExtension() — kept simple, no caching.
+    [[nodiscard]] IDatabaseAdapter* adapter() const noexcept { return adapter_; }
+    [[nodiscard]] QString currentSql() const;
+
+    // Append a widget (typically a QPushButton) to the toolbar. Inserts
+    // just before the trailing Save button so the layout order stays
+    // consistent regardless of how many extensions are installed.
+    void addToolbarWidget(QWidget* w);
+
+    // Process-wide extension hook. Any callback registered here is
+    // invoked exactly once per QueryEditorView instance, after buildUi(),
+    // so extensions can attach toolbar widgets / signals without OSS
+    // knowing the extension exists.
+    using ExtensionFactory = std::function<void(QueryEditorView*)>;
+    static void registerExtension(ExtensionFactory f);
+
+public slots:
+    // External triggers (toolbar Run / Export) — same code paths as the
+    // editor's own internal run button.
+    void onRunClicked();
+    void exportResultAsCsv();
+    void exportResultAsSql();
+    void exportResultAsJson();
+
 signals:
     void queryExecuted(const QString& sql, int rowCount, int durationMs);
     void saveQueryRequested(const QString& sql);
 
 private slots:
-    void onRunClicked();
     void maybeShowCompletions();
-    void exportResultAsCsv();
-    void exportResultAsSql();
-    void exportResultAsJson();
 
 private:
     void buildUi();
@@ -60,6 +83,7 @@ private:
     SqlHighlighter*   hl_          = nullptr;
     QPushButton*      runBtn_      = nullptr;
     QLabel*           statusLbl_   = nullptr;
+    QHBoxLayout*      toolbarLay_  = nullptr;  // owned by the `top` widget
     QSplitter*        splitter_    = nullptr;
     QTableView*       resultView_  = nullptr;
     QueryResultModel* resultModel_ = nullptr;

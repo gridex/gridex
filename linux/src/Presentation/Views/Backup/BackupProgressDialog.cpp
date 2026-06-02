@@ -114,6 +114,9 @@ void BackupProgressDialog::buildUi(const QString& dbName) {
     const bool isBackup = (mode_ == Mode::Backup);
     setWindowTitle(isBackup ? tr("Backup Database") : tr("Restore Database"));
 
+    // gxBackupHeader / gxBackupBar / gxBackupLog selectors live in
+    // resources/style-gx{,-light}.qss under "Backup progress dialog".
+
     auto* root = new QVBoxLayout(this);
     root->setSpacing(10);
     root->setContentsMargins(16, 14, 16, 14);
@@ -122,25 +125,20 @@ void BackupProgressDialog::buildUi(const QString& dbName) {
         isBackup ? tr("Backing up %1...").arg(dbName)
                  : tr("Restoring %1...").arg(dbName),
         this);
-    QFont f = headerLabel_->font();
-    f.setPointSize(f.pointSize() + 1);
-    f.setBold(true);
-    headerLabel_->setFont(f);
+    headerLabel_->setObjectName(QStringLiteral("gxBackupHeader"));
     root->addWidget(headerLabel_);
 
     progressBar_ = new QProgressBar(this);
+    progressBar_->setObjectName(QStringLiteral("gxBackupBar"));
     progressBar_->setRange(0, 0);  // indeterminate
     progressBar_->setTextVisible(false);
     progressBar_->setFixedHeight(6);
     root->addWidget(progressBar_);
 
     logView_ = new QPlainTextEdit(this);
+    logView_->setObjectName(QStringLiteral("gxBackupLog"));
     logView_->setReadOnly(true);
     logView_->setMaximumBlockCount(500);
-    QFont mono = logView_->font();
-    mono.setFamily(QStringLiteral("Monospace"));
-    mono.setPointSize(mono.pointSize() - 1);
-    logView_->setFont(mono);
     logView_->setMinimumHeight(180);
     root->addWidget(logView_, 1);
 
@@ -153,6 +151,7 @@ void BackupProgressDialog::buildUi(const QString& dbName) {
     btnRow->addWidget(cancelBtn_);
 
     closeBtn_ = new QPushButton(tr("Close"), this);
+    closeBtn_->setProperty("gxKind", QStringLiteral("primary"));
     closeBtn_->setEnabled(false);
     connect(closeBtn_, &QPushButton::clicked, this, &QDialog::accept);
     btnRow->addWidget(closeBtn_);

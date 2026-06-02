@@ -14,6 +14,9 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
     var database: String?
     var username: String?
     var sslEnabled: Bool
+    /// Fine-grained SSL posture; `nil` falls back to `sslEnabled` via
+    /// `effectiveSSLMode` for rows persisted before incident `6a4aad0`.
+    var sslMode: SSLMode?
     var colorTag: ColorTag?
     var group: String?
 
@@ -45,6 +48,7 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
         database: String? = nil,
         username: String? = nil,
         sslEnabled: Bool = false,
+        sslMode: SSLMode? = nil,
         colorTag: ColorTag? = nil,
         group: String? = nil,
         sslKeyPath: String? = nil,
@@ -63,6 +67,7 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
         self.database = database
         self.username = username
         self.sslEnabled = sslEnabled
+        self.sslMode = sslMode
         self.colorTag = colorTag
         self.group = group
         self.sslKeyPath = sslKeyPath
@@ -79,6 +84,13 @@ struct ConnectionConfig: Codable, Sendable, Hashable, Identifiable {
             return filePath ?? "Unknown"
         }
         return "\(host ?? "localhost"):\(port ?? databaseType.defaultPort)"
+    }
+
+    /// Resolved SSL posture. Honors the persisted 5-state `sslMode`; falls back
+    /// to `sslEnabled` for rows saved before the field existed (legacy
+    /// `sslEnabled=true` maps to `.preferred`, matching the pre-fix adapter).
+    var effectiveSSLMode: SSLMode {
+        sslMode ?? (sslEnabled ? .preferred : .disabled)
     }
 }
 

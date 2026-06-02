@@ -86,14 +86,29 @@ final class DependencyContainer {
 
     lazy var providerRegistry = ProviderRegistry()
 
+    /// OAuth service for ChatGPT-subscription providers. Holds no state on the
+    /// MainActor; callers from `ProviderRegistry` (an actor) reach it through
+    /// the container intentionally — provider-construction happens before the
+    /// service is invoked.
+    lazy var chatGPTOAuthService: ChatGPTOAuthService = ChatGPTOAuthService(keychainService: keychainService)
+
     /// Load all enabled providers from persistence and register them with the registry.
     /// Call once at app startup. Safe to call again after config changes.
     func bootstrapProviderRegistry() async {
         await providerRegistry.removeAll()
         let configs = (try? await llmProviderRepository.fetchAll()) ?? []
         for config in configs where config.enabled {
-            let apiKey = (try? keychainService.load(key: "ai.apikey.\(config.id.uuidString)")) ?? ""
-            await providerRegistry.register(config, apiKey: apiKey)
+            switch config.type {
+            case .chatGPT:
+                // No long-lived API key — the bundle lives in Keychain under
+                // `ai.chatgpt.tokens.<uuid>`. Skip registration if the user
+                // added the provider but never completed sign-in.
+                guard (try? keychainService.loadChatGPTTokens(providerId: config.id)) != nil else { continue }
+                await providerRegistry.register(config, apiKey: "", chatGPTOAuthService: chatGPTOAuthService)
+            default:
+                let apiKey = (try? keychainService.load(key: "ai.apikey.\(config.id.uuidString)")) ?? ""
+                await providerRegistry.register(config, apiKey: apiKey)
+            }
         }
     }
 

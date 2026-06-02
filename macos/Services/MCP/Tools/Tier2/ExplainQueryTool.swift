@@ -39,21 +39,7 @@ struct ExplainQueryTool: MCPTool {
 
         let (adapter, config) = try await context.getAdapter(for: connectionId)
 
-        // Build EXPLAIN query based on database type
-        let explainSQL: String
-        switch config.databaseType {
-        case .postgresql:
-            explainSQL = "EXPLAIN (ANALYZE false, COSTS true, FORMAT TEXT) \(sql)"
-        case .mysql:
-            explainSQL = "EXPLAIN \(sql)"
-        case .sqlite:
-            explainSQL = "EXPLAIN QUERY PLAN \(sql)"
-        case .mssql:
-            // SQL Server uses SET SHOWPLAN_TEXT or estimated plan
-            explainSQL = "SET SHOWPLAN_TEXT ON; \(sql); SET SHOWPLAN_TEXT OFF"
-        case .clickhouse:
-            explainSQL = "EXPLAIN \(sql)"
-        case .mongodb, .redis:
+        guard let explainSQL = config.databaseType.explainSQL(for: sql) else {
             return MCPToolResult(text: "EXPLAIN is not supported for \(config.databaseType.displayName) connections.", isError: true)
         }
 

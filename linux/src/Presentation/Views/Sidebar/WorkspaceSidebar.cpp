@@ -16,12 +16,15 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QStandardPaths>
+#include <QStyledItemDelegate>
 #include <QTextStream>
+#include <QToolButton>
 #include <QTreeView>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -29,6 +32,7 @@
 
 #include "Core/Errors/GridexError.h"
 #include "Core/Utils/SqlStatementSplitter.h"
+#include "Presentation/Views/Chrome/GxIcons.h"
 #include "Presentation/Views/ImportSQL/SqlImportWizard.h"
 #include "Core/Enums/DatabaseType.h"
 #include "Core/Enums/SQLDialect.h"
@@ -39,6 +43,7 @@
 #include "Presentation/ViewModels/WorkspaceState.h"
 #include "Presentation/Views/Backup/BackupProgressDialog.h"
 #include "Presentation/Views/TableList/TableGridView.h"
+#include "Presentation/Theme/ThemeManager.h"
 #include "Services/Export/DatabaseDumpRunner.h"
 #include "Services/Export/ExportService.h"
 
@@ -46,11 +51,13 @@ namespace gridex {
 
 namespace {
 
-constexpr int kRoleKind       = Qt::UserRole + 1;
-constexpr int kRoleSchemaName = Qt::UserRole + 2;
-constexpr int kRoleTableName  = Qt::UserRole + 3;
-constexpr int kRoleLoaded     = Qt::UserRole + 4;
+constexpr int kRoleKind        = Qt::UserRole + 1;
+constexpr int kRoleSchemaName  = Qt::UserRole + 2;
+constexpr int kRoleTableName   = Qt::UserRole + 3;
+constexpr int kRoleLoaded      = Qt::UserRole + 4;
 constexpr int kRoleRoutineName = Qt::UserRole + 5;
+constexpr int kRoleRowCount    = Qt::UserRole + 6;   // optional int — trail badge
+constexpr int kRoleFolderLabel = Qt::UserRole + 7;   // bool — caps section header
 
 enum NodeKind {
     NodeSchema      = 1,
@@ -59,21 +66,50 @@ enum NodeKind {
     NodeFunctionsGroup  = 4,
     NodeProceduresGroup = 5,
     NodeFunction    = 6,
-    NodeProcedure   = 7
+    NodeProcedure   = 7,
+    NodeFolder      = 8,   // "Tables (N)" / "Views (N)" / "Functions (N)" caption row
 };
 
-// splitSqlStatements is defined in Core/Utils/SqlStatementSplitter.h
+// Per-theme gx tokens used by the manually-painted SchemaTreeDelegate.
+// Looked up at paint time so a Light/Dark switch via Settings repaints
+// against the correct palette without needing a full widget rebuild.
+struct DelegatePalette {
+    QColor bg1;          // row default background
+    QColor bg2;          // row hover background
+    QColor bg4;          // row selected background
+    QColor text;         // selected / strong text
+    QColor text2;        // normal text
+    QColor faint;        // folder caption + disabled
+    QColor mutedIcon;    // glyph tint
+};
 
-// Parse one CSV row according to RFC 4180. Input is a single line (or block
-// when the row spans newlines inside quotes). We operate on the full CSV
-// blob and advance a cursor so that multi-line quoted fields work.
+DelegatePalette delegatePalette() {
+    if (ThemeManager::instance().isDark()) {
+        return {QColor(0x11, 0x15, 0x1a),  // bg-1
+                QColor(0x17, 0x1c, 0x22),  // bg-2
+                QColor(0x2b, 0x31, 0x38),  // bg-4
+                QColor(0xe5, 0xe8, 0xeb),  // text
+                QColor(0xb4, 0xb8, 0xbc),  // text-2
+                QColor(0x55, 0x58, 0x5c),  // faint
+                QColor(0x7d, 0x81, 0x85)}; // muted
+    }
+    return {QColor(0xf4, 0xf5, 0xf7),  // bg-1
+            QColor(0xe9, 0xeb, 0xef),  // bg-2
+            QColor(0xcd, 0xd1, 0xd8),  // bg-4
+            QColor(0x1c, 0x20, 0x25),  // text
+            QColor(0x4a, 0x4f, 0x56),  // text-2
+            QColor(0x93, 0x98, 0xa0),  // faint
+            QColor(0x6a, 0x6e, 0x74)}; // muted
+}
+
+// CSV parser (RFC 4180) — used by importCsv below. Carried over verbatim
+// from the pre-A2 implementation.
 struct CsvParser {
     QString text;
     int pos = 0;
 
     bool atEnd() const { return pos >= text.size(); }
 
-    // Returns next row as list of fields; empty vector when no more rows.
     QStringList readRow() {
         QStringList fields;
         if (atEnd()) return fields;
@@ -99,30 +135,189 @@ struct CsvParser {
             }
             if (c == '"' && cell.isEmpty()) { quoted = true; ++pos; continue; }
             if (c == ',') { fields << cell; cell.clear(); ++pos; continue; }
-            if (c == '\r') { ++pos; continue; }  // ignore
+            if (c == '\r') { ++pos; continue; }
             if (c == '\n') { ++pos; fields << cell; return fields; }
             cell.append(c);
             ++pos;
         }
-        // Last field (no trailing newline)
         fields << cell;
         return fields;
     }
 };
 
-QPushButton* makeTabButton(const QString& glyph, const QString& tooltip, QWidget* parent) {
-    auto* btn = new QPushButton(glyph, parent);
-    btn->setCheckable(true);
-    btn->setAutoExclusive(true);
-    btn->setCursor(Qt::PointingHandCursor);
-    btn->setFixedHeight(28);
-    btn->setToolTip(tooltip);
-    btn->setFlat(true);
-    btn->setProperty("tab", true);  // styled via style.qss QPushButton[tab="true"]
-    return btn;
+// Map DatabaseType → (engine pill label, pill background colour). Hex
+// values precomputed from .gx-eng-* oklch in gridex.css.
+struct EnginePill { QString label; QColor color; };
+EnginePill enginePill(DatabaseType t) {
+    switch (t) {
+        case DatabaseType::PostgreSQL: return {QStringLiteral("PG"), QColor(0x3a, 0xa3, 0xd8)};
+        case DatabaseType::MySQL:      return {QStringLiteral("MY"), QColor(0xd6, 0xb0, 0x4c)};
+        case DatabaseType::SQLite:     return {QStringLiteral("SL"), QColor(0x82, 0xc9, 0x6a)};
+        case DatabaseType::ClickHouse: return {QStringLiteral("CH"), QColor(0xe3, 0xc0, 0x4a)};
+        case DatabaseType::MongoDB:    return {QStringLiteral("MG"), QColor(0x4f, 0xc4, 0x88)};
+        case DatabaseType::Redis:      return {QStringLiteral("RD"), QColor(0xd6, 0x5b, 0x4c)};
+        case DatabaseType::MSSQL:      return {QStringLiteral("MS"), QColor(0xa8, 0x8c, 0xe0)};
+    }
+    return {QStringLiteral("DB"), QColor(0x7d, 0x81, 0x85)};
 }
 
+QString fmtBigInt(qint64 n) {
+    if (n >= 1'000'000'000LL) return QString::number(n / 1.0e9, 'f', 1) + QLatin1Char('B');
+    if (n >= 1'000'000LL)     return QString::number(n / 1.0e6, 'f', 1) + QLatin1Char('M');
+    if (n >= 1'000LL)         return QString::number(n / 1.0e3, 'f', 1) + QLatin1Char('K');
+    return QString::number(n);
 }
+
+// Compact, square 24-px icon button used in the header strip and tab strip.
+// Hover/checked colors come from the theme QSS via the `side-square` role
+// selector so the same widget reads correctly in light and dark.
+QToolButton* makeSquareBtn(const QString& glyph, const QString& tooltip,
+                            QWidget* parent, int size = 24, int iconPx = 12) {
+    auto* b = new QToolButton(parent);
+    b->setIcon(GxIcons::glyph(glyph));
+    b->setIconSize(QSize(iconPx, iconPx));
+    b->setFixedSize(size, size);
+    b->setAutoRaise(true);
+    b->setToolTip(tooltip);
+    b->setCursor(Qt::PointingHandCursor);
+    b->setProperty("gxRole", QStringLiteral("side-square"));
+    return b;
+}
+
+// Custom delegate that paints engine pills on connection-root rows, dim
+// caps headers on folder rows ("Tables (N)"), and trailing row-count
+// badges on table rows.
+class SchemaTreeDelegate : public QStyledItemDelegate {
+public:
+    explicit SchemaTreeDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    QSize sizeHint(const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
+        QSize s = QStyledItemDelegate::sizeHint(opt, idx);
+        const int kind = idx.data(kRoleKind).toInt();
+        if (kind == NodeFolder) s.setHeight(20);
+        else                    s.setHeight(std::max(s.height(), 24));
+        return s;
+    }
+
+    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
+        QStyleOptionViewItem o = opt;
+        initStyleOption(&o, idx);
+
+        const bool isFolder = idx.data(kRoleKind).toInt() == NodeFolder
+                              || idx.data(kRoleFolderLabel).toBool();
+        const bool selected = (o.state & QStyle::State_Selected);
+        const DelegatePalette pal = delegatePalette();
+
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+
+        // Background — hover/selected. Folder rows never highlight.
+        if (selected && !isFolder) {
+            p->fillRect(o.rect, pal.bg4);
+        } else if ((o.state & QStyle::State_MouseOver) && !isFolder) {
+            p->fillRect(o.rect, pal.bg2);
+        } else {
+            p->fillRect(o.rect, pal.bg1);
+        }
+
+        // Folder rows: small all-caps muted label, no icon.
+        if (isFolder) {
+            QFont f = o.font;
+            f.setPointSizeF(std::max(8.0, f.pointSizeF() - 2.0));
+            f.setLetterSpacing(QFont::AbsoluteSpacing, 0.6);
+            f.setCapitalization(QFont::AllUppercase);
+            p->setFont(f);
+            p->setPen(pal.faint);
+            QRect r = o.rect.adjusted(o.rect.x() == 0 ? 16 : 4, 0, -8, 0);
+            p->drawText(r, Qt::AlignVCenter | Qt::AlignLeft, idx.data(Qt::DisplayRole).toString());
+            p->restore();
+            return;
+        }
+
+        // Default branch indicator + indentation already handled by view —
+        // we delegate "indented" painting to the standard pipeline by
+        // calling the base for non-decorated rows when no engine pill is
+        // needed. But to control text + trail consistently we paint
+        // ourselves and let the view supply rect via o.rect (which already
+        // honours indentation).
+        const int kind = idx.data(kRoleKind).toInt();
+        const QString text = idx.data(Qt::DisplayRole).toString();
+
+        int x = o.rect.x() + 4;
+        const int y = o.rect.y();
+        const int h = o.rect.height();
+
+        // Engine pill on schema-root rows (we treat NodeSchema as the
+        // visible "connection" anchor since this sidebar only sees one
+        // open connection — the activity bar's Connections panel renders
+        // the multi-connection list).
+        if (kind == NodeSchema) {
+            // No pill here — the schema item is one level below the
+            // (implicit) connection. Pill is painted by the bottom-bar
+            // db-info strip instead. Keep the row clean.
+        }
+
+        // Icon glyph by node kind. Tree's own branch/expander is left
+        // intact (Qt::style draws it before paint() is called).
+        QString iconName;
+        switch (kind) {
+            case NodeSchema:            iconName = QStringLiteral("schema"); break;
+            case NodeTable:             iconName = QStringLiteral("table");  break;
+            case NodeFunctionsGroup:    iconName = QStringLiteral("folder"); break;
+            case NodeProceduresGroup:   iconName = QStringLiteral("folder"); break;
+            case NodeFunction:          iconName = QStringLiteral("fn");     break;
+            case NodeProcedure:         iconName = QStringLiteral("fn");     break;
+            default:                    iconName.clear();                    break;
+        }
+        if (!iconName.isEmpty()) {
+            const QIcon ic = GxIcons::glyph(iconName, pal.mutedIcon.name());
+            ic.paint(p, x, y + (h - 14) / 2, 14, 14);
+            x += 18;
+        }
+
+        // Label.
+        p->setPen(selected ? pal.text
+                            : (idx.flags() & Qt::ItemIsEnabled ? pal.text2
+                                                                : pal.faint));
+        QFont f = o.font;
+        if (kind == NodeSchema) f.setBold(true);
+        p->setFont(f);
+
+        // Trailing badge — table row count.
+        QString trail;
+        const QVariant rc = idx.data(kRoleRowCount);
+        if (rc.isValid() && rc.toLongLong() >= 0) trail = fmtBigInt(rc.toLongLong());
+
+        QFontMetrics fm(p->font());
+        int trailW = 0;
+        if (!trail.isEmpty()) {
+            QFont mono(QStringLiteral("JetBrains Mono"));
+            mono.setStyleHint(QFont::Monospace);
+            mono.setPointSizeF(std::max(8.5, f.pointSizeF() - 1.5));
+            QFontMetrics mfm(mono);
+            trailW = mfm.horizontalAdvance(trail) + 8;
+        }
+
+        const QRect labelRect(x, y, std::max(0, o.rect.right() - x - trailW - 4), h);
+        p->drawText(labelRect, Qt::AlignVCenter | Qt::AlignLeft,
+                    fm.elidedText(text, Qt::ElideRight, labelRect.width()));
+
+        if (!trail.isEmpty()) {
+            QFont mono(QStringLiteral("JetBrains Mono"));
+            mono.setStyleHint(QFont::Monospace);
+            mono.setPointSizeF(std::max(8.5, f.pointSizeF() - 1.5));
+            p->setFont(mono);
+            p->setPen(pal.faint);
+            p->drawText(QRect(o.rect.right() - trailW - 4, y, trailW, h),
+                        Qt::AlignVCenter | Qt::AlignRight, trail);
+        }
+
+        p->restore();
+    }
+};
+
+}  // namespace
 
 WorkspaceSidebar::~WorkspaceSidebar() = default;
 
@@ -131,6 +326,12 @@ WorkspaceSidebar::WorkspaceSidebar(WorkspaceState* state,
                                    QWidget* parent)
     : QWidget(parent), state_(state), appDb_(std::move(appDb)) {
     if (appDb_) savedQueryRepo_ = std::make_unique<SavedQueryRepository>(appDb_);
+
+    setObjectName(QStringLiteral("gxWorkspaceSidebar"));
+    setFixedWidth(280);
+    setAttribute(Qt::WA_StyledBackground, true);
+    // Background + right border live in the theme QSS — QWidget#gxWorkspaceSidebar.
+
     buildUi();
     if (appDb_) loadHistoryFromDb();
     if (savedQueryRepo_) reloadSavedQueriesTree();
@@ -143,84 +344,147 @@ WorkspaceSidebar::WorkspaceSidebar(WorkspaceState* state,
     }
 }
 
-void WorkspaceSidebar::buildUi() {
-    auto* root = new QVBoxLayout(this);
-    root->setContentsMargins(0, 0, 0, 0);
-    root->setSpacing(0);
+// --------------------------------------------------------------------
+// UI construction
+// --------------------------------------------------------------------
 
-    // ---- Tab bar (Items / Queries / History) ----
-    auto* tabBar = new QWidget(this);
-    auto* tabH = new QHBoxLayout(tabBar);
-    tabH->setContentsMargins(6, 4, 6, 4);
-    tabH->setSpacing(1);
+QWidget* WorkspaceSidebar::buildHeaderStrip() {
+    // .gx-side-hd — 28px, padding 6 10 6 10, border-bottom #2e3339, bg-1.
+    auto* strip = new QWidget(this);
+    strip->setObjectName(QStringLiteral("gxSideHd"));
+    strip->setFixedHeight(28);
+    strip->setAttribute(Qt::WA_StyledBackground, true);
+    auto* h = new QHBoxLayout(strip);
+    h->setContentsMargins(10, 6, 10, 6);
+    h->setSpacing(2);
 
-    itemsTabBtn_   = makeTabButton(QStringLiteral("🗂"), tr("Items"),   tabBar);
-    queriesTabBtn_ = makeTabButton(QStringLiteral("📄"), tr("Queries"), tabBar);
-    historyTabBtn_ = makeTabButton(QStringLiteral("🕑"), tr("History"), tabBar);
-    savedTabBtn_   = makeTabButton(QStringLiteral("⭐"), tr("Saved"),   tabBar);
-    itemsTabBtn_->setChecked(true);
-    tabH->addWidget(itemsTabBtn_, 1);
-    tabH->addWidget(queriesTabBtn_, 1);
-    tabH->addWidget(historyTabBtn_, 1);
-    tabH->addWidget(savedTabBtn_, 1);
-    connect(itemsTabBtn_,   &QPushButton::clicked, this, [this] { onTabClicked(0); });
-    connect(queriesTabBtn_, &QPushButton::clicked, this, [this] { onTabClicked(1); });
-    connect(historyTabBtn_, &QPushButton::clicked, this, [this] { onTabClicked(2); });
-    connect(savedTabBtn_,   &QPushButton::clicked, this, [this] { onTabClicked(3); });
-    root->addWidget(tabBar);
+    auto* title = new QLabel(tr("SCHEMA"), strip);
+    title->setObjectName(QStringLiteral("gxSideHdTitle"));
+    QFont tf = title->font();
+    tf.setPointSizeF(10.0);
+    tf.setLetterSpacing(QFont::PercentageSpacing, 108);
+    tf.setBold(true);
+    title->setFont(tf);
+    h->addWidget(title);
+    h->addStretch();
 
-    auto* tabDiv = new QFrame(this);
-    tabDiv->setFrameShape(QFrame::HLine);
-    root->addWidget(tabDiv);
+    hdNewConnBtn_  = makeSquareBtn(QStringLiteral("plug"),    tr("New connection"), strip, 18, 11);
+    hdRefreshBtn_  = makeSquareBtn(QStringLiteral("refresh"), tr("Refresh"),        strip, 18, 11);
+    hdCollapseBtn_ = makeSquareBtn(QStringLiteral("x"),       tr("Collapse all"),   strip, 18, 11);
+    connect(hdRefreshBtn_,  &QToolButton::clicked, this, [this] { loadSchemas(); });
+    connect(hdCollapseBtn_, &QToolButton::clicked, this, [this] { if (tree_) tree_->collapseAll(); });
+    h->addWidget(hdNewConnBtn_);
+    h->addWidget(hdRefreshBtn_);
+    h->addWidget(hdCollapseBtn_);
+    return strip;
+}
 
-    // ---- Body: stacked (Items tab, empty tabs for Queries/History) ----
-    body_ = new QStackedWidget(this);
+QWidget* WorkspaceSidebar::buildFilterRow(QWidget* parent) {
+    // .gx-side-filter — height 24, margin 6 8, padding 0 8, bg-0 border-2.
+    auto* row = new QWidget(parent);
+    auto* h = new QHBoxLayout(row);
+    h->setContentsMargins(8, 6, 8, 6);
+    h->setSpacing(4);
 
-    // Items tab
-    auto* itemsPage = new QWidget(body_);
-    auto* itemsV = new QVBoxLayout(itemsPage);
-    itemsV->setContentsMargins(0, 0, 0, 0);
-    itemsV->setSpacing(0);
-
-    auto* searchRow = new QWidget(itemsPage);
-    auto* searchH = new QHBoxLayout(searchRow);
-    searchH->setContentsMargins(8, 6, 8, 6);
-    searchH->setSpacing(4);
-    searchEdit_ = new QLineEdit(searchRow);
-    searchEdit_->setPlaceholderText(tr("Search tables..."));
-    searchEdit_->setClearButtonEnabled(true);
+    searchEdit_ = new QLineEdit(row);
+    searchEdit_->setObjectName(QStringLiteral("gxSideFilter"));
+    searchEdit_->setPlaceholderText(tr("Filter…"));
+    searchEdit_->setClearButtonEnabled(false);
+    searchEdit_->addAction(GxIcons::glyph(QStringLiteral("search")),
+                           QLineEdit::LeadingPosition);
     connect(searchEdit_, &QLineEdit::textChanged,
             this, &WorkspaceSidebar::onSearchChanged);
-    searchH->addWidget(searchEdit_);
+    h->addWidget(searchEdit_);
 
-    gridToggleBtn_ = new QPushButton(QStringLiteral("⊞"), searchRow);
-    gridToggleBtn_->setFixedSize(26, 26);
+    gridToggleBtn_ = makeSquareBtn(QStringLiteral("folder"), tr("Toggle Grid View"), row, 24, 12);
     gridToggleBtn_->setCheckable(true);
-    gridToggleBtn_->setChecked(false);
-    gridToggleBtn_->setToolTip(tr("Toggle Grid View"));
-    gridToggleBtn_->setCursor(Qt::PointingHandCursor);
-    connect(gridToggleBtn_, &QPushButton::toggled, this, [this](bool checked) {
+    connect(gridToggleBtn_, &QToolButton::toggled, this, [this](bool checked) {
         itemsViewStack_->setCurrentIndex(checked ? 1 : 0);
-        searchEdit_->setPlaceholderText(checked ? tr("Filter tables...") : tr("Search tables..."));
+        searchEdit_->setPlaceholderText(checked ? tr("Filter tables…") : tr("Filter…"));
         if (checked && tableGrid_) tableGrid_->reload();
     });
-    searchH->addWidget(gridToggleBtn_);
+    h->addWidget(gridToggleBtn_);
+    return row;
+}
 
-    itemsV->addWidget(searchRow);
+QWidget* WorkspaceSidebar::buildBottomBar(QWidget* parent) {
+    auto* bar = new QWidget(parent);
+    bar->setObjectName(QStringLiteral("gxSideBottom"));
+    bar->setAttribute(Qt::WA_StyledBackground, true);
+    auto* v = new QVBoxLayout(bar);
+    v->setContentsMargins(8, 6, 8, 6);
+    v->setSpacing(4);
 
-    auto* searchDiv = new QFrame(itemsPage);
-    searchDiv->setFrameShape(QFrame::HLine);
-    itemsV->addWidget(searchDiv);
+    auto* schemaRow = new QWidget(bar);
+    auto* sh = new QHBoxLayout(schemaRow);
+    sh->setContentsMargins(0, 0, 0, 0);
+    sh->setSpacing(6);
 
-    // Stacked: page 0 = tree, page 1 = grid
-    itemsViewStack_ = new QStackedWidget(itemsPage);
+    schemaCombo_ = new QComboBox(schemaRow);
+    schemaCombo_->setObjectName(QStringLiteral("gxSideSchemaCombo"));
+    schemaCombo_->setToolTip(tr("Active schema"));
+    schemaCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    connect(schemaCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &WorkspaceSidebar::onSchemaChanged);
+    sh->addWidget(schemaCombo_);
+    sh->addStretch();
+    v->addWidget(schemaRow);
+
+    dbInfoLabel_ = new QLabel(bar);
+    dbInfoLabel_->setObjectName(QStringLiteral("gxSideDbInfo"));
+    dbInfoLabel_->setWordWrap(false);
+    v->addWidget(dbInfoLabel_);
+
+    auto* actionRow = new QWidget(bar);
+    auto* ah = new QHBoxLayout(actionRow);
+    ah->setContentsMargins(0, 0, 0, 0);
+    ah->setSpacing(6);
+
+    newTableBtn_ = new QPushButton(tr("+ New Table"), actionRow);
+    newTableBtn_->setObjectName(QStringLiteral("gxSideNewTable"));
+    newTableBtn_->setCursor(Qt::PointingHandCursor);
+    connect(newTableBtn_, &QPushButton::clicked, this, [this] {
+        const QString schema = schemaCombo_ ? schemaCombo_->currentText() : QString{};
+        emit newTableRequested(schema);
+    });
+
+    disconnectBtn_ = new QPushButton(tr("Disconnect"), actionRow);
+    disconnectBtn_->setObjectName(QStringLiteral("gxSideDisconnect"));
+    disconnectBtn_->setCursor(Qt::PointingHandCursor);
+    connect(disconnectBtn_, &QPushButton::clicked,
+            this, &WorkspaceSidebar::disconnectRequested);
+
+    ah->addWidget(newTableBtn_);
+    ah->addStretch();
+    ah->addWidget(disconnectBtn_);
+    v->addWidget(actionRow);
+
+    return bar;
+}
+
+QWidget* WorkspaceSidebar::buildItemsPage() {
+    auto* page = new QWidget(this);
+    auto* v = new QVBoxLayout(page);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(0);
+
+    v->addWidget(buildFilterRow(page));
+
+    itemsViewStack_ = new QStackedWidget(page);
 
     tree_ = new QTreeView(itemsViewStack_);
+    tree_->setObjectName(QStringLiteral("gxSchemaTree"));
     tree_->setHeaderHidden(true);
     tree_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tree_->setSelectionBehavior(QAbstractItemView::SelectRows);
     tree_->setFrameShape(QFrame::NoFrame);
+    tree_->setIndentation(14);
+    tree_->setUniformRowHeights(false);
+    tree_->setRootIsDecorated(true);
+    tree_->setAnimated(false);
+    tree_->setMouseTracking(true);
     tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    tree_->setItemDelegate(new SchemaTreeDelegate(tree_));
 
     model_ = new QStandardItemModel(this);
     tree_->setModel(model_);
@@ -242,151 +506,46 @@ void WorkspaceSidebar::buildUi() {
     itemsViewStack_->addWidget(tableGrid_);
 
     itemsViewStack_->setCurrentIndex(0);
-    itemsV->addWidget(itemsViewStack_, 1);
+    v->addWidget(itemsViewStack_, 1);
 
-    // Bottom bar: schema selector + DB info + disconnect
-    auto* bottomDiv = new QFrame(itemsPage);
-    bottomDiv->setFrameShape(QFrame::HLine);
-    itemsV->addWidget(bottomDiv);
-
-    auto* bottomBar = new QWidget(itemsPage);
-    auto* bottomV = new QVBoxLayout(bottomBar);
-    bottomV->setContentsMargins(8, 6, 8, 6);
-    bottomV->setSpacing(4);
-
-    // Schema selector row
-    auto* schemaRow = new QWidget(bottomBar);
-    auto* schemaH = new QHBoxLayout(schemaRow);
-    schemaH->setContentsMargins(0, 0, 0, 0);
-    schemaH->setSpacing(6);
-
-    schemaCombo_ = new QComboBox(schemaRow);
-    schemaCombo_->setToolTip(tr("Active schema"));
-    schemaCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    connect(schemaCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &WorkspaceSidebar::onSchemaChanged);
-    schemaH->addWidget(schemaCombo_);
-    schemaH->addStretch();
-
-    bottomV->addWidget(schemaRow);
-
-    // DB info label
-    dbInfoLabel_ = new QLabel(bottomBar);
-    dbInfoLabel_->setWordWrap(false);
-    bottomV->addWidget(dbInfoLabel_);
-
-    // Bottom action row: [New Table] [Disconnect]
-    auto* disconnRow = new QWidget(bottomBar);
-    auto* disconnH = new QHBoxLayout(disconnRow);
-    disconnH->setContentsMargins(0, 0, 0, 0);
-    disconnH->setSpacing(6);
-
-    newTableBtn_ = new QPushButton(tr("+ New Table"), disconnRow);
-    connect(newTableBtn_, &QPushButton::clicked, this, [this] {
-        const QString schema = schemaCombo_ ? schemaCombo_->currentText() : QString{};
-        emit newTableRequested(schema);
-    });
-
-    disconnectBtn_ = new QPushButton(tr("Disconnect"), disconnRow);
-    connect(disconnectBtn_, &QPushButton::clicked,
-            this, &WorkspaceSidebar::disconnectRequested);
-
-    disconnH->addWidget(newTableBtn_);
-    disconnH->addStretch();
-    disconnH->addWidget(disconnectBtn_);
-    bottomV->addWidget(disconnRow);
-
-    itemsV->addWidget(bottomBar);
-
-    body_->addWidget(itemsPage);
-
-    // Queries tab placeholder
-    auto* queriesPage = new QWidget(body_);
-    auto* qv = new QVBoxLayout(queriesPage);
-    qv->addStretch();
-    auto* noQ = new QLabel(tr("📄\nNo Queries"), queriesPage);
-    noQ->setAlignment(Qt::AlignCenter);
-    qv->addWidget(noQ);
-    qv->addStretch();
-    body_->addWidget(queriesPage);
-
-    // History tab
-    auto* historyPage = new QWidget(body_);
-    auto* hv = new QVBoxLayout(historyPage);
-    hv->setContentsMargins(0, 0, 0, 0);
-    hv->setSpacing(0);
-    historyList_ = new QListWidget(historyPage);
-    historyList_->setFrameShape(QFrame::NoFrame);
-    historyList_->setSelectionMode(QAbstractItemView::SingleSelection);
-    historyList_->setContextMenuPolicy(Qt::CustomContextMenu);
-    historyList_->setToolTip(tr("Double-click to copy SQL to clipboard"));
-    connect(historyList_, &QListWidget::itemDoubleClicked, this,
-        [this](QListWidgetItem* item) {
-            if (!item) return;
-            QApplication::clipboard()->setText(item->data(Qt::UserRole).toString());
-        });
-    connect(historyList_, &QListWidget::customContextMenuRequested, this,
-        [this](const QPoint& pos) {
-            QMenu menu(this);
-            auto* clearAct = menu.addAction(tr("Clear History"));
-            connect(clearAct, &QAction::triggered, this, [this] {
-                if (!appDb_) return;
-                const auto btn = QMessageBox::question(this, tr("Clear History"),
-                    tr("Remove all query history?"),
-                    QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
-                if (btn != QMessageBox::Yes) return;
-                try { appDb_->clearAllHistory(); } catch (...) {}
-                historyList_->clear();
-            });
-            menu.exec(historyList_->viewport()->mapToGlobal(pos));
-        });
-    hv->addWidget(historyList_, 1);
-    body_->addWidget(historyPage);
-
-    // Saved queries tab
-    auto* savedPage = new QWidget(body_);
-    auto* sv = new QVBoxLayout(savedPage);
-    sv->setContentsMargins(0, 0, 0, 0);
-    sv->setSpacing(0);
-    savedTree_ = new QTreeWidget(savedPage);
-    savedTree_->setHeaderHidden(true);
-    savedTree_->setFrameShape(QFrame::NoFrame);
-    savedTree_->setContextMenuPolicy(Qt::CustomContextMenu);
-    savedTree_->setSelectionMode(QAbstractItemView::SingleSelection);
-    connect(savedTree_, &QTreeWidget::itemDoubleClicked, this,
-        [this](QTreeWidgetItem* item, int) {
-            if (!item || item->childCount() > 0) return;
-            const QString sql = item->data(0, Qt::UserRole).toString();
-            if (!sql.isEmpty()) emit loadSavedQueryRequested(sql);
-        });
-    connect(savedTree_, &QTreeWidget::customContextMenuRequested,
-            this, &WorkspaceSidebar::onSavedQueryContextMenu);
-    sv->addWidget(savedTree_, 1);
-    body_->addWidget(savedPage);
-
-    body_->setCurrentIndex(0);
-    root->addWidget(body_, 1);
+    v->addWidget(buildBottomBar(page));
+    return page;
 }
+
+void WorkspaceSidebar::buildUi() {
+    // History/Saved widgets are kept alive (but layout-less) so logQuery /
+    // promptSaveQuery don't crash. They'll be re-surfaced via the
+    // SidebarPanelStack History / Snippets panels in a follow-up PR.
+    historyList_ = new QListWidget(this);
+    historyList_->setVisible(false);
+    savedTree_ = new QTreeWidget(this);
+    savedTree_->setHeaderHidden(true);
+    savedTree_->setVisible(false);
+
+    // PR A2 fix: the inner 4-tab strip (Items / Queries / History / Saved)
+    // was a duplicate of the activity bar's job. SidebarPanelStack now hosts
+    // the History/Snippets/ERD panels at the activity-bar level — this widget
+    // only ever shows the Schema (Items) page.
+    auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
+
+    root->addWidget(buildHeaderStrip());
+    root->addWidget(buildItemsPage(), 1);
+}
+
+// --------------------------------------------------------------------
+// Public surface (preserved verbatim from pre-A2 API)
+// --------------------------------------------------------------------
 
 void WorkspaceSidebar::refreshTree() {
     onConnectionOpened();
 }
 
-void WorkspaceSidebar::onTabClicked(int tab) {
-    activeTab_ = tab;
-    itemsTabBtn_->setChecked(tab == 0);
-    queriesTabBtn_->setChecked(tab == 1);
-    historyTabBtn_->setChecked(tab == 2);
-    savedTabBtn_->setChecked(tab == 3);
-    body_->setCurrentIndex(tab);
-}
-
 void WorkspaceSidebar::onConnectionOpened() {
     loadSchemas();
 
-    // Populate schema combo from adapter.
     if (schemaCombo_ && state_ && state_->adapter()) {
-        // Block signals while rebuilding to avoid triggering reload mid-populate.
         QSignalBlocker blocker(schemaCombo_);
         schemaCombo_->clear();
         try {
@@ -395,19 +554,19 @@ void WorkspaceSidebar::onConnectionOpened() {
                 schemaCombo_->addItem(QString::fromUtf8(s.c_str()));
             }
         } catch (const GridexError&) {}
-        // Default to "public" if present, else index 0.
         const int pubIdx = schemaCombo_->findText(QStringLiteral("public"));
         schemaCombo_->setCurrentIndex(pubIdx >= 0 ? pubIdx : 0);
     }
 
-    // DB info: "name · dbtype · host"
     if (dbInfoLabel_ && state_) {
         const auto& cfg = state_->config();
-        const QString dbType = QString::fromUtf8(
-            displayName(cfg.databaseType).data(),
-            static_cast<qsizetype>(displayName(cfg.databaseType).size()));
+        const auto pill = enginePill(cfg.databaseType);
         const QString host = QString::fromUtf8(cfg.displayHost().c_str());
-        dbInfoLabel_->setText(QStringLiteral("%1 · %2").arg(dbType, host));
+        const QString name = QString::fromStdString(cfg.database.value_or(cfg.name));
+        dbInfoLabel_->setText(QStringLiteral("%1 · %2 · %3")
+                                  .arg(pill.label,
+                                       name.isEmpty() ? QStringLiteral("—") : name,
+                                       host));
     }
 }
 
@@ -429,14 +588,13 @@ void WorkspaceSidebar::loadSchemas() {
             schemaItem->setData(QString::fromUtf8(s.c_str()), kRoleSchemaName);
             schemaItem->setData(false, kRoleLoaded);
 
-            // Insert placeholder child so the expand arrow shows up.
-            auto* placeholder = new QStandardItem(tr("(loading...)"));
+            auto* placeholder = new QStandardItem(tr("(loading…)"));
             placeholder->setData(NodePlaceholder, kRoleKind);
+            placeholder->setEnabled(false);
             schemaItem->appendRow(placeholder);
 
             model_->appendRow(schemaItem);
         }
-        // If only one schema, auto-expand it for convenience.
         if (schemas.size() == 1 && model_->rowCount() > 0) {
             tree_->expand(model_->index(0, 0));
         }
@@ -445,6 +603,20 @@ void WorkspaceSidebar::loadSchemas() {
         err->setEnabled(false);
         model_->appendRow(err);
     }
+}
+
+QStandardItem* WorkspaceSidebar::appendFolderRow(QStandardItem* parent,
+                                                  const QString& label, int count) {
+    const QString text = (count >= 0)
+        ? QStringLiteral("%1 (%2)").arg(label).arg(count)
+        : label;
+    auto* item = new QStandardItem(text);
+    item->setData(NodeFolder, kRoleKind);
+    item->setData(true, kRoleFolderLabel);
+    item->setSelectable(false);
+    item->setEnabled(false);
+    parent->appendRow(item);
+    return item;
 }
 
 void WorkspaceSidebar::onItemExpanded(const QModelIndex& index) {
@@ -472,44 +644,53 @@ void WorkspaceSidebar::onItemExpanded(const QModelIndex& index) {
 
 void WorkspaceSidebar::loadTablesForSchema(QStandardItem* schemaItem, const QString& schemaName) {
     if (!state_ || !state_->adapter()) return;
+
+    std::vector<TableInfo> tables;
     try {
-        const auto tables = state_->adapter()->listTables(schemaName.toStdString());
-        if (tables.empty()) {
-            auto* empty = new QStandardItem(tr("(no tables)"));
-            empty->setEnabled(false);
-            schemaItem->appendRow(empty);
-        } else {
-            for (const auto& t : tables) {
-                auto* tableItem = new QStandardItem(QString::fromUtf8(t.name.c_str()));
-                tableItem->setData(NodeTable, kRoleKind);
-                tableItem->setData(schemaName, kRoleSchemaName);
-                tableItem->setData(QString::fromUtf8(t.name.c_str()), kRoleTableName);
-                schemaItem->appendRow(tableItem);
-            }
-        }
+        tables = state_->adapter()->listTables(schemaName.toStdString());
     } catch (const GridexError& e) {
         auto* err = new QStandardItem(QString::fromUtf8(e.what()));
         err->setEnabled(false);
         schemaItem->appendRow(err);
+        return;
     }
 
-    // Functions group node
+    // Tables (N) folder header + table rows
+    if (!tables.empty()) {
+        appendFolderRow(schemaItem, tr("Tables"), static_cast<int>(tables.size()));
+        for (const auto& t : tables) {
+            auto* tableItem = new QStandardItem(QString::fromUtf8(t.name.c_str()));
+            tableItem->setData(NodeTable, kRoleKind);
+            tableItem->setData(schemaName, kRoleSchemaName);
+            tableItem->setData(QString::fromUtf8(t.name.c_str()), kRoleTableName);
+            if (t.estimatedRowCount.has_value()) {
+                tableItem->setData(static_cast<qlonglong>(*t.estimatedRowCount), kRoleRowCount);
+            }
+            schemaItem->appendRow(tableItem);
+        }
+    } else {
+        appendFolderRow(schemaItem, tr("Tables"), 0);
+    }
+
+    // Functions group node — lazy-loaded on expand
     auto* fnGroup = new QStandardItem(tr("Functions"));
     fnGroup->setData(NodeFunctionsGroup, kRoleKind);
     fnGroup->setData(schemaName, kRoleSchemaName);
     fnGroup->setData(false, kRoleLoaded);
-    auto* fnPlaceholder = new QStandardItem(tr("(loading...)"));
+    auto* fnPlaceholder = new QStandardItem(tr("(loading…)"));
     fnPlaceholder->setData(NodePlaceholder, kRoleKind);
+    fnPlaceholder->setEnabled(false);
     fnGroup->appendRow(fnPlaceholder);
     schemaItem->appendRow(fnGroup);
 
-    // Procedures group node
+    // Procedures group node — lazy-loaded on expand
     auto* procGroup = new QStandardItem(tr("Procedures"));
     procGroup->setData(NodeProceduresGroup, kRoleKind);
     procGroup->setData(schemaName, kRoleSchemaName);
     procGroup->setData(false, kRoleLoaded);
-    auto* procPlaceholder = new QStandardItem(tr("(loading...)"));
+    auto* procPlaceholder = new QStandardItem(tr("(loading…)"));
     procPlaceholder->setData(NodePlaceholder, kRoleKind);
+    procPlaceholder->setEnabled(false);
     procGroup->appendRow(procPlaceholder);
     schemaItem->appendRow(procGroup);
 }
@@ -589,28 +770,26 @@ void WorkspaceSidebar::onSchemaChanged(int /*index*/) {
 void WorkspaceSidebar::reloadActiveSchema() {
     if (!schemaCombo_ || schemaCombo_->count() == 0) return;
     const QString schema = schemaCombo_->currentText();
-    // Reload tree with only the selected schema's tables visible.
     model_->clear();
     if (!state_ || !state_->adapter()) return;
     auto* schemaItem = new QStandardItem(schema);
     schemaItem->setData(NodeSchema, kRoleKind);
     schemaItem->setData(schema, kRoleSchemaName);
     schemaItem->setData(false, kRoleLoaded);
-    auto* placeholder = new QStandardItem(tr("(loading...)"));
+    auto* placeholder = new QStandardItem(tr("(loading…)"));
     placeholder->setData(NodePlaceholder, kRoleKind);
+    placeholder->setEnabled(false);
     schemaItem->appendRow(placeholder);
     model_->appendRow(schemaItem);
     tree_->expand(model_->index(0, 0));
 }
 
 void WorkspaceSidebar::onSearchChanged(const QString& text) {
-    // In grid mode, delegate filtering to TableGridView.
     if (gridToggleBtn_ && gridToggleBtn_->isChecked()) {
         if (tableGrid_) tableGrid_->onSearchChanged(text);
         return;
     }
 
-    // Simple hide/show filter across schemas+tables. For v1 we do a flat walk.
     const auto lower = text.trimmed().toLower();
     for (int i = 0; i < model_->rowCount(); ++i) {
         auto* schemaItem = model_->item(i);
@@ -619,9 +798,16 @@ void WorkspaceSidebar::onSearchChanged(const QString& text) {
         bool anyChildMatches = false;
         for (int j = 0; j < schemaItem->rowCount(); ++j) {
             auto* child = schemaItem->child(j);
-            const bool ok = lower.isEmpty() || child->text().toLower().contains(lower);
+            // Folder caption rows are kept whenever any sibling is visible.
+            const bool isFolder = child->data(kRoleKind).toInt() == NodeFolder;
+            bool ok;
+            if (isFolder) {
+                ok = true;
+            } else {
+                ok = lower.isEmpty() || child->text().toLower().contains(lower);
+            }
             tree_->setRowHidden(j, schemaItem->index(), !ok);
-            anyChildMatches = anyChildMatches || ok;
+            if (!isFolder) anyChildMatches = anyChildMatches || ok;
         }
         tree_->setRowHidden(i, QModelIndex(), !(schemaMatches || anyChildMatches));
     }
@@ -634,19 +820,16 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
 
     QMenu menu(this);
 
-    // Refresh is always first — works on blank area, schema nodes, and
-    // table nodes. Full reload is cheap and keeps schemas + tables in sync.
     auto* refreshAction = menu.addAction(tr("Refresh"));
     refreshAction->setShortcut(QKeySequence::Refresh);
     connect(refreshAction, &QAction::triggered, this, [this] { loadSchemas(); });
 
-    // Blank area or schema node: Refresh + import/backup/restore actions.
     if (!item || kind != NodeTable) {
         menu.addSeparator();
 
-        auto* runSqlAct  = menu.addAction(tr("Run SQL File..."));
-        auto* backupAct  = menu.addAction(tr("Backup Database..."));
-        auto* restoreAct = menu.addAction(tr("Restore Database..."));
+        auto* runSqlAct  = menu.addAction(tr("Run SQL File…"));
+        auto* backupAct  = menu.addAction(tr("Backup Database…"));
+        auto* restoreAct = menu.addAction(tr("Restore Database…"));
         const bool hasAdapter = state_ && state_->adapter();
         runSqlAct->setEnabled(hasAdapter);
         backupAct->setEnabled(hasAdapter);
@@ -664,7 +847,6 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
     const QString schema = item->data(kRoleSchemaName).toString();
     const QString table  = item->data(kRoleTableName).toString();
 
-    // Open / view actions
     auto* openAction = menu.addAction(tr("Open in New Tab"));
     connect(openAction, &QAction::triggered, this, [this, schema, table] {
         emit tableSelected(schema, table);
@@ -677,19 +859,18 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
 
     menu.addSeparator();
 
-    // Copy actions
     auto* copyNameAction = menu.addAction(tr("Copy Table Name"));
     connect(copyNameAction, &QAction::triggered, this, [table] {
         QApplication::clipboard()->setText(table);
     });
 
     const QString selectSql = QStringLiteral("SELECT * FROM %1 LIMIT 100;").arg(table);
-    auto* copySelectAction = menu.addAction(tr("Copy SELECT * FROM..."));
+    auto* copySelectAction = menu.addAction(tr("Copy SELECT * FROM…"));
     connect(copySelectAction, &QAction::triggered, this, [selectSql] {
         QApplication::clipboard()->setText(selectSql);
     });
 
-    auto* copyDdlAction = menu.addAction(tr("Copy CREATE TABLE..."));
+    auto* copyDdlAction = menu.addAction(tr("Copy CREATE TABLE…"));
     connect(copyDdlAction, &QAction::triggered, this, [this, schema, table] {
         if (!state_ || !state_->adapter()) return;
         try {
@@ -706,8 +887,7 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
 
     menu.addSeparator();
 
-    // Truncate
-    auto* truncateAction = menu.addAction(tr("Truncate Table..."));
+    auto* truncateAction = menu.addAction(tr("Truncate Table…"));
     connect(truncateAction, &QAction::triggered, this, [this, schema, table] {
         if (!state_ || !state_->adapter()) return;
         const auto answer = QMessageBox::warning(
@@ -735,8 +915,7 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
         }
     });
 
-    // Drop table
-    auto* dropAction = menu.addAction(tr("Delete Table..."));
+    auto* dropAction = menu.addAction(tr("Delete Table…"));
     connect(dropAction, &QAction::triggered, this, [this, schema, table] {
         if (!state_ || !state_->adapter()) return;
         const auto answer = QMessageBox::warning(
@@ -760,7 +939,6 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
                 sql = "DROP TABLE " + quoteIdentifier(sqlDialect(dt), table.toStdString());
             }
             state_->adapter()->executeRaw(sql);
-            // Refresh sidebar and notify WorkspaceView to close tabs
             loadSchemas();
             emit tableDeleted(schema, table);
         } catch (const GridexError& e) {
@@ -770,8 +948,7 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
 
     menu.addSeparator();
 
-    // Export
-    auto* exportAction = menu.addAction(tr("Export Table..."));
+    auto* exportAction = menu.addAction(tr("Export Table…"));
     connect(exportAction, &QAction::triggered, this, [this, schema, table] {
         if (!state_ || !state_->adapter()) return;
 
@@ -803,8 +980,7 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
         }
     });
 
-    // Import CSV (table-specific)
-    auto* importCsvAct = menu.addAction(tr("Import CSV..."));
+    auto* importCsvAct = menu.addAction(tr("Import CSV…"));
     connect(importCsvAct, &QAction::triggered, this, [this, schema, table] {
         importCsv(schema, table);
     });
@@ -813,7 +989,8 @@ void WorkspaceSidebar::onContextMenuRequested(const QPoint& pos) {
 }
 
 // --------------------------------------------------------------------
-// Run SQL File (script importer)
+// Run SQL File / CSV import / Backup / Restore — carried over verbatim
+// from the pre-A2 sidebar. Backend behaviour is unchanged.
 // --------------------------------------------------------------------
 
 void WorkspaceSidebar::runSqlFile() {
@@ -831,10 +1008,6 @@ void WorkspaceSidebar::runSqlFile() {
     connect(wizard, &QDialog::finished, this, [this] { loadSchemas(); });
     wizard->show();
 }
-
-// --------------------------------------------------------------------
-// Import CSV (single table)
-// --------------------------------------------------------------------
 
 void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
     if (!state_ || !state_->adapter()) return;
@@ -862,7 +1035,6 @@ void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
         return;
     }
 
-    // Fetch table columns to validate header ↔ table alignment.
     std::vector<ColumnInfo> tableCols;
     try {
         const auto schemaOpt = schema.isEmpty() ? std::nullopt
@@ -874,10 +1046,7 @@ void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
         return;
     }
 
-    // Column indexes in target table for each CSV header, by name match.
-    // Missing columns → skip that CSV column entirely. Fewer columns in CSV
-    // than table is fine (unset cols use default/NULL).
-    std::vector<int> colMap;  // size = header.size(); -1 if unmapped
+    std::vector<int> colMap;
     QStringList mappedNames;
     for (const auto& h : header) {
         int idx = -1;
@@ -908,7 +1077,6 @@ void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
         ? quoteIdentifier(dialect, schema.toStdString()) + "." + quoteIdentifier(dialect, table.toStdString())
         : quoteIdentifier(dialect, table.toStdString());
 
-    // Build column list once (only mapped cols, in CSV order).
     std::string colList;
     for (std::size_t i = 0; i < colMap.size(); ++i) {
         if (colMap[i] < 0) continue;
@@ -929,7 +1097,6 @@ void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
             if (i >= static_cast<std::size_t>(fields.size()) || fields[i].isNull()) {
                 values += "NULL";
             } else {
-                // Quote everything as string; DB coerces. Escape '.
                 QString v = fields[i];
                 v.replace('\'', QStringLiteral("''"));
                 values += '\'';
@@ -958,10 +1125,6 @@ void WorkspaceSidebar::importCsv(const QString& schema, const QString& table) {
             tr("Inserted %1 rows with errors:\n\n%2").arg(inserted).arg(errors.join("\n")));
     }
 }
-
-// --------------------------------------------------------------------
-// Backup / Restore — delegates to DatabaseDumpRunner service
-// --------------------------------------------------------------------
 
 void WorkspaceSidebar::backupDatabase() {
     if (!state_ || !state_->adapter()) return;
@@ -1031,7 +1194,6 @@ void WorkspaceSidebar::promptSaveQuery(const QString& sql) {
     if (!ok) return;
 
     AppDatabase::SavedQueryRecord rec;
-    // Generate a simple UUID-like id from timestamp
     const auto ts = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     rec.id         = std::to_string(ts);
@@ -1133,7 +1295,7 @@ void WorkspaceSidebar::onSavedQueryContextMenu(const QPoint& pos) {
             emit loadSavedQueryRequested(sql);
         });
 
-        auto* editAct = menu.addAction(tr("Edit SQL..."));
+        auto* editAct = menu.addAction(tr("Edit SQL…"));
         connect(editAct, &QAction::triggered, this, [this, qid, qname, sql] {
             if (!savedQueryRepo_) return;
             bool ok = false;
@@ -1174,7 +1336,7 @@ void WorkspaceSidebar::onSavedQueryContextMenu(const QPoint& pos) {
     } else if (role == QStringLiteral("group")) {
         const QString groupName = item->data(0, Qt::UserRole + 2).toString();
 
-        auto* renameAct = menu.addAction(tr("Rename Group..."));
+        auto* renameAct = menu.addAction(tr("Rename Group…"));
         connect(renameAct, &QAction::triggered, this, [this, groupName] {
             if (!savedQueryRepo_) return;
             bool ok = false;
@@ -1223,4 +1385,4 @@ void WorkspaceSidebar::onSavedQueryContextMenu(const QPoint& pos) {
     if (!menu.isEmpty()) menu.exec(savedTree_->viewport()->mapToGlobal(pos));
 }
 
-}
+}  // namespace gridex

@@ -183,7 +183,7 @@ private struct DataGridContentView: View {
             Button("Cancel", role: .cancel) {}
             Button("Discard", role: .destructive) {
                 viewModel.discardAllChanges()
-                Task { await viewModel.loadPage(viewModel.currentPage) }
+                Task { await viewModel.reloadAfterStructureChange() }
             }
         } message: {
             Text("Discard all changes?\nTips: You can commit the changes by\n1. Command + S.\n2. Use the top left segment control.")
@@ -203,12 +203,13 @@ private struct DataGridContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .deleteSelectedRows)) { _ in
             viewModel.deleteSelectedRows()
         }
-        // Cmd+R: reload (with warning if pending changes)
+        // Cmd+R: reload (with warning if pending changes). Re-introspects the
+        // schema so external column changes (ADD/DROP COLUMN) take effect.
         .onReceive(NotificationCenter.default.publisher(for: .reloadData)) { _ in
             if viewModel.hasPendingChanges {
                 showDiscardWarning = true
             } else {
-                Task { await viewModel.loadPage(viewModel.currentPage) }
+                Task { await viewModel.reloadAfterStructureChange() }
             }
         }
         // Cmd+F: toggle filter bar

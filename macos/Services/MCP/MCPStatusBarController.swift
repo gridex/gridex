@@ -18,6 +18,10 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
         UserDefaults.standard.bool(forKey: "mcp.enabled")
     }
 
+    private var shouldHideStatusBarIcon: Bool {
+        UserDefaults.standard.bool(forKey: "mcp.hideStatusBarIcon")
+    }
+
     private override init() {
         super.init()
         setupStatusItem()
@@ -25,13 +29,21 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem?.isVisible = true
+        applyStatusBarIconVisibility()
         updateIcon()
         setupMenu()
     }
 
     func refresh() {
+        applyStatusBarIconVisibility()
         updateIcon()
+    }
+
+    private func applyStatusBarIconVisibility() {
+        let isVisible = !shouldHideStatusBarIcon
+        guard statusItem?.isVisible != isVisible else { return }
+        statusItem?.isVisible = isVisible
+        print("[MCP Status Bar] Status bar icon \(isVisible ? "shown" : "hidden")")
     }
 
     private func updateIcon() {
@@ -173,10 +185,14 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
     }
 
     func show() {
-        statusItem?.isVisible = true
+        UserDefaults.standard.set(false, forKey: "mcp.hideStatusBarIcon")
+        applyStatusBarIconVisibility()
+        updateIcon()
     }
 
     func hide() {
-        statusItem?.isVisible = false
+        UserDefaults.standard.set(true, forKey: "mcp.hideStatusBarIcon")
+        applyStatusBarIconVisibility()
+        updateIcon()
     }
 }

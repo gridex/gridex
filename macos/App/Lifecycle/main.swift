@@ -50,6 +50,7 @@ func runMCPServerAsync(modelContainer: ModelContainer) async {
     // Create services
     let connectionManager = ConnectionManager()
     let connectionRepository = SwiftDataConnectionRepository(modelContainer: modelContainer)
+    let keychain = KeychainService()
 
     // Create MCP server with stdio transport for CLI mode
     let mcpServer = MCPServer(
@@ -59,11 +60,28 @@ func runMCPServerAsync(modelContainer: ModelContainer) async {
         transportMode: .stdio
     )
 
-    // Load connections and their MCP modes
+    // Load connections, register their MCP modes, and pre-open DB connections so
+    // tools that require an active adapter (list_tables, query, …) work without
+    // requiring the GUI app to be open. The stdio entrypoint runs in a separate
+    // process from the main GUI, so it cannot share live adapters with it.
     do {
         let configs = try await connectionRepository.fetchAll()
         for config in configs where config.mcpMode != .locked {
             await mcpServer.setConnectionMode(config.mcpMode, for: config.id)
+
+            let password = (try? keychain.loadPassword(connectionId: config.id)) ?? nil
+            let sshPassword = config.sshConfig != nil
+                ? ((try? keychain.loadSSHPassword(connectionId: config.id)) ?? nil)
+                : nil
+            do {
+                _ = try await connectionManager.connect(
+                    config: config,
+                    password: password,
+                    sshPassword: sshPassword
+                )
+            } catch {
+                fputs("Warning: Failed to open connection '\(config.name)': \(error)\n", stderr)
+            }
         }
     } catch {
         fputs("Warning: Failed to load connections: \(error)\n", stderr)

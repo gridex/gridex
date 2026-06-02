@@ -5,24 +5,24 @@
 namespace gridex {
 
 SqlHighlighter::SqlHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {
-    // Keyword format — blue bold.
-    keywordFmt_.setForeground(QColor(56, 118, 211));
-    keywordFmt_.setFontWeight(QFont::Bold);
+    // gx tokens — see plans/ui-refactor-2026.md "Design tokens" table.
+    // Keyword — violet (--gx-tk-kw #df99ef).
+    keywordFmt_.setForeground(QColor(QStringLiteral("#df99ef")));
 
-    // Function format — purple.
-    functionFmt_.setForeground(QColor(136, 57, 195));
+    // Function — teal (--gx-tk-fn #5edada).
+    functionFmt_.setForeground(QColor(QStringLiteral("#5edada")));
 
-    // Type format — teal.
-    typeFmt_.setForeground(QColor(0, 128, 128));
+    // Type — share function teal; types read as built-in callables in gx.
+    typeFmt_.setForeground(QColor(QStringLiteral("#5edada")));
 
-    // String format — green.
-    stringFmt_.setForeground(QColor(80, 161, 79));
+    // String — green (--gx-tk-str #8cda8f).
+    stringFmt_.setForeground(QColor(QStringLiteral("#8cda8f")));
 
-    // Number format — orange.
-    numberFmt_.setForeground(QColor(206, 125, 30));
+    // Number — amber (--gx-tk-num #fab45f).
+    numberFmt_.setForeground(QColor(QStringLiteral("#fab45f")));
 
-    // Comment format — gray italic.
-    commentFmt_.setForeground(QColor(140, 140, 140));
+    // Comment — muted italic (--gx-tk-com #646a70).
+    commentFmt_.setForeground(QColor(QStringLiteral("#646a70")));
     commentFmt_.setFontItalic(true);
 
     // SQL keywords (case insensitive).

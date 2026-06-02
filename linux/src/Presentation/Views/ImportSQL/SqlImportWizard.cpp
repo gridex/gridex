@@ -1,6 +1,7 @@
 #include "Presentation/Views/ImportSQL/SqlImportWizard.h"
 
 #include <QCheckBox>
+#include <QColor>
 #include <QFileDialog>
 #include <QFile>
 #include <QHBoxLayout>
@@ -62,6 +63,9 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     setMinimumSize(700, 560);
     setAttribute(Qt::WA_DeleteOnClose, false);
 
+    // gxImport* / QLabel[gxRole="meta"] selectors live in
+    // resources/style-gx{,-light}.qss under "SQL import wizard".
+
     auto* root = new QVBoxLayout(this);
     root->setSpacing(8);
     root->setContentsMargins(12, 12, 12, 12);
@@ -69,6 +73,7 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     // ---- File row ----
     auto* fileRow = new QHBoxLayout;
     fileLabel_ = new QLabel(tr("(no file selected)"), this);
+    fileLabel_->setObjectName(QStringLiteral("gxImportFile"));
     fileLabel_->setWordWrap(false);
     fileLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     browseBtn_ = new QPushButton(tr("Browse…"), this);
@@ -81,8 +86,8 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     auto* metaRow = new QHBoxLayout;
     dialectLabel_   = new QLabel(this);
     stmtCountLabel_ = new QLabel(this);
-    dialectLabel_->setStyleSheet(QStringLiteral("color: gray; font-size: 11px;"));
-    stmtCountLabel_->setStyleSheet(QStringLiteral("color: gray; font-size: 11px;"));
+    dialectLabel_->setProperty("gxRole", QStringLiteral("meta"));
+    stmtCountLabel_->setProperty("gxRole", QStringLiteral("meta"));
     metaRow->addWidget(dialectLabel_);
     metaRow->addStretch();
     metaRow->addWidget(stmtCountLabel_);
@@ -94,9 +99,9 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     root->addWidget(previewLbl);
 
     previewEdit_ = new QPlainTextEdit(this);
+    previewEdit_->setObjectName(QStringLiteral("gxImportPreview"));
     previewEdit_->setReadOnly(true);
     previewEdit_->setMaximumBlockCount(0);
-    previewEdit_->setFont(QFont(QStringLiteral("Monospace"), 10));
     previewEdit_->setMinimumHeight(160);
     root->addWidget(previewEdit_, 2);
 
@@ -112,6 +117,7 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
 
     // ---- Progress ----
     progressBar_ = new QProgressBar(this);
+    progressBar_->setObjectName(QStringLiteral("gxImportBar"));
     progressBar_->setRange(0, 100);
     progressBar_->setValue(0);
     progressBar_->setVisible(false);
@@ -127,6 +133,7 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     root->addWidget(errLbl);
 
     errorList_ = new QListWidget(this);
+    errorList_->setObjectName(QStringLiteral("gxImportErrors"));
     errorList_->setMaximumHeight(120);
     errorList_->setSelectionMode(QAbstractItemView::SingleSelection);
     root->addWidget(errorList_);
@@ -136,6 +143,7 @@ SqlImportWizard::SqlImportWizard(IDatabaseAdapter* adapter,
     btnRow->addStretch();
     closeBtn_  = new QPushButton(tr("Close"), this);
     importBtn_ = new QPushButton(tr("Import"), this);
+    importBtn_->setProperty("gxKind", QStringLiteral("primary"));
     importBtn_->setDefault(true);
     importBtn_->setEnabled(false);
     closeBtn_->setCursor(Qt::PointingHandCursor);
@@ -290,7 +298,7 @@ void SqlImportWizard::onStatementDone(int index, int total, const QString& error
             : error;
         auto* item = new QListWidgetItem(label);
         item->setData(Qt::UserRole, line);
-        item->setForeground(Qt::red);
+        item->setForeground(QColor("#e04b4a"));
         errorList_->addItem(item);
     }
 }

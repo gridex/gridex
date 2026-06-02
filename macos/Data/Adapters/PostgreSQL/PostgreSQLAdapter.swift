@@ -28,31 +28,7 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let username = config.username ?? "postgres"
         let database = config.database ?? username
 
-        let tlsConfig: PostgresClient.Configuration.TLS
-        if config.sslEnabled {
-            var tls = TLSConfiguration.makeClientConfiguration()
-
-            // Load client certificate and key for mTLS (e.g., Teleport)
-            if let certPath = config.sslCertPath, !certPath.isEmpty,
-               let keyPath = config.sslKeyPath, !keyPath.isEmpty {
-                let cert = try NIOSSLCertificate.fromPEMFile(certPath)
-                let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
-                tls.certificateChain = cert.map { .certificate($0) }
-                tls.privateKey = .privateKey(key)
-            }
-
-            // Load CA certificate for server verification
-            if let caPath = config.sslCACertPath, !caPath.isEmpty {
-                tls.trustRoots = .file(caPath)
-                tls.certificateVerification = .fullVerification
-            } else {
-                tls.certificateVerification = .none
-            }
-
-            tlsConfig = .prefer(tls)
-        } else {
-            tlsConfig = .disable
-        }
+        let tlsConfig = try Self.makeTLSConfig(for: config.effectiveSSLMode, config: config)
 
         let pgConfig = PostgresClient.Configuration(
             host: host,
@@ -66,12 +42,55 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let newClient = PostgresClient(configuration: pgConfig)
         self.client = newClient
 
-        // PostgresClient requires run() in a background task
-        self.clientTask = Task { await newClient.run() }
+        // Querying before PostgresClient.run() is scheduled surfaces a bare
+        // `_ConnectionPoolModule.ConnectionPoolError` that hides the real cause;
+        // reproduces on slow handshakes (e.g. HighGo Secure login-audit NOTICE).
+        // The continuation guarantees the spawned Task body has been entered;
+        // the trailing yield lets run() reach its first suspension point.
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            self.clientTask = Task {
+                cont.resume()
+                await newClient.run()
+            }
+        }
+        await Task.yield()
 
-        // Verify the connection works
         _ = try await newClient.query("SELECT 1")
         isConnected = true
+    }
+
+    private static func makeTLSConfig(
+        for mode: SSLMode,
+        config: ConnectionConfig
+    ) throws -> PostgresClient.Configuration.TLS {
+        if mode == .disabled { return .disable }
+
+        var tls = TLSConfiguration.makeClientConfiguration()
+
+        // mTLS client cert (e.g. Teleport).
+        if let certPath = config.sslCertPath, !certPath.isEmpty,
+           let keyPath = config.sslKeyPath, !keyPath.isEmpty {
+            let cert = try NIOSSLCertificate.fromPEMFile(certPath)
+            let key = try NIOSSLPrivateKey(file: keyPath, format: .pem)
+            tls.certificateChain = cert.map { .certificate($0) }
+            tls.privateKey = .privateKey(key)
+        }
+
+        // libpq semantics: PREFERRED/REQUIRED encrypt only; VERIFY_CA verifies
+        // the chain; VERIFY_IDENTITY also verifies the hostname.
+        switch mode {
+        case .verifyCA, .verifyIdentity:
+            if let caPath = config.sslCACertPath, !caPath.isEmpty {
+                tls.trustRoots = .file(caPath)
+            }
+            tls.certificateVerification = (mode == .verifyIdentity) ? .fullVerification : .noHostnameVerification
+        default:
+            tls.certificateVerification = .none
+        }
+
+        // .prefer falls back to plaintext when the server refuses TLS;
+        // every stricter mode requires a successful TLS handshake.
+        return (mode == .preferred) ? .prefer(tls) : .require(tls)
     }
 
     func disconnect() async throws {
@@ -250,14 +269,19 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
 
     func listTables(schema: String?) async throws -> [TableInfo] {
         let schemaFilter = schema ?? "public"
+        // relkind 'r' = ordinary table, 'p' = partitioned table parent.
+        // `NOT relispartition` excludes partition children — they show up as
+        // ordinary 'r' rows but the parent already represents them in the UI;
+        // including them would double-count rows (regression vs the original
+        // information_schema query, which only returned 'BASE TABLE' parents).
         let result = try await executeParameterized(sql: """
-            SELECT t.table_name,
-                   (SELECT reltuples::bigint FROM pg_class c
-                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                    WHERE c.relname = t.table_name AND n.nspname = $1)
-            FROM information_schema.tables t
-            WHERE t.table_schema = $1 AND t.table_type = 'BASE TABLE'
-            ORDER BY t.table_name
+            SELECT c.relname, NULLIF(c.reltuples::bigint, -1)
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = $1
+              AND c.relkind IN ('r', 'p')
+              AND NOT c.relispartition
+            ORDER BY c.relname
             """, params: [schemaFilter])
         return result.rows.compactMap { row -> TableInfo? in
             guard let name = row.first?.stringValue else { return nil }
@@ -841,6 +865,22 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
                 return .uuid(try cell.decode(UUID.self))
             case .json, .jsonb:
                 return .json(try cell.decode(String.self))
+            case .textArray, .varcharArray, .bpcharArray, .nameArray:
+                return .array(try cell.decode([String].self).map { .string($0) })
+            case .boolArray:
+                return .array(try cell.decode([Bool].self).map { .boolean($0) })
+            case .int2Array:
+                return .array(try cell.decode([Int16].self).map { .integer(Int64($0)) })
+            case .int4Array:
+                return .array(try cell.decode([Int32].self).map { .integer(Int64($0)) })
+            case .int8Array:
+                return .array(try cell.decode([Int64].self).map { .integer($0) })
+            case .float4Array:
+                return .array(try cell.decode([Float].self).map { .double(Double($0)) })
+            case .float8Array:
+                return .array(try cell.decode([Double].self).map { .double($0) })
+            case .uuidArray:
+                return .array(try cell.decode([UUID].self).map { .uuid($0) })
             default:
                 // Try String decoding, but validate it's not binary garbage
                 if let s = try? cell.decode(String.self),

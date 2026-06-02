@@ -13,7 +13,11 @@ class AppDatabase;
 class AppConnectionRepository;
 class ConnectionListViewModel;
 class ConnectionSidebar;
+class GxActivityBar;
+class GxStatusBar;
+class GxToolbar;
 class HomeBrandingPanel;
+class SidebarPanelStack;
 class MCPConnectionProvider;
 class MCPWindow;
 class SecretStore;
@@ -49,6 +53,7 @@ private slots:
 
 private:
     void setupMenuBar();
+    void setupToolbar();
     void setupCentralLayout();
     void setupStatusBar();
     void wireBackend();
@@ -66,6 +71,10 @@ private:
     std::unique_ptr<mcp::MCPServer>         mcpServer_;
     MCPWindow*                              mcpWindow_ = nullptr;  // owned by Qt parent when shown
 
+    // 36px IDE-style toolbar between menubar and central widget.
+    GxToolbar* toolbar_     = nullptr;
+    QLabel*    enginePill_  = nullptr;
+
     // Auto-update (AppImage self-replace; no-op for other distros).
     std::unique_ptr<UpdateService> updateService_;
 
@@ -73,11 +82,13 @@ private:
     QAction* newQueryAction_    = nullptr;
     QAction* disconnectAction_  = nullptr;
 
-    // UI (owned by Qt parent)
-    QStackedWidget*    stack_ = nullptr;
-    HomeBrandingPanel* brandPanel_ = nullptr;
+    // Two-page stack: Page 0 = Welcome, Page 1 = Workspace.
+    QStackedWidget*    stack_            = nullptr;
+    HomeBrandingPanel* brandPanel_       = nullptr;
     ConnectionSidebar* connectionsPanel_ = nullptr;
-    WorkspaceView*     workspaceView_ = nullptr;
+    GxActivityBar*     activityBar_      = nullptr;
+    SidebarPanelStack* sidebarStack_     = nullptr;
+    WorkspaceView*     workspaceView_    = nullptr;
 };
 
 }

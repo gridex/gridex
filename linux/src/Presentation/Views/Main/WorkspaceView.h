@@ -39,11 +39,26 @@ public:
                            std::shared_ptr<AppDatabase> appDb       = nullptr,
                            QWidget*                     parent      = nullptr);
 
+    // Detach the internal Schema sidebar from WorkspaceView's splitter so
+    // a host (MainWindow) can mount it inside the activity-bar-driven
+    // SidebarPanelStack. After this returns, WorkspaceView's splitter has
+    // 2 children (main + details); all internal signal wiring against
+    // `sidebar_` remains intact — the pointer doesn't change.
+    WorkspaceSidebar* takeSidebar();
+
 public slots:
     void onNewQueryTab();
     void onNewErDiagramTab();
     void toggleDetailsPanel();
     void toggleSidebar();
+
+    // Toolbar-driven actions that target the *current* tab. Each one
+    // looks up mainStack_->currentWidget(), casts to the expected view,
+    // and routes the trigger. A no-op when the cast fails (e.g. user is
+    // on a DataGridView while Run is pressed).
+    void triggerActiveRun();
+    void triggerActiveExport();
+    void openDatabaseSwitcher();
 
 signals:
     void disconnectRequested();

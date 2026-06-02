@@ -93,7 +93,7 @@ actor MCPServer: StdioTransportDelegate {
         case "initialize":
             response = await handleInitialize(request)
 
-        case "initialized":
+        case "initialized", "notifications/initialized":
             // Client acknowledges initialization, no response needed
             return
 
@@ -102,6 +102,15 @@ actor MCPServer: StdioTransportDelegate {
 
         case "tools/call":
             response = await handleToolCall(request)
+
+        case "prompts/list":
+            response = JSONRPCResponse(id: request.id, result: .object(["prompts": .array([])]))
+
+        case "resources/list":
+            response = JSONRPCResponse(id: request.id, result: .object(["resources": .array([])]))
+
+        case "resources/templates/list":
+            response = JSONRPCResponse(id: request.id, result: .object(["resourceTemplates": .array([])]))
 
         case "ping":
             response = JSONRPCResponse(id: request.id, result: .object(["pong": .bool(true)]))

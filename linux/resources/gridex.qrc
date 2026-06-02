@@ -4,5 +4,6 @@
         <file>logo.png</file>
         <file>style-dark.qss</file>
         <file>style-light.qss</file>
+        <file>style-gx.qss</file>
     </qresource>
 </RCC>

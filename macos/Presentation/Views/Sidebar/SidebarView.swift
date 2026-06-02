@@ -342,6 +342,17 @@ struct SidebarItemRow: View {
         .tag(item.type)
         .contentShape(Rectangle())
         .pointerCursor()
+        // Double-click on a table/view forces a refresh of the active grid
+        // (re-introspects schema so external ADD/DROP COLUMN takes effect).
+        .onTapGesture(count: 2) {
+            switch item.type {
+            case .table(let name), .view(let name):
+                appState.openTable(name: name, schema: nil)
+                NotificationCenter.default.post(name: .reloadData, object: nil)
+            default:
+                break
+            }
+        }
         .onTapGesture {
             appState.selectedSidebarItem = item.type
             // Open table/view on single click

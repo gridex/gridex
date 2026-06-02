@@ -33,6 +33,7 @@ struct GeneralSettingsView: View {
     @AppStorage("general.autoRefreshSidebar") private var autoRefreshSidebar = true
     @AppStorage("general.refreshInterval") private var refreshInterval = 300 // seconds
     @AppStorage("general.showQueryLog") private var showQueryLog = false
+    @AppStorage("mcp.hideStatusBarIcon") private var hideStatusBarIcon = false
 
     var body: some View {
         Form {
@@ -61,9 +62,18 @@ struct GeneralSettingsView: View {
             Section("Query") {
                 Toggle("Show query log panel by default", isOn: $showQueryLog)
             }
+
+            Section("Status Bar") {
+                Toggle("Hide status bar icon", isOn: $hideStatusBarIcon)
+            }
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: hideStatusBarIcon) { _, _ in
+            Task { @MainActor in
+                MCPStatusBarController.shared.refresh()
+            }
+        }
     }
 }
 
@@ -258,7 +268,15 @@ struct AISettingsView: View {
             try? await repository.update(updated)
             let apiKey = (try? keychain.load(key: ProviderEditSheet.keychainKey(id: p.id))) ?? ""
             if enabled {
-                await DependencyContainer.shared.providerRegistry.register(updated, apiKey: apiKey)
+                // Pass the OAuth service unconditionally — non-ChatGPT factory
+                // branches ignore it, ChatGPT requires it (otherwise the
+                // factory hits preconditionFailure when re-enabling a
+                // ChatGPT provider).
+                await DependencyContainer.shared.providerRegistry.register(
+                    updated,
+                    apiKey: apiKey,
+                    chatGPTOAuthService: DependencyContainer.shared.chatGPTOAuthService
+                )
             } else {
                 await DependencyContainer.shared.providerRegistry.unregister(updated.name)
             }
@@ -269,7 +287,11 @@ struct AISettingsView: View {
     private func delete(_ p: ProviderConfig) {
         Task {
             try? await repository.delete(p.id)
+            // Clean up both credential variants — only one is set in practice,
+            // but deleting both is cheap and avoids leaks if the type was ever
+            // changed from API-key to ChatGPT (or vice versa) for the same id.
             try? keychain.delete(key: ProviderEditSheet.keychainKey(id: p.id))
+            try? keychain.deleteChatGPTTokens(providerId: p.id)
             await DependencyContainer.shared.providerRegistry.unregister(p.name)
             await MainActor.run { reload() }
         }

@@ -376,7 +376,7 @@ struct ConnectionFormView: View {
         port = String(config.port ?? databaseType.defaultPort)
         database = config.database ?? ""
         username = config.username ?? ""
-        sslMode = config.sslEnabled ? .required : .preferred
+        sslMode = config.effectiveSSLMode
         colorTag = config.colorTag ?? .blue
         sqliteFilePath = config.filePath ?? ""
 
@@ -450,6 +450,7 @@ struct ConnectionFormView: View {
             database: isFileDB ? nil : (database.isEmpty ? nil : database),
             username: (isFileDB || databaseType == .redis) ? nil : username,
             sslEnabled: isFileDB ? false : sslEnabled,
+            sslMode: isFileDB ? nil : sslMode,
             colorTag: colorTag,
             group: existingConfig?.group,
             sslKeyPath: sslKeyPath.isEmpty ? nil : sslKeyPath,

@@ -11,6 +11,9 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
     case gemini
     case ollama
 
+    // Subscription-based access via OAuth (own provider class)
+    case chatGPT          = "chatgpt"
+
     // OpenAI-compatible family (all use OpenAIProvider)
     case openAI           = "openai"
     case azureOpenAI      = "azure-openai"
@@ -35,6 +38,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic:         return "Anthropic (Claude)"
         case .gemini:            return "Google Gemini"
         case .ollama:            return "Ollama (Local)"
+        case .chatGPT:           return "OpenAI (Sign in)"
         case .openAI:            return "OpenAI"
         case .azureOpenAI:       return "Azure OpenAI"
         case .groq:              return "Groq"
@@ -57,6 +61,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic: return .anthropic
         case .gemini:    return .gemini
         case .ollama:    return .local
+        case .chatGPT:   return .subscription
         case .openAI, .azureOpenAI, .groq, .deepseek, .mistral, .xAI,
              .perplexity, .openRouter, .together, .fireworks, .dashscope,
              .dashscopeCoding, .openAICompatible:
@@ -68,6 +73,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case anthropic     = "Anthropic"
         case gemini        = "Google"
         case openAICompat  = "OpenAI-Compatible"
+        case subscription  = "Subscription / OAuth"
         case local         = "Local"
     }
 
@@ -76,6 +82,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic:         return "https://api.anthropic.com/v1"
         case .gemini:            return "https://generativelanguage.googleapis.com/v1beta/openai"
         case .ollama:            return "http://localhost:11434"
+        case .chatGPT:           return "https://chatgpt.com/backend-api/codex"
         case .openAI:            return "https://api.openai.com/v1"
         case .azureOpenAI:       return "https://YOUR-RESOURCE.openai.azure.com/openai"
         case .groq:              return "https://api.groq.com/openai/v1"
@@ -97,6 +104,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic:         return "claude-sonnet-4-6"
         case .gemini:            return "gemini-2.5-flash"
         case .ollama:            return "llama3"
+        case .chatGPT:           return "gpt-5.4"
         case .openAI:            return "gpt-4o"
         case .azureOpenAI:       return "gpt-4o"
         case .groq:              return "llama-3.3-70b-versatile"
@@ -114,7 +122,9 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
     }
 
     var requiresAPIKey: Bool {
-        self != .ollama
+        // .chatGPT uses OAuth tokens (Keychain blob), not a long-lived API key.
+        // .ollama is local and unauthenticated.
+        self != .ollama && self != .chatGPT
     }
 
     var allowsPrivateHosts: Bool {
@@ -136,6 +146,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic:                     return "a.circle.fill"
         case .gemini:                        return "g.circle.fill"
         case .ollama:                        return "desktopcomputer"
+        case .chatGPT:                       return "person.crop.circle.badge.checkmark"
         case .openAI:                        return "bubble.left.and.text.bubble.right.fill"
         case .azureOpenAI:                   return "cloud.fill"
         case .groq:                          return "bolt.circle.fill"
@@ -157,6 +168,11 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .anthropic:         return ["claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-6"]
         case .gemini:            return ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
         case .ollama:            return ["llama3", "codellama", "mistral"]
+        // ChatGPT model slugs are owned by the Responses API and the only
+        // authoritative list comes from `/backend-api/codex/models`. Hard-coding
+        // names here would invent IDs that don't exist server-side; if the live
+        // fetch fails the user must type a slug manually.
+        case .chatGPT:           return []
         case .openAI:            return ["gpt-4o", "gpt-4o-mini", "o1", "o1-mini"]
         case .azureOpenAI:       return ["gpt-4o", "gpt-4o-mini"]
         case .groq:              return ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]

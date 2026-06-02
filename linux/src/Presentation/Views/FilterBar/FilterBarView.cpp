@@ -33,23 +33,30 @@ bool needsValue(FilterOperator op) {
 
 }
 
+// FilterBarView chrome lives in resources/style-gx{,-light}.qss under the
+// "Filter bar" section.
+
 FilterBarView::FilterBarView(QWidget* parent) : QWidget(parent) {
     buildUi();
 }
 
 void FilterBarView::buildUi() {
+    setObjectName(QStringLiteral("FilterBarView"));
+    setAttribute(Qt::WA_StyledBackground, true);
     setProperty("compact", true);  // shrinks descendant buttons/inputs
     auto* h = new QHBoxLayout(this);
     h->setContentsMargins(10, 4, 10, 4);
     h->setSpacing(6);
 
     columnCombo_ = new QComboBox(this);
+    columnCombo_->setObjectName(QStringLiteral("FilterColumn"));
     columnCombo_->setMinimumWidth(130);
     columnCombo_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
     columnCombo_->addItem(tr("Any column"));
     h->addWidget(columnCombo_);
 
     operatorCombo_ = new QComboBox(this);
+    operatorCombo_->setObjectName(QStringLiteral("FilterOperator"));
     operatorCombo_->setFixedWidth(110);
     for (int i = 0; i < kOpsCount; ++i) {
         operatorCombo_->addItem(QString::fromUtf8(kOps[i].label));
@@ -59,17 +66,20 @@ void FilterBarView::buildUi() {
     h->addWidget(operatorCombo_);
 
     valueEdit_ = new QLineEdit(this);
+    valueEdit_->setObjectName(QStringLiteral("FilterValue"));
     valueEdit_->setPlaceholderText(tr("value"));
     valueEdit_->setMinimumWidth(160);
     connect(valueEdit_, &QLineEdit::returnPressed, this, &FilterBarView::onApply);
     h->addWidget(valueEdit_, 1);
 
     applyBtn_ = new QPushButton(tr("Apply"), this);
+    applyBtn_->setObjectName(QStringLiteral("FilterApply"));
     applyBtn_->setCursor(Qt::PointingHandCursor);
     connect(applyBtn_, &QPushButton::clicked, this, &FilterBarView::onApply);
     h->addWidget(applyBtn_);
 
     clearBtn_ = new QPushButton(tr("Clear"), this);
+    clearBtn_->setObjectName(QStringLiteral("FilterClear"));
     clearBtn_->setCursor(Qt::PointingHandCursor);
     connect(clearBtn_, &QPushButton::clicked, this, &FilterBarView::onClear);
     h->addWidget(clearBtn_);

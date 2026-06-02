@@ -94,13 +94,15 @@ Expose any saved connection to MCP clients (Claude Desktop, Cursor, custom agent
   <img src="assets/mcp.png" alt="MCP Server configuration" width="100%">
 </p>
 
-**13 tools across 3 permission tiers:**
+**15 tools across 5 permission tiers:**
 
 | Tier | Tools | When it runs |
 |------|-------|--------------|
-| **Read** (metadata) | `list_connections`, `list_schemas`, `list_tables`, `describe_table`, `list_relationships`, `get_sample_rows` | Always allowed for enabled connections |
-| **Read** (query) | `query`, `explain_query`, `search_across_tables` | Allowed in `read_only`+ modes; SQL sanitizer rejects write statements |
-| **Write** (mutations) | `insert_rows`, `update_rows`, `delete_rows`, `execute_write_query` | Only in `read_write` mode; row-count estimator flags bulk changes; user approval required |
+| **Schema** | `list_connections`, `list_schemas`, `list_tables`, `describe_table`, `list_relationships`, `get_sample_rows` | Always allowed for enabled connections |
+| **Read** | `query`, `explain_query`, `search_across_tables` | Allowed in `read_only`+ modes; SQL sanitizer rejects write statements |
+| **Write** | `insert_rows`, `update_rows`, `delete_rows`, `execute_write_query` | Only in `read_write` mode; row-count estimator flags bulk changes; user approval required |
+| **DDL** | (future schema migration tools) | Requires `read_write` + explicit user approval |
+| **Advanced** | (future admin tools) | Requires explicit user approval |
 
 **Security layers** in [`macos/Services/MCP/Security/`](macos/Services/MCP/Security/):
 

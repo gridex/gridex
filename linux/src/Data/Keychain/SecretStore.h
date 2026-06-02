@@ -53,6 +53,17 @@ public:
         return load("ai.apikey." + std::string(provider));
     }
 
+    // ChatGPT OAuth token bundle (JSON-serialized — see ChatGPTTokenBundle).
+    void saveChatGPTTokens(std::string_view providerKey, std::string_view tokensJson) {
+        save("ai.chatgpt.tokens." + std::string(providerKey), tokensJson);
+    }
+    std::optional<std::string> loadChatGPTTokens(std::string_view providerKey) {
+        return load("ai.chatgpt.tokens." + std::string(providerKey));
+    }
+    void deleteChatGPTTokens(std::string_view providerKey) {
+        remove("ai.chatgpt.tokens." + std::string(providerKey));
+    }
+
 private:
     std::string serviceName_;
 };

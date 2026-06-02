@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(gridex
-    VERSION 0.1.0
+    VERSION 0.3.0
     DESCRIPTION "Gridex — AI-Native Database IDE (Linux)"
     LANGUAGES CXX
 )
@@ -23,6 +23,16 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Concurrent Svg)
 
 qt_standard_project_setup()
+
+# nlohmann/json — header-only, fetched once at the top so any subdirectory
+# (Data, Services, …) can link nlohmann_json::nlohmann_json without
+# worrying about which add_subdirectory runs first.
+include(FetchContent)
+FetchContent_Declare(json
+    URL      https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+)
+FetchContent_MakeAvailable(json)
 
 option(GRIDEX_BUILD_TESTS "Build smoke tests" ON)
 

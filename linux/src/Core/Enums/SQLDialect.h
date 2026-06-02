@@ -12,6 +12,7 @@ enum class SQLDialect {
     Redis,
     MongoDB,
     MSSQL,
+    ClickHouse,
 };
 
 inline std::string quoteIdentifier(SQLDialect dialect, std::string_view identifier) {
@@ -33,6 +34,10 @@ inline std::string quoteIdentifier(SQLDialect dialect, std::string_view identifi
             escapeWith('"');
             return out;
         case SQLDialect::MySQL:
+        case SQLDialect::ClickHouse:
+            // ClickHouse accepts both backticks and double quotes; backticks
+            // are unambiguous since CH treats double-quoted strings as
+            // string literals when ANSI mode is off.
             escapeWith('`');
             return out;
         case SQLDialect::MSSQL: {
@@ -51,6 +56,10 @@ inline std::string quoteIdentifier(SQLDialect dialect, std::string_view identifi
     return std::string(identifier);
 }
 
+inline bool sqlDialectSupportsDoubleQuoted(SQLDialect dialect) {
+    return dialect == SQLDialect::PostgreSQL || dialect == SQLDialect::SQLite;
+}
+
 inline std::string parameterPlaceholder(SQLDialect dialect, int index) {
     switch (dialect) {
         case SQLDialect::PostgreSQL:
@@ -61,6 +70,7 @@ inline std::string parameterPlaceholder(SQLDialect dialect, int index) {
         case SQLDialect::SQLite:
         case SQLDialect::Redis:
         case SQLDialect::MongoDB:
+        case SQLDialect::ClickHouse:
             return "?";
     }
     return "?";

@@ -11,11 +11,13 @@
 #include <QPushButton>
 #include <QSpinBox>
 #include <QString>
+#include <QStyle>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include "Core/Enums/SSLMode.h"
+#include "Presentation/Views/Chrome/GxIcons.h"
 
 namespace gridex {
 
@@ -25,7 +27,7 @@ QString qs(const std::string& s) { return QString::fromUtf8(s.c_str(), static_ca
 std::string st(const QString& s) { return s.toStdString(); }
 
 constexpr int kLabelWidth = 110;
-constexpr int kRowSpacing = 10;
+constexpr int kRowSpacing = 4;
 
 // One labeled form row: fixed-width label on the left, content on the right.
 QWidget* makeRow(const QString& label, QWidget* content, QWidget* parent) {
@@ -55,6 +57,10 @@ ConnectionFormDialog::ConnectionFormDialog(QWidget* parent) : QDialog(parent) {
     setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_TranslucentBackground, false);
 
+    // QFrame#ConnectionFormCard + QLabel#ConnectionFormHeader styling is
+    // defined in resources/style-gx{,-light}.qss so the dialog tracks the
+    // active theme.
+
     buildUi();
     applyLayoutForType(DatabaseType::PostgreSQL);
     updateButtonStates();
@@ -83,9 +89,11 @@ void ConnectionFormDialog::buildUi() {
 
     // Title bar inside the card for visual anchor (matches macOS sheet header).
     auto* header = new QLabel(tr("Connection"), card);
+    header->setObjectName(QStringLiteral("ConnectionFormHeader"));
     root->addWidget(header);
     auto* headerDiv = new QFrame(card);
     headerDiv->setFrameShape(QFrame::HLine);
+    headerDiv->setObjectName(QStringLiteral("gxConnDivider"));
     root->addWidget(headerDiv);
     root->addSpacing(4);
 
@@ -266,7 +274,9 @@ void ConnectionFormDialog::buildUi() {
         h->addWidget(makeSslField(sslKeyPathEdit_,  tr("Key..."),  0), 1);
         h->addWidget(makeSslField(sslCertPathEdit_, tr("Cert..."), 1), 1);
         h->addWidget(makeSslField(sslCAPathEdit_,   tr("CA Cert..."), 2), 1);
-        auto* clearBtn = new QPushButton(QStringLiteral("−"), sp);
+        auto* clearBtn = new QPushButton(sp);
+        clearBtn->setIcon(GxIcons::glyph("x"));
+        clearBtn->setIconSize(QSize(12, 12));
         clearBtn->setFixedSize(28, 24);
         clearBtn->setToolTip(tr("Clear SSL keys"));
         connect(clearBtn, &QPushButton::clicked, this, &ConnectionFormDialog::onClearSSLKeys);
@@ -283,6 +293,7 @@ void ConnectionFormDialog::buildUi() {
 
         auto* div = new QFrame(sshSection_);
         div->setFrameShape(QFrame::HLine);
+        div->setObjectName(QStringLiteral("gxConnDivider"));
         sv->addWidget(div);
 
         // SSH Host + Port
@@ -348,6 +359,7 @@ void ConnectionFormDialog::buildUi() {
 
     // --- Test result label ---
     testResult_ = new QLabel(this);
+    testResult_->setObjectName(QStringLiteral("gxConnTestResult"));
     testResult_->setVisible(false);
     testResult_->setWordWrap(true);
     root->addWidget(testResult_);
@@ -355,6 +367,7 @@ void ConnectionFormDialog::buildUi() {
     // --- Divider ---
     auto* divider = new QFrame(this);
     divider->setFrameShape(QFrame::HLine);
+    divider->setObjectName(QStringLiteral("gxConnDivider"));
     root->addWidget(divider);
 
     // --- Bottom bar: [Over SSH]                 [Save] [Test] [Connect] ---
@@ -372,6 +385,7 @@ void ConnectionFormDialog::buildUi() {
     connect(testBtn_, &QPushButton::clicked, this, &ConnectionFormDialog::onTestClicked);
     bottom->addWidget(testBtn_);
     connectBtn_ = new QPushButton(tr("Connect"), this);
+    connectBtn_->setProperty("gxKind", QStringLiteral("primary"));
     connectBtn_->setDefault(true);
     connect(connectBtn_, &QPushButton::clicked, this, &ConnectionFormDialog::onConnectClicked);
     bottom->addWidget(connectBtn_);
@@ -489,9 +503,10 @@ void ConnectionFormDialog::updateButtonStates() {
 
 void ConnectionFormDialog::showTestResult(bool success, const QString& detail) {
     testResult_->setVisible(true);
-    testResult_->setStyleSheet(success
-                                   ? "color: #2a9d3e; font-size: 12px;"
-                                   : "color: #b94b4b; font-size: 12px;");
+    testResult_->setProperty("gxText", success ? QStringLiteral("success")
+                                               : QStringLiteral("danger"));
+    testResult_->style()->unpolish(testResult_);
+    testResult_->style()->polish(testResult_);
     testResult_->setText((success ? tr("✓ ") : tr("✗ ")) + detail);
 }
 

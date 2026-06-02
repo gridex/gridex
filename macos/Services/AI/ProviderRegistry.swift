@@ -17,8 +17,17 @@ actor ProviderRegistry {
     private var entries: [String: Entry] = [:]
 
     /// Register or replace a provider by name.
-    func register(_ config: ProviderConfig, apiKey: String) {
-        let service = ProviderFactory.make(config: config, apiKey: apiKey)
+    /// Pass `chatGPTOAuthService` when `config.type == .chatGPT`; ignored otherwise.
+    func register(
+        _ config: ProviderConfig,
+        apiKey: String,
+        chatGPTOAuthService: ChatGPTOAuthService? = nil
+    ) {
+        let service = ProviderFactory.make(
+            config: config,
+            apiKey: apiKey,
+            chatGPTOAuthService: chatGPTOAuthService
+        )
         entries[config.name] = Entry(config: config, service: service)
     }
 

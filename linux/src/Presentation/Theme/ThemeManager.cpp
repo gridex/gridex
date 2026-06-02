@@ -24,20 +24,50 @@ ThemeManager::ThemeManager(QObject* parent) : QObject(parent) {
 void ThemeManager::apply(QApplication* app) {
     app_ = app;
 
+    // The legacy Phase-2 palette is still reachable via `--legacy-theme`
+    // for A/B comparison during the UI refactor.
+    const bool useLegacy = app && app->arguments().contains(QStringLiteral("--legacy-theme"));
+    if (useLegacy) {
+        if (mode_ == Mode::Auto) {
+            applyLegacyForSystem(app);
+            connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
+                    this, [this](Qt::ColorScheme) {
+                        if (mode_ == Mode::Auto && app_) {
+                            applyLegacyForSystem(app_);
+                            emit themeChanged();
+                        }
+                    }, Qt::UniqueConnection);
+        } else {
+            applyQss(app, mode_ == Mode::Light
+                         ? QStringLiteral(":/style-light.qss")
+                         : QStringLiteral(":/style-dark.qss"));
+        }
+        return;
+    }
+
+    // gx skin — pick dark or light based on mode (Auto follows system).
+    applyGxForMode(app);
     if (mode_ == Mode::Auto) {
-        applyForCurrentSystem(app);
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged,
                 this, [this](Qt::ColorScheme) {
                     if (mode_ == Mode::Auto && app_) {
-                        applyForCurrentSystem(app_);
+                        applyGxForMode(app_);
                         emit themeChanged();
                     }
                 }, Qt::UniqueConnection);
-    } else {
-        applyQss(app, mode_ == Mode::Light
-                     ? QStringLiteral(":/style-light.qss")
-                     : QStringLiteral(":/style-dark.qss"));
     }
+}
+
+void ThemeManager::applyGxForMode(QApplication* app) {
+    bool dark = true;
+    if (mode_ == Mode::Light) dark = false;
+    else if (mode_ == Mode::Dark) dark = true;
+    else {
+        const Qt::ColorScheme s = QGuiApplication::styleHints()->colorScheme();
+        dark = (s == Qt::ColorScheme::Dark) || (s == Qt::ColorScheme::Unknown);
+    }
+    applyQss(app, dark ? QStringLiteral(":/style-gx.qss")
+                       : QStringLiteral(":/style-gx-light.qss"));
 }
 
 void ThemeManager::setMode(Mode mode, QApplication* app) {
@@ -58,6 +88,13 @@ ThemeManager::Mode ThemeManager::mode() const {
     return mode_;
 }
 
+bool ThemeManager::isDark() const {
+    if (mode_ == Mode::Light) return false;
+    if (mode_ == Mode::Dark)  return true;
+    const Qt::ColorScheme s = QGuiApplication::styleHints()->colorScheme();
+    return (s == Qt::ColorScheme::Dark) || (s == Qt::ColorScheme::Unknown);
+}
+
 void ThemeManager::applyQss(QApplication* app, const QString& path) {
     QFile f(path);
     if (f.open(QFile::ReadOnly | QFile::Text)) {
@@ -66,7 +103,7 @@ void ThemeManager::applyQss(QApplication* app, const QString& path) {
     }
 }
 
-void ThemeManager::applyForCurrentSystem(QApplication* app) {
+void ThemeManager::applyLegacyForSystem(QApplication* app) {
     const Qt::ColorScheme scheme = QGuiApplication::styleHints()->colorScheme();
     const bool dark = (scheme == Qt::ColorScheme::Dark)
                    || (scheme == Qt::ColorScheme::Unknown);

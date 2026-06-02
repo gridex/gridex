@@ -13,6 +13,13 @@ protocol KeychainServiceProtocol: Sendable {
     func load(key: String) throws -> String?
     func delete(key: String) throws
     func update(key: String, value: String) throws
+
+    // ChatGPT OAuth bundle (per-provider). Implemented in terms of save/load/delete
+    // above, but lives on the protocol so call sites holding only the protocol
+    // type (e.g. ProviderEditSheet, SettingsView) can use them.
+    func saveChatGPTTokens(providerId: UUID, bundle: ChatGPTTokenBundle) throws
+    func loadChatGPTTokens(providerId: UUID) throws -> ChatGPTTokenBundle?
+    func deleteChatGPTTokens(providerId: UUID) throws
 }
 
 final class KeychainService: KeychainServiceProtocol, Sendable {
@@ -206,5 +213,39 @@ final class KeychainService: KeychainServiceProtocol, Sendable {
 
     func loadAPIKey(provider: String) throws -> String? {
         try load(key: "ai.apikey.\(provider)")
+    }
+
+    // MARK: - ChatGPT OAuth tokens
+    //
+    // Stored as a JSON-encoded `ChatGPTTokenBundle` under a per-provider key.
+    // Single blob keeps refresh writes atomic — partial updates after a crash
+    // are not possible.
+
+    private func chatGPTTokensKey(_ providerId: UUID) -> String {
+        "ai.chatgpt.tokens.\(providerId.uuidString)"
+    }
+
+    func saveChatGPTTokens(providerId: UUID, bundle: ChatGPTTokenBundle) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(bundle)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw GridexError.keychainError("Failed to encode ChatGPT token bundle")
+        }
+        try save(key: chatGPTTokensKey(providerId), value: json)
+    }
+
+    func loadChatGPTTokens(providerId: UUID) throws -> ChatGPTTokenBundle? {
+        guard let json = try load(key: chatGPTTokensKey(providerId)) else { return nil }
+        guard let data = json.data(using: .utf8) else {
+            throw GridexError.keychainError("ChatGPT token bundle keychain blob is not valid UTF-8")
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(ChatGPTTokenBundle.self, from: data)
+    }
+
+    func deleteChatGPTTokens(providerId: UUID) throws {
+        try delete(key: chatGPTTokensKey(providerId))
     }
 }
