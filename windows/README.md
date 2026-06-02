@@ -20,7 +20,7 @@ Project link các lib native qua vcpkg. Cài 1 lần:
 **Git Bash / MSYS2**:
 ```bash
 /c/vcpkg/vcpkg.exe install \
-  sqlite3 libpq libmariadb openssl hiredis \
+  sqlite3 libpq libmariadb openssl hiredis libssh2 \
   nlohmann-json cpp-httplib \
   --triplet x64-windows
 ```
@@ -28,7 +28,7 @@ Project link các lib native qua vcpkg. Cài 1 lần:
 **PowerShell**:
 ```powershell
 C:\vcpkg\vcpkg.exe install `
-  sqlite3 libpq libmariadb openssl hiredis `
+  sqlite3 libpq libmariadb openssl hiredis libssh2 `
   nlohmann-json cpp-httplib `
   --triplet x64-windows
 ```
@@ -36,7 +36,7 @@ C:\vcpkg\vcpkg.exe install `
 **CMD**:
 ```cmd
 C:\vcpkg\vcpkg.exe install ^
-  sqlite3 libpq libmariadb openssl hiredis ^
+  sqlite3 libpq libmariadb openssl hiredis libssh2 ^
   nlohmann-json cpp-httplib ^
   --triplet x64-windows
 ```

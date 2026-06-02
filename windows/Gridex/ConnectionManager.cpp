@@ -113,10 +113,18 @@ namespace DBModels
         try
         {
             adapter->connect(effectiveConfig, password);
-            auto result = adapter->execute(L"SELECT 1");
-            adapter->disconnect();
-            ok = result.success;
-            if (!ok) outError = result.error;
+            if (config.databaseType == DatabaseType::MongoDB)
+            {
+                adapter->disconnect();
+                ok = true;
+            }
+            else
+            {
+                auto result = adapter->execute(L"SELECT 1");
+                adapter->disconnect();
+                ok = result.success;
+                if (!ok) outError = result.error;
+            }
         }
         catch (const std::exception& e)
         {

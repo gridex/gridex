@@ -286,6 +286,11 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
+    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\libssh2.dll" Condition="'$(Configuration)'=='Debug'">
+      <Link>libssh2.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
     <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\utf8proc.dll" Condition="'$(Configuration)'=='Debug'">
       <Link>utf8proc.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
