@@ -40,7 +40,7 @@ enum ProviderFactory {
             }
             return ChatGPTProvider(providerId: config.id, baseURL: base, oauthService: svc)
         case .openAI, .azureOpenAI, .groq, .deepseek, .mistral, .xAI,
-             .perplexity, .openRouter, .together, .fireworks, .dashscope,
+             .perplexity, .openRouter, .requesty, .together, .fireworks, .dashscope,
              .dashscopeCoding, .openAICompatible:
             return OpenAIProvider(apiKey: apiKey, baseURL: base, probeModel: config.model)
         }

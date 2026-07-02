@@ -23,6 +23,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
     case xAI              = "xai"
     case perplexity
     case openRouter       = "openrouter"
+    case requesty
     case together
     case fireworks
     case dashscope
@@ -47,6 +48,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .xAI:               return "xAI (Grok)"
         case .perplexity:        return "Perplexity"
         case .openRouter:        return "OpenRouter"
+        case .requesty:          return "Requesty"
         case .together:          return "Together AI"
         case .fireworks:         return "Fireworks AI"
         case .dashscope:         return "DashScope (Qwen)"
@@ -63,7 +65,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .ollama:    return .local
         case .chatGPT:   return .subscription
         case .openAI, .azureOpenAI, .groq, .deepseek, .mistral, .xAI,
-             .perplexity, .openRouter, .together, .fireworks, .dashscope,
+             .perplexity, .openRouter, .requesty, .together, .fireworks, .dashscope,
              .dashscopeCoding, .openAICompatible:
             return .openAICompat
         }
@@ -91,6 +93,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .xAI:               return "https://api.x.ai/v1"
         case .perplexity:        return "https://api.perplexity.ai"
         case .openRouter:        return "https://openrouter.ai/api/v1"
+        case .requesty:          return "https://router.requesty.ai/v1"
         case .together:          return "https://api.together.xyz/v1"
         case .fireworks:         return "https://api.fireworks.ai/inference/v1"
         case .dashscope:         return "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -113,6 +116,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .xAI:               return "grok-2-latest"
         case .perplexity:        return "llama-3.1-sonar-large-128k-online"
         case .openRouter:        return "anthropic/claude-sonnet-4"
+        case .requesty:          return "openai/gpt-4o-mini"
         case .together:          return "meta-llama/Llama-3.3-70B-Instruct-Turbo"
         case .fireworks:         return "accounts/fireworks/models/llama-v3p3-70b-instruct"
         case .dashscope:         return "qwen-plus"
@@ -155,6 +159,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .xAI:                           return "x.circle.fill"
         case .perplexity:                    return "questionmark.circle.fill"
         case .openRouter:                    return "arrow.triangle.branch"
+        case .requesty:                      return "arrow.triangle.branch"
         case .together:                      return "person.2.fill"
         case .fireworks:                     return "sparkles"
         case .dashscope:                     return "cpu.fill"
@@ -181,6 +186,7 @@ enum ProviderType: String, Codable, Sendable, CaseIterable, Identifiable {
         case .xAI:               return ["grok-2-latest", "grok-2-vision-latest"]
         case .perplexity:        return ["llama-3.1-sonar-large-128k-online", "llama-3.1-sonar-small-128k-online"]
         case .openRouter:        return ["anthropic/claude-sonnet-4", "openai/gpt-4o", "meta-llama/llama-3.3-70b"]
+        case .requesty:          return ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-sonnet-4-5", "google/gemini-2.5-flash", "deepseek/deepseek-chat"]
         case .together:          return ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"]
         case .fireworks:         return ["accounts/fireworks/models/llama-v3p3-70b-instruct"]
         case .dashscope:
