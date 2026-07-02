@@ -52,7 +52,7 @@ namespace winrt::Gridex::implementation
             // Helper: show/hide provider-specific panels (API key /
             // OAuth sign-in / Ollama endpoint) based on selection.
             // Indices: 0 Anthropic, 1 OpenAI, 2 Ollama, 3 Gemini,
-            // 4 OpenRouter, 5 ChatGPT.
+            // 4 OpenRouter, 5 ChatGPT, 6 Requesty.
             auto updateProviderUI = [this]()
             {
                 int idx = AiProviderCombo().SelectedIndex();

@@ -137,6 +137,7 @@ namespace DBModels
         case AiProvider::Gemini:     return CallGemini(messages, systemPrompt);
         case AiProvider::OpenRouter: return CallOpenRouter(messages, systemPrompt);
         case AiProvider::ChatGPT:    return CallChatGPT(messages, systemPrompt);
+        case AiProvider::Requesty:   return CallRequesty(messages, systemPrompt);
         default: return L"Unsupported AI provider";
         }
     }
@@ -491,6 +492,74 @@ namespace DBModels
         return L"No response content";
     }
 
+    // ── Requesty chat completions ──────────────────
+    //
+    // Requesty is OpenAI-protocol-compatible (base https://router.requesty.ai/v1),
+    // so the request/response shapes are identical to CallOpenRouter — only the
+    // host and path differ. Auth is a standard Authorization: Bearer key.
+    std::wstring AiService::CallRequesty(
+        const std::vector<ChatMessage>& messages,
+        const std::wstring& systemPrompt)
+    {
+        httplib::Client cli("https://router.requesty.ai");
+        cli.set_connection_timeout(30);
+        cli.set_read_timeout(60);
+
+        auto apiKey = trimWs(config_.apiKey);
+        if (apiKey.empty())
+            return L"Error: Requesty API key is missing. Set it in Settings.";
+
+        nlohmann::json body;
+        auto model = trimWs(config_.model);
+        // Requesty requires a fully-qualified model slug like
+        // "openai/gpt-4o" or "anthropic/claude-sonnet-4-5". Pick a sane
+        // default that's cheap and always available.
+        body["model"] = toUtf8(model.empty() ? L"openai/gpt-4o-mini" : model);
+        body["max_tokens"] = 2048;
+
+        nlohmann::json msgs = nlohmann::json::array();
+        if (!systemPrompt.empty())
+        {
+            nlohmann::json sysMsg;
+            sysMsg["role"] = "system";
+            sysMsg["content"] = toUtf8(systemPrompt);
+            msgs.push_back(sysMsg);
+        }
+        for (auto& m : messages)
+        {
+            nlohmann::json msg;
+            msg["role"] = toUtf8(m.role);
+            msg["content"] = toUtf8(m.content);
+            msgs.push_back(msg);
+        }
+        body["messages"] = msgs;
+
+        httplib::Headers headers = {
+            {"Authorization", "Bearer " + toUtf8(apiKey)}
+        };
+
+        auto res = cli.Post("/v1/chat/completions", headers,
+                            body.dump(), "application/json");
+        if (!res)
+            return L"Error: Failed to connect to Requesty API";
+
+        if (res->status != 200)
+            return fromUtf8("Error " + std::to_string(res->status) +
+                            " (model=" + toUtf8(model) + "): " + res->body);
+
+        try
+        {
+            auto json = nlohmann::json::parse(res->body);
+            if (json.contains("choices") && !json["choices"].empty())
+                return fromUtf8(json["choices"][0]["message"]["content"].get<std::string>());
+        }
+        catch (const std::exception& e)
+        {
+            return fromUtf8(std::string("Parse error: ") + e.what());
+        }
+        return L"No response content";
+    }
+
     // ── ChatGPT Subscription (Codex Responses API) ─────
     //
     // Uses OAuth bearer token from ChatGPT::OAuthService.
@@ -799,6 +868,38 @@ namespace DBModels
                 if (!res)
                 {
                     r.errorMessage = L"OpenRouter models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("data") && json["data"].is_array())
+                {
+                    for (auto& m : json["data"])
+                        if (m.contains("id"))
+                            r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::Requesty:
+            {
+                // Requesty is OpenAI-compatible; its /v1/models listing
+                // mirrors OpenRouter's shape ({"data":[{"id":...}]}).
+                // Pass the API key when present for attribution.
+                httplib::Client cli("https://router.requesty.ai");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                httplib::Headers headers;
+                if (!apiKey.empty())
+                    headers.emplace("Authorization", "Bearer " + toUtf8(apiKey));
+                auto res = cli.Get("/v1/models", headers);
+                if (!res)
+                {
+                    r.errorMessage = L"Requesty models request failed (no response).";
                     return r;
                 }
                 if (res->status != 200)

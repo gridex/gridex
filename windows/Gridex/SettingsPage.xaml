@@ -89,6 +89,7 @@
                                 <ComboBoxItem Content="Google Gemini" />
                                 <ComboBoxItem Content="OpenRouter" />
                                 <ComboBoxItem Content="OpenAI (Sign in)" />
+                                <ComboBoxItem Content="Requesty" />
                             </ComboBox>
                         </StackPanel>
 
