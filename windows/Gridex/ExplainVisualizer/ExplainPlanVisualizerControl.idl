@@ -1,0 +1,8 @@
+namespace Gridex
+{
+    [default_interface]
+    runtimeclass ExplainPlanVisualizerControl : Microsoft.UI.Xaml.Controls.UserControl
+    {
+        ExplainPlanVisualizerControl();
+    }
+}

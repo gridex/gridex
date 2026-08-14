@@ -96,8 +96,8 @@
       <WarningLevel>Level4</WarningLevel>
       <LanguageStandard Condition="'$(VisualStudioVersion)' &gt;= '18.0'">stdcpp20</LanguageStandard>
       <LanguageStandard Condition="'$(VisualStudioVersion)' &lt; '18.0'">stdcpp17</LanguageStandard>
-      <AdditionalOptions>%(AdditionalOptions) /bigobj /Zm500</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)..\vendor\velopack\include;C:\vcpkg\installed\x64-windows\include;C:\vcpkg\installed\x64-windows\include\mongocxx\v_noabi;C:\vcpkg\installed\x64-windows\include\bsoncxx\v_noabi;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>%(AdditionalOptions) /utf-8 /bigobj /Zm500</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(GeneratedFilesDir)ExplainVisualizer;$(ProjectDir)..\vendor\velopack\include;C:\vcpkg\installed\x64-windows\include;C:\vcpkg\installed\x64-windows\include\mongocxx\v_noabi;C:\vcpkg\installed\x64-windows\include\bsoncxx\v_noabi;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
@@ -114,7 +114,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\debug\lib;$(ProjectDir)..\vendor\velopack\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>mongocxx-v_noabi-dhi-mdd.lib;bsoncxx-v_noabi-dhi-mdd.lib;hiredisd.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>mongocxx1-v1-dhi-mdd.lib;bsoncxx1-v1-dhi-mdd.lib;hiredisd.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <!-- Release: link against vcpkg release libs + mongocxx release variant -->
@@ -124,7 +124,7 @@
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>C:\vcpkg\installed\x64-windows\lib;$(ProjectDir)..\vendor\velopack\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>mongocxx-v_noabi-rhi-md.lib;bsoncxx-v_noabi-rhi-md.lib;hiredis.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>mongocxx1-v1-rhi-md.lib;bsoncxx1-v1-rhi-md.lib;hiredis.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -209,13 +209,13 @@
          Mixing Debug exe with Release DLLs causes ABI mismatch →
          strlen(NULL) crash inside mongoc_uri_parse. -->
     <!-- Release DLLs -->
-    <Content Include="C:\vcpkg\installed\x64-windows\bin\mongocxx-v_noabi-rhi-md.dll" Condition="'$(Configuration)'=='Release'">
-      <Link>mongocxx-v_noabi-rhi-md.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\bin\mongocxx1-v1-rhi-md.dll" Condition="'$(Configuration)'=='Release'">
+      <Link>mongocxx1-v1-rhi-md.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
-    <Content Include="C:\vcpkg\installed\x64-windows\bin\bsoncxx-v_noabi-rhi-md.dll" Condition="'$(Configuration)'=='Release'">
-      <Link>bsoncxx-v_noabi-rhi-md.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\bin\bsoncxx1-v1-rhi-md.dll" Condition="'$(Configuration)'=='Release'">
+      <Link>bsoncxx1-v1-rhi-md.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
@@ -229,19 +229,19 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
-    <Content Include="C:\vcpkg\installed\x64-windows\bin\zlib1.dll" Condition="'$(Configuration)'=='Release'">
-      <Link>zlib1.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\bin\z.dll" Condition="'$(Configuration)'=='Release'">
+      <Link>z.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
     <!-- Debug DLLs -->
-    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\mongocxx-v_noabi-dhi-mdd.dll" Condition="'$(Configuration)'=='Debug'">
-      <Link>mongocxx-v_noabi-dhi-mdd.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\mongocxx1-v1-dhi-mdd.dll" Condition="'$(Configuration)'=='Debug'">
+      <Link>mongocxx1-v1-dhi-mdd.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
-    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\bsoncxx-v_noabi-dhi-mdd.dll" Condition="'$(Configuration)'=='Debug'">
-      <Link>bsoncxx-v_noabi-dhi-mdd.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\bsoncxx1-v1-dhi-mdd.dll" Condition="'$(Configuration)'=='Debug'">
+      <Link>bsoncxx1-v1-dhi-mdd.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
@@ -255,8 +255,8 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>
-    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\zlibd1.dll" Condition="'$(Configuration)'=='Debug'">
-      <Link>zlibd1.dll</Link>
+    <Content Include="C:\vcpkg\installed\x64-windows\debug\bin\zd.dll" Condition="'$(Configuration)'=='Debug'">
+      <Link>zd.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <DeploymentContent>true</DeploymentContent>
     </Content>

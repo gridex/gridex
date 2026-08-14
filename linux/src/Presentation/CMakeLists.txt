@@ -25,6 +25,12 @@ qt_add_library(gridex-presentation STATIC
     Views/Main/WorkspaceView.cpp
     Views/QueryEditor/QueryEditorView.cpp
     Views/QueryEditor/SqlHighlighter.cpp
+    Views/ExplainVisualizer/ExplainPlanParser.cpp
+    Views/ExplainVisualizer/ExplainPlanHeuristics.cpp
+    Views/ExplainVisualizer/ExplainCards.cpp
+    Views/ExplainVisualizer/ExplainVisualizerWidget.cpp
+    Views/ExplainVisualizer/PlanNodeRow.cpp
+    Views/ExplainVisualizer/ExplainExtension.cpp
     Views/Settings/SettingsDialog.cpp
     Views/Chrome/GxToolbar.cpp
     Views/Chrome/GxStatusBar.cpp

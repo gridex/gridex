@@ -8,6 +8,8 @@
 #include "TabBarControl.h"
 #include "DataGridView.h"
 #include "QueryEditorView.h"
+#include "ExplainVisualizer/ExplainPlanVisualizerControl.h"
+#include "ExplainVisualizer/ExplainPlanParser.h"
 #include "StructureView.h"
 #include "StatusBarControl.h"
 #include "DetailsPanel.h"
@@ -1410,6 +1412,60 @@ namespace winrt::Gridex::implementation
             // (Redis gets Browse Keys / Flush DB; SQL gets Open / Export / Import)
             Sidebar().as<SidebarPanel>()->SetDatabaseType(config.databaseType);
 
+            // Postgres Explain Visualizer lives in QueryEditor's results pane
+            // as a dedicated Results | Visualize view.
+            {
+                const bool isPostgres =
+                    config.databaseType == DBModels::DatabaseType::PostgreSQL;
+                auto queryEditor = QueryEditor().as<QueryEditorView>();
+                queryEditor->SetVisualizeAvailable(isPostgres);
+
+                if (isPostgres)
+                {
+                    auto visualizer = winrt::make<ExplainPlanVisualizerControl>();
+                    auto visualizerImpl =
+                        winrt::get_self<ExplainPlanVisualizerControl>(visualizer);
+                    queryEditor->SetVisualizerControl(visualizer);
+                    explainVizElement_ = visualizer;
+                    visualizerImpl->ShowEmpty();
+
+                    visualizerImpl->OnRunRequested = [this]()
+                    {
+                        RunExplainAnalyzeForVisualizer();
+                    };
+                    visualizerImpl->OnPreviewSqlRequested = [this](std::wstring sql)
+                    {
+                        OpenNewQueryTab();
+                        try { QueryEditor().as<QueryEditorView>()->SetSql(sql); }
+                        catch (...) {}
+                    };
+                    visualizerImpl->OnCopyPlanRequested = [](std::wstring rawJson)
+                    {
+                        try
+                        {
+                            winrt::Windows::ApplicationModel::DataTransfer::DataPackage package;
+                            package.SetText(winrt::hstring(rawJson));
+                            winrt::Windows::ApplicationModel::DataTransfer::Clipboard::SetContent(package);
+                        }
+                        catch (...) {}
+                    };
+                }
+                else
+                {
+                    queryEditor->SetVisualizerControl(nullptr);
+                    explainVizElement_ = nullptr;
+                }
+
+                queryEditor->OnSqlChanged = [this]()
+                {
+                    if (!explainVizElement_) return;
+                    auto visualizer = explainVizElement_.try_as<
+                        winrt::Gridex::ExplainPlanVisualizerControl>();
+                    if (!visualizer) return;
+                    winrt::get_self<ExplainPlanVisualizerControl>(visualizer)->Reset();
+                };
+            }
+
             // Redis does not support SQL-style row updates -- inline edits
             // would silently overwrite hash / list / set values via SET
             // and corrupt the data. Flip the grid + details pane into
@@ -1590,6 +1646,91 @@ namespace winrt::Gridex::implementation
             }
         }
 #endif // GRIDEX_ENTERPRISE
+    }
+
+    void WorkspacePage::RunExplainAnalyzeForVisualizer()
+    {
+        if (!connMgr_.isConnected() || !explainVizElement_) return;
+        auto adapter = connMgr_.getActiveAdapter();
+        if (!adapter) return;
+
+        auto visualizer = explainVizElement_.try_as<
+            winrt::Gridex::ExplainPlanVisualizerControl>();
+        if (!visualizer) return;
+        auto visualizerImpl = winrt::get_self<ExplainPlanVisualizerControl>(visualizer);
+
+        auto queryEditor = QueryEditor().as<QueryEditorView>();
+        std::wstring sql = queryEditor->GetSql();
+        while (!sql.empty() && (sql.back() == L'\n' || sql.back() == L'\r' ||
+                                sql.back() == L' '  || sql.back() == L'\t' ||
+                                sql.back() == L';'))
+            sql.pop_back();
+        if (sql.empty())
+        {
+            visualizerImpl->ShowError(L"Editor is empty. Type a query first.");
+            return;
+        }
+
+        visualizerImpl->ShowLoading();
+        bool rewritten = false;
+        std::wstring effectiveSql = AutoQuoteReservedIdentifiers(
+            sql, state_.connection.databaseType, rewritten);
+
+        DBModels::QueryResult result;
+        try
+        {
+            result = adapter->execute(
+                L"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + effectiveSql);
+        }
+        catch (const std::exception& error)
+        {
+            const int byteCount = static_cast<int>(strlen(error.what()));
+            int size = MultiByteToWideChar(
+                CP_UTF8, 0, error.what(), byteCount, nullptr, 0);
+            std::wstring message(size > 0 ? size : 0, L'\0');
+            if (size > 0)
+                MultiByteToWideChar(
+                    CP_UTF8, 0, error.what(), byteCount, message.data(), size);
+            visualizerImpl->ShowError(message.empty()
+                ? L"EXPLAIN ANALYZE failed." : message);
+            return;
+        }
+        catch (...)
+        {
+            visualizerImpl->ShowError(L"Unknown error running EXPLAIN ANALYZE.");
+            return;
+        }
+
+        if (!result.success)
+        {
+            visualizerImpl->ShowError(result.error.empty()
+                ? L"EXPLAIN ANALYZE returned no plan." : result.error);
+            return;
+        }
+        if (result.rows.empty() || result.columnNames.empty())
+        {
+            visualizerImpl->ShowError(L"EXPLAIN ANALYZE returned no rows.");
+            return;
+        }
+
+        const auto& firstRow = result.rows.front();
+        auto cell = firstRow.find(result.columnNames.front());
+        if (cell == firstRow.end() || cell->second.empty())
+        {
+            visualizerImpl->ShowError(L"EXPLAIN ANALYZE returned an empty cell.");
+            return;
+        }
+
+        auto document = std::make_shared<::Gridex::ExplainViz::PlanDocument>();
+        document->originalSql = effectiveSql;
+        std::wstring parseError;
+        if (!::Gridex::ExplainViz::ExplainPlanParser::parse(
+                cell->second, *document, parseError))
+        {
+            visualizerImpl->ShowError(L"Could not parse plan JSON: " + parseError);
+            return;
+        }
+        visualizerImpl->SetPlan(document);
     }
 
     // ── Sidebar Data Loading ────────────────────────────

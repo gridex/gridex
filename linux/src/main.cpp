@@ -12,6 +12,7 @@
 #include "Data/Persistence/AppConnectionRepository.h"
 #include "Data/Persistence/AppDatabase.h"
 #include "Presentation/Theme/ThemeManager.h"
+#include "Presentation/Views/ExplainVisualizer/ExplainExtension.h"
 #include "Presentation/Windows/Main/MainWindow.h"
 #include "Services/MCP/MCPServer.h"
 
@@ -89,6 +90,8 @@ int main(int argc, char* argv[]) {
         }
 
         gridex::ThemeManager::instance().apply(&app);
+
+        gridex::explain::registerQueryEditorExtension();
 
         gridex::MainWindow window;
         window.show();
