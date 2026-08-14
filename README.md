@@ -15,6 +15,11 @@
 </p>
 
 <p align="center">
+  <a href="https://trendshift.io/repositories/26325?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-26325" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/26325/daily?language=C%2B%2B" alt="gridex%2Fgridex | Trendshift" width="250" height="55"/></a>
+  <a href="https://trendshift.io/repositories/26325?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-26325" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/26325/weekly?language=C%2B%2B" alt="gridex%2Fgridex | Trendshift" width="250" height="55"/></a>
+</p>
+
+<p align="center">
   <img src="assets/show-case.png" alt="Gridex overview" width="100%">
 </p>
 
