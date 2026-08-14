@@ -94,6 +94,13 @@
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ERDiagramService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ExportService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)Models\ImportService.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanTypes.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanParser.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanHeuristics.h" />
+    <ClInclude Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanVisualizerControl.h">
+      <DependentUpon>ExplainPlanVisualizerControl.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClInclude>
     <ClInclude Include="$(MSBuildThisFileDirectory)xaml-includes.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)UpdateService.h" />
     <ClInclude Include="$(MSBuildThisFileDirectory)SettingsPage.h">
@@ -212,6 +219,9 @@
       <SubType>Designer</SubType>
     </Page>
     <Page Include="$(MSBuildThisFileDirectory)MCPPage.xaml">
+      <SubType>Designer</SubType>
+    </Page>
+    <Page Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanVisualizerControl.xaml">
       <SubType>Designer</SubType>
     </Page>
   </ItemGroup>
@@ -450,6 +460,12 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)UpdateService.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanParser.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanHeuristics.cpp" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanVisualizerControl.cpp">
+      <DependentUpon>ExplainPlanVisualizerControl.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Midl Include="$(MSBuildThisFileDirectory)MainWindow.idl">
@@ -514,6 +530,10 @@
     </Midl>
     <Midl Include="$(MSBuildThisFileDirectory)MCPPage.idl">
       <DependentUpon>MCPPage.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Midl>
+    <Midl Include="$(MSBuildThisFileDirectory)ExplainVisualizer\ExplainPlanVisualizerControl.idl">
+      <DependentUpon>ExplainPlanVisualizerControl.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Midl>
   </ItemGroup>

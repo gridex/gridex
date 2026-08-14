@@ -4,11 +4,11 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:local="using:Gridex">
 
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition x:Name="EditorRowDef" Height="*" />
+            <RowDefinition x:Name="SplitterRowDef" Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -62,7 +62,7 @@
         </Grid>
 
         <!-- Splitter -->
-        <Grid Grid.Row="2" Height="6"
+        <Grid x:Name="EditorSplitter" Grid.Row="2" Height="6"
               Background="{ThemeResource LayerFillColorDefaultBrush}"
               BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
               BorderThickness="0,1,0,1">
@@ -75,10 +75,41 @@
         <Grid Grid.Row="3">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
-            <Grid Grid.Row="0" Padding="8,4"
+            <Grid Grid.Row="0" Padding="8,4,8,0"
+                  Background="{ThemeResource LayerFillColorDefaultBrush}"
+                  BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                  BorderThickness="0,0,0,1">
+                <StackPanel Orientation="Horizontal" Spacing="2">
+                    <ToggleButton x:Name="ResultsTabBtn"
+                                  IsChecked="True"
+                                  Padding="10,4"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  Click="ResultsTab_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE71D;" FontSize="11"/>
+                            <TextBlock Text="Results" FontSize="12"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="VisualizeTabBtn"
+                                  Padding="10,4"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  Visibility="Collapsed"
+                                  Click="VisualizeTab_Click">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE9D9;" FontSize="11"/>
+                            <TextBlock Text="Visualize" FontSize="12"/>
+                        </StackPanel>
+                    </ToggleButton>
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" Padding="8,4"
                   Background="{ThemeResource LayerFillColorDefaultBrush}"
                   BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
                   BorderThickness="0,0,0,1"
@@ -87,11 +118,16 @@
                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             </Grid>
 
-            <Grid Grid.Row="1">
-                <ScrollViewer HorizontalScrollBarVisibility="Auto"
+            <Grid Grid.Row="2">
+                <ScrollViewer x:Name="ResultsScroller"
+                              HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="ResultsContainer" Spacing="0" />
                 </ScrollViewer>
+                <ContentControl x:Name="VisualizeHost"
+                                Visibility="Collapsed"
+                                HorizontalContentAlignment="Stretch"
+                                VerticalContentAlignment="Stretch"/>
 
                 <!-- Loading overlay shown while a query is running. -->
                 <Grid x:Name="QueryLoadingOverlay"

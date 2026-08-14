@@ -6,6 +6,7 @@
 #include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
 #include "QueryEditorView.h"
+#include <cwctype>
 #if __has_include("QueryEditorView.g.cpp")
 #include "QueryEditorView.g.cpp"
 #endif
@@ -72,7 +73,6 @@ namespace winrt::Gridex::implementation
         ClearEditorButton().Click(
             [this](winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
             { ClearEditor_Click({}, {}); });
-
         // Create SQL editor TextBox
         sqlEditor_ = muxc::TextBox();
         sqlEditor_.AcceptsReturn(true);
@@ -600,6 +600,7 @@ namespace winrt::Gridex::implementation
         }
         else
             pendingSql_ = sql;
+        if (OnSqlChanged) OnSqlChanged();
     }
 
     std::wstring QueryEditorView::GetSql() const
@@ -667,6 +668,56 @@ namespace winrt::Gridex::implementation
             suppressTextChange_ = false;
         }
         HideSuggestions();
+    }
+
+    void QueryEditorView::ResultsTab_Click(
+        winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
+    {
+        ResultsTabBtn().IsChecked(true);
+        VisualizeTabBtn().IsChecked(false);
+        ResultsScroller().Visibility(mux::Visibility::Visible);
+        VisualizeHost().Visibility(mux::Visibility::Collapsed);
+        ResultsHeader().Visibility(
+            lastResult_.columnNames.empty() ? mux::Visibility::Collapsed : mux::Visibility::Visible);
+        EditorRowDef().Height(mux::GridLengthHelper::FromValueAndType(1, mux::GridUnitType::Star));
+        SplitterRowDef().Height(mux::GridLengthHelper::Auto());
+        EditorContainer().Visibility(mux::Visibility::Visible);
+        EditorSplitter().Visibility(mux::Visibility::Visible);
+    }
+
+    void QueryEditorView::VisualizeTab_Click(
+        winrt::Windows::Foundation::IInspectable const&, mux::RoutedEventArgs const&)
+    {
+        ResultsTabBtn().IsChecked(false);
+        VisualizeTabBtn().IsChecked(true);
+        ResultsScroller().Visibility(mux::Visibility::Collapsed);
+        VisualizeHost().Visibility(mux::Visibility::Visible);
+        ResultsHeader().Visibility(mux::Visibility::Collapsed);
+        EditorContainer().Visibility(mux::Visibility::Collapsed);
+        EditorSplitter().Visibility(mux::Visibility::Collapsed);
+        EditorRowDef().Height(mux::GridLengthHelper::FromPixels(0));
+        SplitterRowDef().Height(mux::GridLengthHelper::FromPixels(0));
+    }
+
+    void QueryEditorView::SetVisualizeAvailable(bool available)
+    {
+        VisualizeTabBtn().Visibility(
+            available ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+        auto checkedValue = VisualizeTabBtn().IsChecked();
+        if (!available && checkedValue && checkedValue.Value())
+            ResultsTab_Click({}, {});
+    }
+
+    void QueryEditorView::SetVisualizerControl(
+        winrt::Microsoft::UI::Xaml::UIElement const& control)
+    {
+        VisualizeHost().Content(control);
+    }
+
+    void QueryEditorView::TriggerVisualize()
+    {
+        if (VisualizeTabBtn().Visibility() == mux::Visibility::Visible)
+            VisualizeTab_Click({}, {});
     }
 
     // ── Results display ────────────────────────────────

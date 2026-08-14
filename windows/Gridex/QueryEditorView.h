@@ -19,8 +19,20 @@ namespace winrt::Gridex::implementation
         void ClearEditor_Click(
             winrt::Windows::Foundation::IInspectable const& sender,
             winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
+        void ResultsTab_Click(
+            winrt::Windows::Foundation::IInspectable const& sender,
+            winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
+        void VisualizeTab_Click(
+            winrt::Windows::Foundation::IInspectable const& sender,
+            winrt::Microsoft::UI::Xaml::RoutedEventArgs const& e);
+
+        void SetVisualizeAvailable(bool available);
+        void TriggerVisualize();
+        void SetVisualizerControl(
+            winrt::Microsoft::UI::Xaml::UIElement const& control);
 
         std::function<DBModels::QueryResult(const std::wstring& sql)> OnExecuteQuery;
+        std::function<void()> OnSqlChanged;
 
         void SetSql(const std::wstring& sql);
         std::wstring GetSql() const;

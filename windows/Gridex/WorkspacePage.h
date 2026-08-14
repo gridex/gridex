@@ -67,6 +67,7 @@ namespace winrt::Gridex::implementation
         static std::wstring sLastPassword_;
         static bool sHasLastConnection_;
         bool buttonsWired_ = false;
+        winrt::Microsoft::UI::Xaml::UIElement explainVizElement_{ nullptr };
         bool sidebarVisible_ = true;
         bool detailsVisible_ = true;
         bool filterVisible_ = false;
@@ -112,6 +113,7 @@ namespace winrt::Gridex::implementation
         void SwitchContentView();
         void OnTableSelected(const std::wstring& tableName, const std::wstring& schema);
         void OpenNewQueryTab();
+        void RunExplainAnalyzeForVisualizer();
         // Opens a read-only query tab showing the function's source
         // (CREATE FUNCTION DDL or body) fetched via
         // DatabaseAdapter::getFunctionSource.
