@@ -346,11 +346,11 @@ System library: `libsqlite3` (linked at build time). ClickHouse uses `URLSession
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=gridex%2Fgridex&type=date&legend=top-left">
+<a href="https://star-history.dera.page/#gridex/gridex&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=gridex/gridex&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=gridex/gridex&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=gridex/gridex&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=gridex/gridex&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=gridex/gridex&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=gridex/gridex&type=date&legend=top-left" />
  </picture>
 </a>
 
