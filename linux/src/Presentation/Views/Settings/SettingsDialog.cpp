@@ -12,6 +12,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QComboBox>
+#include <QCompleter>
 #include <QFormLayout>
 #include <QFrame>
 #include <QFutureWatcher>
@@ -150,6 +151,22 @@ void SettingsDialog::buildAiPage(QWidget* page) {
     mrH->setSpacing(6);
     modelCombo_ = new QComboBox(modelRow);
     modelCombo_->setMinimumWidth(260);
+    // Editable so the list of 400+ models stays navigable: the user types a
+    // fragment and the completer narrows the popup. NoInsert keeps whatever is
+    // typed out of the item list — a free-text entry is still honoured on Save,
+    // which is what OpenAI-compatible endpoints need for models the /models
+    // listing does not return.
+    modelCombo_->setEditable(true);
+    modelCombo_->setInsertPolicy(QComboBox::NoInsert);
+    modelCombo_->lineEdit()->setPlaceholderText(
+        tr("Type to filter, or enter a model id…"));
+    // Default completer is prefix-only and inline; substring matching is what
+    // makes "sonnet" find "anthropic/claude-sonnet-4.6".
+    auto* modelCompleter = new QCompleter(modelCombo_->model(), modelCombo_);
+    modelCompleter->setFilterMode(Qt::MatchContains);
+    modelCompleter->setCaseSensitivity(Qt::CaseInsensitive);
+    modelCompleter->setCompletionMode(QCompleter::PopupCompletion);
+    modelCombo_->setCompleter(modelCompleter);
     connect(modelCombo_, &QComboBox::currentTextChanged,
             this, &SettingsDialog::onModelChanged);
     mrH->addWidget(modelCombo_, 1);
@@ -338,6 +355,9 @@ void SettingsDialog::fetchModels(const QString& provider, const QString& apiKey)
                 int idx = modelCombo_->findData(savedModel);
                 if (idx < 0) idx = modelCombo_->findText(savedModel);
                 if (idx >= 0) modelCombo_->setCurrentIndex(idx);
+                // A model the listing does not carry (custom or newly
+                // released) would otherwise be dropped on every reopen.
+                else modelCombo_->setEditText(savedModel);
             }
             modelCombo_->blockSignals(false);
 
@@ -465,6 +485,7 @@ void SettingsDialog::fetchChatGPTModels() {
                 int idx = modelCombo_->findData(savedModel);
                 if (idx < 0) idx = modelCombo_->findText(savedModel);
                 if (idx >= 0) modelCombo_->setCurrentIndex(idx);
+                else modelCombo_->setEditText(savedModel);
             }
             modelCombo_->blockSignals(false);
             modelStatus_->setText(count == 0
@@ -556,9 +577,16 @@ void SettingsDialog::buildAppearancePage(QWidget* page) {
 
 void SettingsDialog::onSaveClicked() {
     const QString provider = providerCombo_->currentText();
-    const QString model    = modelCombo_->currentData().toString().isEmpty()
-        ? modelCombo_->currentText()
-        : modelCombo_->currentData().toString();
+    // currentData() follows currentIndex, which goes stale as soon as the user
+    // edits the text — resolve the id from the text actually shown, and fall
+    // back to that text when it matches no listed model.
+    const QString modelText = modelCombo_->currentText().trimmed();
+    int modelIdx = modelCombo_->findText(modelText);
+    if (modelIdx < 0) modelIdx = modelCombo_->findData(modelText);
+    const QString modelId = modelIdx >= 0
+        ? modelCombo_->itemData(modelIdx).toString()
+        : QString();
+    const QString model = modelId.isEmpty() ? modelText : modelId;
     const QString key      = apiKeyEdit_->text().trimmed();
     const QString endpoint = endpointEdit_->text().trimmed();
 
