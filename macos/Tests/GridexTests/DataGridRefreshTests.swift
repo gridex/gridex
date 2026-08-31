@@ -33,6 +33,36 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    func test_reloadAfterStructureChange_clearsRenamedHeaderSortAndLoadsFreshRows() async throws {
+        let (grid, adapter) = try await makeGrid()
+        grid.sortColumn = "rank"
+        await grid.loadPage(0)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [10, 20, 30])
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN rank TO score")
+        await grid.reloadAfterStructureChange()
+
+        XCTAssertNil(grid.sortColumn)
+        XCTAssertEqual(grid.columns.map(\.name), ["id", "score"])
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [30, 10, 20])
+        try await adapter.disconnect()
+    }
+
+    func test_reloadAfterStructureChange_usesRenamedPrimaryKeyWhenNoHeaderSortIsSelected() async throws {
+        let (grid, adapter) = try await makeGrid()
+        XCTAssertNil(grid.sortColumn)
+        XCTAssertEqual(grid.primaryKeyColumns, ["id"])
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN id TO record_id")
+        await grid.reloadAfterStructureChange()
+
+        XCTAssertNil(grid.sortColumn)
+        XCTAssertEqual(grid.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "rank"])
+        XCTAssertEqual(grid.rows.compactMap { $0[0].intValue }, [1, 2, 3])
+        try await adapter.disconnect()
+    }
+
     private func makeGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
         DataGridViewState.clearMetadataCache()
         let adapter = SQLiteAdapter()
