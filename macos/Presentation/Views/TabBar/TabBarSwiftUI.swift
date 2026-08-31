@@ -136,6 +136,22 @@ struct TabGroupHeaderView: View {
 // MARK: - Tab Item
 
 struct TabItemView: View {
+    enum HitTarget: Equatable {
+        case selection
+        case close
+        case none
+    }
+
+    struct HitAreas {
+        let bounds: NSRect
+        let closeFrame: NSRect
+
+        func target(at point: NSPoint) -> HitTarget {
+            guard bounds.contains(point) else { return .none }
+            return closeFrame.contains(point) ? .close : .selection
+        }
+    }
+
     let tab: AppState.ContentTab
     let isActive: Bool
 
@@ -153,24 +169,33 @@ struct TabItemView: View {
         return Color.accentColor
     }
 
-    var body: some View {
-        HStack(spacing: 7) {
-            if isRenaming {
-                Image(systemName: tabIcon)
-                    .font(.system(size: 11))
+    static func hitAreas(in bounds: NSRect, closeFrame: NSRect) -> HitAreas {
+        HitAreas(bounds: bounds, closeFrame: bounds.intersection(closeFrame))
+    }
 
-                TextField("", text: $renameText, onCommit: {
-                    let trimmed = renameText.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty {
-                        appState.renameTab(id: tab.id, newTitle: trimmed)
-                    }
-                    isRenaming = false
-                })
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .frame(width: 100)
-                .onAppear { renameText = tab.title }
-                .onExitCommand { isRenaming = false }
+    var body: some View {
+        HStack(spacing: 0) {
+            if isRenaming {
+                HStack(spacing: 7) {
+                    Image(systemName: tabIcon)
+                        .font(.system(size: 11))
+
+                    TextField("", text: $renameText, onCommit: {
+                        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                        if !trimmed.isEmpty {
+                            appState.renameTab(id: tab.id, newTitle: trimmed)
+                        }
+                        isRenaming = false
+                    })
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .frame(width: 100)
+                    .onAppear { renameText = tab.title }
+                    .onExitCommand { isRenaming = false }
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 7)
+                .frame(height: 38)
             } else {
                 Button(action: { appState.selectTab(id: tab.id) }) {
                     HStack(spacing: 7) {
@@ -181,6 +206,9 @@ struct TabItemView: View {
                             .font(.system(size: 12))
                             .lineLimit(1)
                     }
+                    .padding(.leading, 14)
+                    .padding(.trailing, 7)
+                    .frame(height: 38)
                 }
                 .buttonStyle(.plain)
             }
@@ -189,11 +217,12 @@ struct TabItemView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.secondary)
+                    .padding(.trailing, 14)
+                    .frame(height: 38)
             }
             .buttonStyle(.plain)
             .opacity(isHovering || isActive ? 1 : 0)
         }
-        .padding(.horizontal, 14)
         .frame(height: 38)
         .contentShape(Rectangle())
         .background(isActive ? Color(nsColor: .controlBackgroundColor) : .clear)
