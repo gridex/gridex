@@ -1,0 +1,51 @@
+import XCTest
+@testable import Gridex
+
+@MainActor
+final class DataGridRefreshTests: XCTestCase {
+    func test_reloadAfterStructureChange_preservesAscendingHeaderSort() async throws {
+        let (grid, adapter) = try await makeGrid()
+        grid.sortColumn = "rank"
+        grid.sortAscending = true
+        await grid.loadPage(0)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [10, 20, 30])
+
+        await grid.reloadAfterStructureChange()
+
+        XCTAssertEqual(grid.sortColumn, "rank")
+        XCTAssertTrue(grid.sortAscending)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [10, 20, 30])
+        try await adapter.disconnect()
+    }
+
+    func test_reloadAfterStructureChange_preservesDescendingHeaderSort() async throws {
+        let (grid, adapter) = try await makeGrid()
+        grid.sortColumn = "rank"
+        grid.sortAscending = false
+        await grid.loadPage(0)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [30, 20, 10])
+
+        await grid.reloadAfterStructureChange()
+
+        XCTAssertEqual(grid.sortColumn, "rank")
+        XCTAssertFalse(grid.sortAscending)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [30, 20, 10])
+        try await adapter.disconnect()
+    }
+
+    private func makeGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
+        DataGridViewState.clearMetadataCache()
+        let adapter = SQLiteAdapter()
+        let config = ConnectionConfig(
+            name: "refresh-test",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        try await adapter.connect(config: config, password: nil)
+        _ = try await adapter.executeRaw(sql: "CREATE TABLE scores (id INTEGER PRIMARY KEY, rank INTEGER NOT NULL)")
+        _ = try await adapter.executeRaw(sql: "INSERT INTO scores (id, rank) VALUES (1, 30), (2, 10), (3, 20)")
+        let grid = DataGridViewState()
+        await grid.load(tableName: "scores", schema: nil, adapter: adapter)
+        return (grid, adapter)
+    }
+}
