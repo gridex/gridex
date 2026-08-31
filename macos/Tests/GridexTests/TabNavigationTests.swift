@@ -65,6 +65,17 @@ final class TabNavigationTests: XCTestCase {
         XCTAssertEqual(state.activeTabId, only)
     }
 
+    func test_tabHitAreas_routeVisiblePaddingToSelectionWithoutIncludingCloseControl() {
+        let hitAreas = TabItemView.hitAreas(
+            in: NSRect(x: 0, y: 0, width: 160, height: 38),
+            closeFrame: NSRect(x: 130, y: 0, width: 20, height: 38)
+        )
+
+        XCTAssertEqual(hitAreas.target(at: NSPoint(x: 4, y: 19)), .selection)
+        XCTAssertEqual(hitAreas.target(at: NSPoint(x: 124, y: 19)), .selection)
+        XCTAssertEqual(hitAreas.target(at: NSPoint(x: 140, y: 19)), .close)
+    }
+
     private func makeTwoTabState() -> (AppState, UUID, UUID) {
         let state = AppState()
         state.openTable(name: "first", schema: nil)
