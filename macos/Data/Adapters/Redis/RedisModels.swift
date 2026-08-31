@@ -37,3 +37,38 @@ struct RedisSlowLogEntry: Identifiable, Sendable {
     let command: String
     let clientInfo: String
 }
+
+struct RedisKeyScanResult: Sendable, Equatable {
+    let keys: [String]
+    let isTruncated: Bool
+}
+
+struct RedisKeyScanAccumulator {
+    private(set) var uniqueKeys: Set<String> = []
+    private let maximumCount: Int
+    private var discardedUniqueKey = false
+
+    init(maximumCount: Int) {
+        precondition(maximumCount > 0)
+        self.maximumCount = maximumCount
+    }
+
+    var isFull: Bool { uniqueKeys.count >= maximumCount }
+
+    mutating func append(_ keys: [String]) {
+        for key in keys where !uniqueKeys.contains(key) {
+            if uniqueKeys.count < maximumCount {
+                uniqueKeys.insert(key)
+            } else {
+                discardedUniqueKey = true
+            }
+        }
+    }
+
+    func result(hasMoreCursor: Bool) -> RedisKeyScanResult {
+        RedisKeyScanResult(
+            keys: uniqueKeys.sorted(),
+            isTruncated: hasMoreCursor || discardedUniqueKey
+        )
+    }
+}
