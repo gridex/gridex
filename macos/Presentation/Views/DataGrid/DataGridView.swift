@@ -441,6 +441,19 @@ final class DataGridViewState: ObservableObject {
         let col: Int
     }
 
+    private var effectiveSortDescriptors: [QuerySortDescriptor]? {
+        if let column = sortColumn {
+            return [QuerySortDescriptor(
+                column: column,
+                direction: sortAscending ? .ascending : .descending
+            )]
+        }
+        if let primaryKey = primaryKeyColumns.first {
+            return [QuerySortDescriptor(column: primaryKey, direction: .ascending)]
+        }
+        return nil
+    }
+
     func load(tableName: String, schema: String?, adapter: (any DatabaseAdapter)?) async {
         guard let adapter else { return }
         self.adapter = adapter
@@ -471,12 +484,13 @@ final class DataGridViewState: ObservableObject {
         let qualifiedTable = "\(d.quoteIdentifier(schemaFilter)).\(d.quoteIdentifier(tableName))"
 
         // Fetch rows first, load metadata in background (non-blocking)
-        let fetchSQL = buildFetchSQL(orderBy: nil, limit: pageSize, offset: 0)
+        let sort = effectiveSortDescriptors
+        let fetchSQL = buildFetchSQL(orderBy: sort, limit: pageSize, offset: 0)
 
         // 1. Fetch rows — show data ASAP
         do {
             let start = Date()
-            let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: activeFilter, orderBy: nil, limit: pageSize, offset: 0)
+            let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: activeFilter, orderBy: sort, limit: pageSize, offset: 0)
             let duration = Date().timeIntervalSince(start)
             logQuery(sql: fetchSQL, duration: duration)
 
@@ -592,14 +606,7 @@ final class DataGridViewState: ObservableObject {
 
         do {
             let offset = page * pageSize
-            // Use explicit sort if set, otherwise fall back to primary key for stable ordering
-            let sort: [QuerySortDescriptor]? = if let col = sortColumn {
-                [QuerySortDescriptor(column: col, direction: sortAscending ? .ascending : .descending)]
-            } else if let pk = primaryKeyColumns.first {
-                [QuerySortDescriptor(column: pk, direction: .ascending)]
-            } else {
-                nil
-            }
+            let sort = effectiveSortDescriptors
             let sql = buildFetchSQL(orderBy: sort, limit: pageSize, offset: offset)
             let start = Date()
             let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: activeFilter, orderBy: sort, limit: pageSize, offset: offset)
