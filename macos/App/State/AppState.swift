@@ -539,6 +539,25 @@ final class AppState: ObservableObject {
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
     }
 
+    func selectTab(id: UUID) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        activeTabId = id
+    }
+
+    func selectNextTab() {
+        guard let activeTabId,
+              let index = tabs.firstIndex(where: { $0.id == activeTabId }),
+              tabs.count > 1 else { return }
+        self.activeTabId = tabs[(index + 1) % tabs.count].id
+    }
+
+    func selectPreviousTab() {
+        guard let activeTabId,
+              let index = tabs.firstIndex(where: { $0.id == activeTabId }),
+              tabs.count > 1 else { return }
+        self.activeTabId = tabs[(index - 1 + tabs.count) % tabs.count].id
+    }
+
     func closeTab(id: UUID) {
         tabs.removeAll { $0.id == id }
         if let state = dataGridCache.removeValue(forKey: id) {

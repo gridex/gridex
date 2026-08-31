@@ -155,10 +155,10 @@ struct TabItemView: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: tabIcon)
-                .font(.system(size: 11))
-
             if isRenaming {
+                Image(systemName: tabIcon)
+                    .font(.system(size: 11))
+
                 TextField("", text: $renameText, onCommit: {
                     let trimmed = renameText.trimmingCharacters(in: .whitespaces)
                     if !trimmed.isEmpty {
@@ -172,9 +172,17 @@ struct TabItemView: View {
                 .onAppear { renameText = tab.title }
                 .onExitCommand { isRenaming = false }
             } else {
-                Text(tab.title)
-                    .font(.system(size: 12))
-                    .lineLimit(1)
+                Button(action: { appState.selectTab(id: tab.id) }) {
+                    HStack(spacing: 7) {
+                        Image(systemName: tabIcon)
+                            .font(.system(size: 11))
+
+                        Text(tab.title)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
             }
 
             Button(action: { appState.closeTab(id: tab.id) }) {
@@ -200,7 +208,6 @@ struct TabItemView: View {
             Divider().frame(height: 18)
         }
         .pointerCursor()
-        .onTapGesture { appState.activeTabId = tab.id }
         .overlay(MiddleClickOverlay { appState.closeTab(id: tab.id) })
         .onHover { isHovering = $0 }
         .contextMenu {
@@ -278,15 +285,18 @@ class MiddleClickNSView: NSView {
         super.viewDidMoveToWindow()
         if window != nil, monitor == nil {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [weak self] event in
-                guard let self, let action = self.action, event.buttonNumber == 2 else { return event }
+                guard let self, event.buttonNumber == 2 else { return event }
                 let locationInView = self.convert(event.locationInWindow, from: nil)
-                if self.bounds.contains(locationInView) {
-                    action()
-                    return nil
-                }
-                return event
+                return self.handleMiddleClick(at: locationInView) ? nil : event
             }
         }
+    }
+
+    @discardableResult
+    func handleMiddleClick(at point: NSPoint) -> Bool {
+        guard bounds.contains(point), let action else { return false }
+        action()
+        return true
     }
 
     override func removeFromSuperview() {

@@ -2,6 +2,11 @@
 
 All notable changes to Gridex are documented in this file. Gridex ships native apps for **macOS** (Swift/AppKit) and **Windows** (C++/WinUI 3). Unless noted otherwise, changes apply to both platforms.
 
+## [Unreleased]
+
+### Fixed
+- **macOS tabs** — Clicking a tab reliably activates it; Control-Tab and Control-Shift-Tab cycle forward/backward; tab close controls retain their expected left/middle-click behavior.
+
 ## [0.23.0] - 2026-04-12
 
 ### Added
