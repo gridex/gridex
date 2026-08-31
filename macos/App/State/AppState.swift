@@ -27,12 +27,16 @@ final class AppState: ObservableObject {
 
     /// Tables the user has marked for deletion in the sidebar.
     /// They are NOT dropped until the user clicks the commit button in the sidebar header.
-    /// Key is the table name (per active connection / schema).
-    @Published var pendingTableDeletions: [String: PendingTableDeletion] = [:]
-    @Published var pendingTableTruncations: Set<String> = []
+    @Published var pendingTableDeletions: [TableReference: PendingTableDeletion] = [:]
+    @Published var pendingTableTruncations: Set<TableReference> = []
+
+    struct TableReference: Hashable {
+        let name: String
+        let schema: String?
+    }
 
     struct PendingTableDeletion {
-        var tableName: String
+        let reference: TableReference
         var cascade: Bool
         var ignoreForeignKeys: Bool
     }
@@ -62,6 +66,8 @@ final class AppState: ObservableObject {
     @Published var activeAdapter: (any DatabaseAdapter)?
     @Published var activeConfig: ConnectionConfig?
     @Published var sidebarItems: [SidebarItem] = []
+    @Published private(set) var sidebarSchemas: [String] = []
+    @Published var selectedSidebarSchema: String?
     @Published var connectionTitle: String = "Gridex"
     @Published var isConnecting: Bool = false
     @Published var connectionError: String?
@@ -270,7 +276,12 @@ final class AppState: ObservableObject {
             isConnecting = false
 
             // Load sidebar immediately (most important for user)
-            await loadSidebar(config: config, adapter: connection.adapter)
+            await loadSidebarSchemas(config: config, adapter: connection.adapter)
+            await loadSidebar(
+                config: config,
+                adapter: connection.adapter,
+                schema: selectedSidebarSchema
+            )
 
             // Fetch metadata in background — all parallel
             Task { [weak self] in
@@ -333,13 +344,39 @@ final class AppState: ObservableObject {
         }
     }
 
-    func loadSidebar(config: ConnectionConfig, adapter: any DatabaseAdapter) async {
+    func loadSidebarSchemas(config: ConnectionConfig, adapter: any DatabaseAdapter) async {
+        guard config.databaseType == .postgresql else {
+            sidebarSchemas = []
+            selectedSidebarSchema = nil
+            return
+        }
+
+        do {
+            let schemas = try await adapter.listSchemas(database: config.database)
+            sidebarSchemas = Array(Set(schemas)).sorted()
+            selectedSidebarSchema = SidebarSchemaSelection.resolve(
+                previous: selectedSidebarSchema,
+                for: config.databaseType,
+                schemas: sidebarSchemas
+            )
+        } catch {
+            sidebarSchemas = []
+            selectedSidebarSchema = nil
+            print("Sidebar schema load error: \(error)")
+        }
+    }
+
+    func loadSidebar(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        schema: String? = nil
+    ) async {
         do {
             // Run all queries in parallel instead of sequential
-            async let tablesTask = adapter.listTables(schema: nil)
-            async let viewsTask = adapter.listViews(schema: nil)
-            async let functionsTask = adapter.listFunctions(schema: nil)
-            async let proceduresTask = adapter.listProcedures(schema: nil)
+            async let tablesTask = adapter.listTables(schema: schema)
+            async let viewsTask = adapter.listViews(schema: schema)
+            async let functionsTask = adapter.listFunctions(schema: schema)
+            async let proceduresTask = adapter.listProcedures(schema: schema)
 
             let tables = try await tablesTask
             let views = try await viewsTask
@@ -347,32 +384,32 @@ final class AppState: ObservableObject {
             let procedures = (try? await proceduresTask) ?? []
 
             let tableItems = tables.map { t in
-                SidebarItem(title: t.name, type: .table(t.name), iconName: "")
+                SidebarItem(title: t.name, type: .table(t.name), schema: schema, iconName: "")
             }
             let viewItems = views.map { v in
-                SidebarItem(title: v.name, type: .view(v.name), iconName: "")
+                SidebarItem(title: v.name, type: .view(v.name), schema: schema, iconName: "")
             }
             let functionItems = functions.map { f in
-                SidebarItem(title: f, type: .function(f), iconName: "")
+                SidebarItem(title: f, type: .function(f), schema: schema, iconName: "")
             }
             let procedureItems = procedures.map { p in
-                SidebarItem(title: p, type: .procedure(p), iconName: "")
+                SidebarItem(title: p, type: .procedure(p), schema: schema, iconName: "")
             }
 
             var items: [SidebarItem] = []
 
             if !functionItems.isEmpty {
-                items.append(SidebarItem(title: "Functions", type: .group("functions"), iconName: "", children: functionItems))
+                items.append(SidebarItem(title: "Functions", type: .group("functions"), schema: schema, iconName: "", children: functionItems))
             }
 
             if !procedureItems.isEmpty {
-                items.append(SidebarItem(title: "Procedures", type: .group("procedures"), iconName: "", children: procedureItems))
+                items.append(SidebarItem(title: "Procedures", type: .group("procedures"), schema: schema, iconName: "", children: procedureItems))
             }
 
-            items.append(SidebarItem(title: "Tables", type: .group("tables"), iconName: "", children: tableItems))
+            items.append(SidebarItem(title: "Tables", type: .group("tables"), schema: schema, iconName: "", children: tableItems))
 
             if !viewItems.isEmpty {
-                items.append(SidebarItem(title: "Views", type: .group("views"), iconName: "", children: viewItems))
+                items.append(SidebarItem(title: "Views", type: .group("views"), schema: schema, iconName: "", children: viewItems))
             }
 
             sidebarItems = items
@@ -653,7 +690,8 @@ final class AppState: ObservableObject {
 
             // Reload sidebar for the new database
             if let cfg = activeConfig, let adp = activeAdapter {
-                await loadSidebar(config: cfg, adapter: adp)
+                await loadSidebarSchemas(config: cfg, adapter: adp)
+                await loadSidebar(config: cfg, adapter: adp, schema: selectedSidebarSchema)
             }
         } catch {
             print("Switch database failed: \(error)")
@@ -708,6 +746,8 @@ final class AppState: ObservableObject {
         currentDatabaseName = nil
         availableDatabases.removeAll()
         sidebarItems.removeAll()
+        sidebarSchemas.removeAll()
+        selectedSidebarSchema = nil
         selectedSidebarItem = nil
         selectedRowDetails = nil
         onDetailFieldEdit = nil
@@ -723,7 +763,10 @@ final class AppState: ObservableObject {
 
     func refreshSidebar() {
         guard let adapter = activeAdapter, let config = activeConfig else { return }
-        Task { await loadSidebar(config: config, adapter: adapter) }
+        Task {
+            await loadSidebarSchemas(config: config, adapter: adapter)
+            await loadSidebar(config: config, adapter: adapter, schema: selectedSidebarSchema)
+        }
     }
 
     /// Re-fetch the database list from the active adapter and publish it.

@@ -2,6 +2,11 @@
 
 All notable changes to Gridex are documented in this file. Gridex ships native apps for **macOS** (Swift/AppKit) and **Windows** (C++/WinUI 3). Unless noted otherwise, changes apply to both platforms.
 
+## [Unreleased]
+
+### Fixed
+- **macOS PostgreSQL schemas** — The sidebar now lists and operates on the selected accessible schema instead of always using public.
+
 ## [0.23.0] - 2026-04-12
 
 ### Added

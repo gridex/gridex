@@ -27,7 +27,6 @@ struct SidebarView: View {
     @EnvironmentObject private var appState: AppState
     @State private var searchText = ""
     @State private var activeTab: SidebarTab = .items
-    @State private var selectedSchema = "public"
     @State private var showNewTableSheet = false
     @State private var deleteErrorMessage: String?
 
@@ -118,13 +117,15 @@ struct SidebarView: View {
     private func commitPendingTruncations() async {
         guard let adapter = appState.activeAdapter else { return }
         let d = adapter.databaseType.sqlDialect
-        for name in appState.pendingTableTruncations {
-            let quoted = d.quoteIdentifier(name)
+        for reference in appState.pendingTableTruncations {
+            let table = adapter.databaseType == .postgresql
+                ? d.qualifiedIdentifier(reference.name, schema: reference.schema)
+                : d.quoteIdentifier(reference.name)
             let sql: String
             if adapter.databaseType == .sqlite {
-                sql = "DELETE FROM \(quoted)"
+                sql = "DELETE FROM \(table)"
             } else {
-                sql = "TRUNCATE TABLE \(quoted)"
+                sql = "TRUNCATE TABLE \(table)"
             }
             _ = try? await adapter.executeRaw(sql: sql)
         }
@@ -136,7 +137,8 @@ struct SidebarView: View {
     private func commitPendingDeletions() async {
         guard let adapter = appState.activeAdapter else { return }
         let d = adapter.databaseType.sqlDialect
-        let schemaName = "public"  // TODO: use selected schema
+        // Preserve the existing default qualification for non-PostgreSQL engines.
+        let schemaName = "public"
 
         // MySQL-specific: disable FK checks globally if any table has ignoreForeignKeys
         let shouldIgnoreFK = appState.pendingTableDeletions.values.contains { $0.ignoreForeignKeys }
@@ -144,14 +146,17 @@ struct SidebarView: View {
             _ = try? await adapter.executeRaw(sql: "SET FOREIGN_KEY_CHECKS = 0")
         }
 
-        var failedTables: [String: String] = [:]
+        var failedTables: [AppState.TableReference: String] = [:]
 
         for pending in appState.pendingTableDeletions.values {
+            let reference = pending.reference
             let qualified: String
             if adapter.databaseType == .sqlite {
-                qualified = d.quoteIdentifier(pending.tableName)
+                qualified = d.quoteIdentifier(reference.name)
+            } else if adapter.databaseType == .postgresql {
+                qualified = d.qualifiedIdentifier(reference.name, schema: reference.schema)
             } else {
-                qualified = "\(d.quoteIdentifier(schemaName)).\(d.quoteIdentifier(pending.tableName))"
+                qualified = "\(d.quoteIdentifier(schemaName)).\(d.quoteIdentifier(reference.name))"
             }
             var sql = "DROP TABLE IF EXISTS \(qualified)"
             if pending.cascade && adapter.databaseType == .postgresql {
@@ -160,10 +165,14 @@ struct SidebarView: View {
             do {
                 _ = try await adapter.executeRaw(sql: sql)
                 // Close any open tabs for this table
-                appState.tabs.removeAll { $0.tableName == pending.tableName && $0.type == .dataGrid }
-                appState.pendingTableDeletions.removeValue(forKey: pending.tableName)
+                appState.tabs.removeAll {
+                    $0.tableName == reference.name
+                        && $0.schema == reference.schema
+                        && $0.type == .dataGrid
+                }
+                appState.pendingTableDeletions.removeValue(forKey: reference)
             } catch {
-                failedTables[pending.tableName] = error.localizedDescription
+                failedTables[reference] = error.localizedDescription
             }
         }
 
@@ -172,7 +181,10 @@ struct SidebarView: View {
         }
 
         if !failedTables.isEmpty {
-            let details = failedTables.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+            let details = failedTables.map { reference, message in
+                let name = reference.schema.map { "\($0).\(reference.name)" } ?? reference.name
+                return "\(name): \(message)"
+            }.joined(separator: "\n")
             deleteErrorMessage = "Failed to delete:\n\(details)"
         }
 
@@ -232,13 +244,25 @@ struct SidebarView: View {
 
             Spacer()
 
-            Picker("", selection: $selectedSchema) {
-                Text("public").tag("public")
+            if appState.activeConfig?.databaseType == .postgresql {
+                Picker("", selection: Binding(
+                    get: { appState.selectedSidebarSchema },
+                    set: { schema in
+                        guard schema != appState.selectedSidebarSchema else { return }
+                        appState.selectedSidebarSchema = schema
+                        appState.selectedSidebarItem = nil
+                        appState.refreshSidebar()
+                    }
+                )) {
+                    ForEach(appState.sidebarSchemas, id: \.self) { schema in
+                        Text(schema).tag(Optional(schema))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .font(.system(size: 12))
+                .frame(width: 100)
             }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .font(.system(size: 12))
-            .frame(width: 80)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -271,7 +295,7 @@ struct SidebarView: View {
         }
         let matched = item.children.compactMap { filterItem($0, query: query) }
         if matched.isEmpty && !item.title.lowercased().contains(query) { return nil }
-        return SidebarItem(id: item.id, title: item.title, type: item.type, iconName: item.iconName,
+        return SidebarItem(id: item.id, title: item.title, type: item.type, schema: item.schema, iconName: item.iconName,
                            children: matched.isEmpty ? item.children : matched, badge: item.badge)
     }
 }
@@ -303,13 +327,13 @@ struct SidebarItemRow: View {
         let isActive = appState.selectedSidebarItem == item.type
         let isPendingDelete: Bool = {
             if case .table(let name) = item.type {
-                return appState.pendingTableDeletions[name] != nil
+                return appState.pendingTableDeletions[tableReference(name)] != nil
             }
             return false
         }()
         let isPendingTruncate: Bool = {
             if case .table(let name) = item.type {
-                return appState.pendingTableTruncations.contains(name)
+                return appState.pendingTableTruncations.contains(tableReference(name))
             }
             return false
         }()
@@ -347,7 +371,7 @@ struct SidebarItemRow: View {
         .onTapGesture(count: 2) {
             switch item.type {
             case .table(let name), .view(let name):
-                appState.openTable(name: name, schema: nil)
+                appState.openTable(name: name, schema: item.schema)
                 NotificationCenter.default.post(name: .reloadData, object: nil)
             default:
                 break
@@ -358,13 +382,13 @@ struct SidebarItemRow: View {
             // Open table/view on single click
             switch item.type {
             case .table(let name):
-                appState.openTable(name: name, schema: nil)
+                appState.openTable(name: name, schema: item.schema)
             case .view(let name):
-                appState.openTable(name: name, schema: nil)
+                appState.openTable(name: name, schema: item.schema)
             case .function(let name):
-                appState.openFunction(name: name, schema: nil)
+                appState.openFunction(name: name, schema: item.schema)
             case .procedure(let name):
-                appState.openProcedure(name: name, schema: nil)
+                appState.openProcedure(name: name, schema: item.schema)
             default:
                 break
             }
@@ -374,7 +398,7 @@ struct SidebarItemRow: View {
             Button("Cancel", role: .cancel) {}
             Button("Truncate", role: .destructive) {
                 if case .table(let name) = item.type {
-                    appState.pendingTableTruncations.insert(name)
+                    appState.pendingTableTruncations.insert(tableReference(name))
                 }
             }
         } message: {
@@ -385,8 +409,9 @@ struct SidebarItemRow: View {
         .sheet(isPresented: $showDeleteSheet) {
             if case .table(let name) = item.type {
                 DeleteTableSheet(tableName: name) { cascade, ignoreFK in
-                    appState.pendingTableDeletions[name] = AppState.PendingTableDeletion(
-                        tableName: name,
+                    let reference = tableReference(name)
+                    appState.pendingTableDeletions[reference] = AppState.PendingTableDeletion(
+                        reference: reference,
                         cascade: cascade,
                         ignoreForeignKeys: ignoreFK
                     )
@@ -395,12 +420,12 @@ struct SidebarItemRow: View {
         }
         .sheet(isPresented: $showExportSheet) {
             if case .table(let name) = item.type {
-                ExportTableSheet(tableName: name)
+                ExportTableSheet(tableName: name, schema: item.schema)
             }
         }
         .sheet(isPresented: $showImportCSVSheet) {
             if case .table(let name) = item.type {
-                ImportCSVSheet(tableName: name)
+                ImportCSVSheet(tableName: name, schema: item.schema)
             }
         }
         .sheet(item: $importSQLFile, onDismiss: {
@@ -434,7 +459,7 @@ struct SidebarItemRow: View {
                     .foregroundStyle(.secondary)
                     .onTapGesture {
                         if case .group(let kind) = item.type, kind == "tables" {
-                            appState.openTableList(schema: nil)
+                            appState.openTableList(schema: appState.selectedSidebarSchema)
                         }
                     }
                 Spacer()
@@ -447,7 +472,7 @@ struct SidebarItemRow: View {
                 // Inline "+" button for the Tables group to create a new table
                 if case .group(let kind) = item.type, kind == "tables" {
                     Button {
-                        appState.openCreateTable(schema: nil)
+                        appState.openCreateTable(schema: appState.selectedSidebarSchema)
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 10, weight: .semibold))
@@ -471,13 +496,13 @@ struct SidebarItemRow: View {
             switch kind {
             case "tables":
                 Button("New Table…") {
-                    appState.openCreateTable(schema: nil)
+                    appState.openCreateTable(schema: appState.selectedSidebarSchema)
                 }
                 Button("Open Table List") {
-                    appState.openTableList(schema: nil)
+                    appState.openTableList(schema: appState.selectedSidebarSchema)
                 }
                 Button("ER Diagram") {
-                    appState.openERDiagram(schema: nil)
+                    appState.openERDiagram(schema: appState.selectedSidebarSchema)
                 }
                 Divider()
                 Button("Refresh") { appState.refreshSidebar() }
@@ -539,17 +564,17 @@ struct SidebarItemRow: View {
             }
         } else if case .table(let name) = item.type {
             Button("Open in new tab") {
-                appState.openTable(name: name, schema: nil)
+                appState.openTable(name: name, schema: item.schema)
             }
 
             Button("Open structure") {
-                appState.openTableStructure(name: name, schema: nil)
+                appState.openTableStructure(name: name, schema: item.schema)
             }
 
             Divider()
 
             Button("New Table…") {
-                appState.openCreateTable(schema: nil)
+                appState.openCreateTable(schema: appState.selectedSidebarSchema)
             }
 
             Button("Copy name") {
@@ -583,7 +608,7 @@ struct SidebarItemRow: View {
                     Task { await copyCreateScript(name) }
                 }
                 Button("SELECT") {
-                    copyToClipboard("SELECT * FROM \(quoted(name)) LIMIT 100;")
+                    copyToClipboard("SELECT * FROM \(qualified(name)) LIMIT 100;")
                 }
                 Button("INSERT") {
                     Task { await copyInsertScript(name) }
@@ -592,15 +617,15 @@ struct SidebarItemRow: View {
                     Task { await copyUpdateScript(name) }
                 }
                 Button("DELETE") {
-                    copyToClipboard("DELETE FROM \(quoted(name)) WHERE <condition>;")
+                    copyToClipboard("DELETE FROM \(qualified(name)) WHERE <condition>;")
                 }
             }
 
             Divider()
 
-            if appState.pendingTableTruncations.contains(name) {
+            if appState.pendingTableTruncations.contains(tableReference(name)) {
                 Button("Undo Truncate") {
-                    appState.pendingTableTruncations.remove(name)
+                    appState.pendingTableTruncations.remove(tableReference(name))
                 }
             } else {
                 Button("Truncate...") {
@@ -608,9 +633,9 @@ struct SidebarItemRow: View {
                 }
             }
 
-            if appState.pendingTableDeletions[name] != nil {
+            if appState.pendingTableDeletions[tableReference(name)] != nil {
                 Button("Undo Delete") {
-                    appState.pendingTableDeletions.removeValue(forKey: name)
+                    appState.pendingTableDeletions.removeValue(forKey: tableReference(name))
                 }
             } else {
                 Button("Delete...") {
@@ -619,7 +644,7 @@ struct SidebarItemRow: View {
             }
         } else {
             Button("New Table…") {
-                appState.openCreateTable(schema: nil)
+                appState.openCreateTable(schema: appState.selectedSidebarSchema)
             }
             Divider()
             Button("Refresh") { appState.refreshSidebar() }
@@ -628,9 +653,13 @@ struct SidebarItemRow: View {
 
     // MARK: - Context Menu Actions
 
-    private func quoted(_ name: String) -> String {
+    private func tableReference(_ name: String) -> AppState.TableReference {
+        AppState.TableReference(name: name, schema: item.schema)
+    }
+
+    private func qualified(_ name: String) -> String {
         guard let adapter = appState.activeAdapter else { return "\"\(name)\"" }
-        return adapter.databaseType.sqlDialect.quoteIdentifier(name)
+        return adapter.databaseType.sqlDialect.qualifiedIdentifier(name, schema: item.schema)
     }
 
     private func copyToClipboard(_ text: String) {
@@ -640,7 +669,7 @@ struct SidebarItemRow: View {
 
     private func copyCreateScript(_ name: String) async {
         guard let adapter = appState.activeAdapter else { return }
-        if let desc = try? await adapter.describeTable(name: name, schema: nil) {
+        if let desc = try? await adapter.describeTable(name: name, schema: item.schema) {
             let ddl = desc.toDDL(dialect: adapter.databaseType.sqlDialect)
             copyToClipboard(ddl)
         }
@@ -648,20 +677,20 @@ struct SidebarItemRow: View {
 
     private func copyInsertScript(_ name: String) async {
         guard let adapter = appState.activeAdapter else { return }
-        if let desc = try? await adapter.describeTable(name: name, schema: nil) {
+        if let desc = try? await adapter.describeTable(name: name, schema: item.schema) {
             let cols = desc.columns.map { adapter.databaseType.sqlDialect.quoteIdentifier($0.name) }.joined(separator: ", ")
             let vals = desc.columns.map { _ in "?" }.joined(separator: ", ")
-            copyToClipboard("INSERT INTO \(quoted(name)) (\(cols)) VALUES (\(vals));")
+            copyToClipboard("INSERT INTO \(qualified(name)) (\(cols)) VALUES (\(vals));")
         }
     }
 
     private func copyUpdateScript(_ name: String) async {
         guard let adapter = appState.activeAdapter else { return }
-        if let desc = try? await adapter.describeTable(name: name, schema: nil) {
+        if let desc = try? await adapter.describeTable(name: name, schema: item.schema) {
             let sets = desc.columns.filter { !$0.isPrimaryKey }.map { "\(adapter.databaseType.sqlDialect.quoteIdentifier($0.name)) = ?" }.joined(separator: ", ")
             let pk = desc.columns.first(where: \.isPrimaryKey)
             let whereClause = pk.map { "\(adapter.databaseType.sqlDialect.quoteIdentifier($0.name)) = ?" } ?? "<condition>"
-            copyToClipboard("UPDATE \(quoted(name)) SET \(sets) WHERE \(whereClause);")
+            copyToClipboard("UPDATE \(qualified(name)) SET \(sets) WHERE \(whereClause);")
         }
     }
 
@@ -813,7 +842,7 @@ struct SidebarItemRow: View {
 // MARK: - New Table Sheet
 
 struct NewTableSheet: View {
-    let schema: String
+    let schema: String?
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
@@ -844,7 +873,7 @@ struct NewTableSheet: View {
                 }
                 GridRow {
                     Text("Schema:").font(.system(size: 12))
-                    Text(schema)
+                    Text(schema ?? "Default")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -891,9 +920,7 @@ struct NewTableSheet: View {
         defer { isCreating = false }
 
         let d = adapter.databaseType.sqlDialect
-        let qualifiedTable = adapter.databaseType == .sqlite
-            ? d.quoteIdentifier(tableName)
-            : "\(d.quoteIdentifier(schema)).\(d.quoteIdentifier(tableName))"
+        let qualifiedTable = d.qualifiedIdentifier(tableName, schema: schema)
 
         // Create table with a default id column
         let idType: String
