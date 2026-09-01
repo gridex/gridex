@@ -59,6 +59,73 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertTrue(state.cachedDataGridState(for: firstTabID).showFilterBar)
     }
 
+    func test_openRedisFlatKeyList_reusesOnlyWithinTheCurrentDatabase() throws {
+        let state = AppState()
+        state.currentDatabaseName = "db0"
+
+        state.openRedisFlatKeyList()
+        let db0TabID = try XCTUnwrap(state.activeTabId)
+
+        state.currentDatabaseName = "db1"
+        state.openRedisFlatKeyList()
+        let db1TabID = try XCTUnwrap(state.activeTabId)
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertNotEqual(db1TabID, db0TabID)
+        XCTAssertEqual(state.tabs.first(where: { $0.id == db0TabID })?.databaseName, "db0")
+        XCTAssertEqual(state.tabs.first(where: { $0.id == db1TabID })?.databaseName, "db1")
+
+        state.currentDatabaseName = "db0"
+        state.openRedisFlatKeyList()
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertEqual(state.activeTabId, db0TabID)
+    }
+
+    func test_openRedisKeyDetail_reusesSameNamedKeyOnlyWithinCurrentDatabase() throws {
+        let state = AppState()
+        state.currentDatabaseName = "db0"
+
+        state.openRedisKeyDetail(key: "session:42")
+        let db0TabID = try XCTUnwrap(state.activeTabId)
+
+        state.currentDatabaseName = "db1"
+        state.openRedisKeyDetail(key: "session:42")
+        let db1TabID = try XCTUnwrap(state.activeTabId)
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertNotEqual(db1TabID, db0TabID)
+        XCTAssertEqual(state.tabs.first(where: { $0.id == db0TabID })?.databaseName, "db0")
+        XCTAssertEqual(state.tabs.first(where: { $0.id == db1TabID })?.databaseName, "db1")
+
+        state.currentDatabaseName = "db0"
+        state.openRedisKeyDetail(key: "session:42")
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertEqual(state.activeTabId, db0TabID)
+    }
+
+    func test_flatKeyListOpenStateBecomesFalseAfterCloseAndCanReopen() throws {
+        let state = AppState()
+        state.currentDatabaseName = "db3"
+
+        XCTAssertFalse(state.isRedisFlatKeyListOpen)
+        state.openRedisFlatKeyList()
+        let closedTabID = try XCTUnwrap(state.activeTabId)
+        XCTAssertTrue(state.isRedisFlatKeyListOpen)
+
+        state.closeTab(id: closedTabID)
+
+        XCTAssertFalse(state.isRedisFlatKeyListOpen)
+
+        state.openRedisFlatKeyList()
+        let reopenedTabID = try XCTUnwrap(state.activeTabId)
+
+        XCTAssertTrue(state.isRedisFlatKeyListOpen)
+        XCTAssertNotEqual(reopenedTabID, closedTabID)
+        XCTAssertEqual(state.tabs.first(where: { $0.id == reopenedTabID })?.databaseName, "db3")
+    }
+
     private func redisConfig() -> ConnectionConfig {
         ConnectionConfig(name: "Redis", databaseType: .redis)
     }
