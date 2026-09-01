@@ -136,6 +136,22 @@ struct TabGroupHeaderView: View {
 // MARK: - Tab Item
 
 struct TabItemView: View {
+    enum HitTarget: Equatable {
+        case selection
+        case close
+        case none
+    }
+
+    struct HitAreas {
+        let bounds: NSRect
+        let closeFrame: NSRect
+
+        func target(at point: NSPoint) -> HitTarget {
+            guard bounds.contains(point) else { return .none }
+            return closeFrame.contains(point) ? .close : .selection
+        }
+    }
+
     let tab: AppState.ContentTab
     let isActive: Bool
 
@@ -153,39 +169,62 @@ struct TabItemView: View {
         return Color.accentColor
     }
 
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: tabIcon)
-                .font(.system(size: 11))
+    static func hitAreas(in bounds: NSRect, closeFrame: NSRect) -> HitAreas {
+        HitAreas(bounds: bounds, closeFrame: bounds.intersection(closeFrame))
+    }
 
+    var body: some View {
+        HStack(spacing: 0) {
             if isRenaming {
-                TextField("", text: $renameText, onCommit: {
-                    let trimmed = renameText.trimmingCharacters(in: .whitespaces)
-                    if !trimmed.isEmpty {
-                        appState.renameTab(id: tab.id, newTitle: trimmed)
-                    }
-                    isRenaming = false
-                })
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .frame(width: 100)
-                .onAppear { renameText = tab.title }
-                .onExitCommand { isRenaming = false }
-            } else {
-                Text(tab.title)
+                HStack(spacing: 7) {
+                    Image(systemName: tabIcon)
+                        .font(.system(size: 11))
+
+                    TextField("", text: $renameText, onCommit: {
+                        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+                        if !trimmed.isEmpty {
+                            appState.renameTab(id: tab.id, newTitle: trimmed)
+                        }
+                        isRenaming = false
+                    })
+                    .textFieldStyle(.plain)
                     .font(.system(size: 12))
-                    .lineLimit(1)
+                    .frame(width: 100)
+                    .onAppear { renameText = tab.title }
+                    .onExitCommand { isRenaming = false }
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 7)
+                .frame(height: 38)
+            } else {
+                Button(action: { appState.selectTab(id: tab.id) }) {
+                    HStack(spacing: 7) {
+                        Image(systemName: tabIcon)
+                            .font(.system(size: 11))
+
+                        Text(tab.title)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                    }
+                    .padding(.leading, 14)
+                    .padding(.trailing, 7)
+                    .frame(height: 38)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             Button(action: { appState.closeTab(id: tab.id) }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.secondary)
+                    .padding(.trailing, 14)
+                    .frame(height: 38)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .opacity(isHovering || isActive ? 1 : 0)
         }
-        .padding(.horizontal, 14)
         .frame(height: 38)
         .contentShape(Rectangle())
         .background(isActive ? Color(nsColor: .controlBackgroundColor) : .clear)
@@ -200,7 +239,6 @@ struct TabItemView: View {
             Divider().frame(height: 18)
         }
         .pointerCursor()
-        .onTapGesture { appState.activeTabId = tab.id }
         .overlay(MiddleClickOverlay { appState.closeTab(id: tab.id) })
         .onHover { isHovering = $0 }
         .contextMenu {
@@ -278,15 +316,18 @@ class MiddleClickNSView: NSView {
         super.viewDidMoveToWindow()
         if window != nil, monitor == nil {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [weak self] event in
-                guard let self, let action = self.action, event.buttonNumber == 2 else { return event }
+                guard let self, event.buttonNumber == 2 else { return event }
                 let locationInView = self.convert(event.locationInWindow, from: nil)
-                if self.bounds.contains(locationInView) {
-                    action()
-                    return nil
-                }
-                return event
+                return self.handleMiddleClick(at: locationInView) ? nil : event
             }
         }
+    }
+
+    @discardableResult
+    func handleMiddleClick(at point: NSPoint) -> Bool {
+        guard bounds.contains(point), let action else { return false }
+        action()
+        return true
     }
 
     override func removeFromSuperview() {
