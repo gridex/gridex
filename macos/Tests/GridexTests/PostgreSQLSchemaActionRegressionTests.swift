@@ -149,6 +149,73 @@ final class SidebarLoadPublicationTests: XCTestCase {
             "The selected schema and every visible sidebar item must describe one coherent schema"
         )
     }
+
+    func test_explicitItemSchemaCannotConsumePendingDiscoveryForAnotherSchema() async {
+        let adapter = RecordingDatabaseAdapter(schemas: ["tenant_a", "tenant_b"])
+        let config = makePostgreSQLConfig()
+        let appState = AppState()
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.activeAdapter = adapter
+
+        await appState.loadSidebarSchemas(
+            config: config,
+            adapter: adapter,
+            preferredSchema: "tenant_a"
+        )
+        await appState.loadSidebar(
+            config: config,
+            adapter: adapter,
+            schema: "tenant_b"
+        )
+
+        XCTAssertEqual(appState.selectedSidebarSchema, "tenant_b")
+        XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_b"])
+    }
+
+    func test_olderSplitReloadCannotOverwriteNewerCompletedSplitReload() async {
+        let olderItemsGate = SidebarLoadGate()
+        let adapter = RecordingDatabaseAdapter(schemas: ["tenant_a", "tenant_b"])
+        let config = makePostgreSQLConfig()
+        let appState = AppState()
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.activeAdapter = adapter
+
+        let olderReload = Task {
+            await appState.loadSidebarSchemas(
+                config: config,
+                adapter: adapter,
+                preferredSchema: "tenant_a"
+            )
+            await olderItemsGate.block()
+            await appState.loadSidebar(
+                config: config,
+                adapter: adapter,
+                schema: "tenant_a"
+            )
+        }
+        await olderItemsGate.waitUntilBlocked()
+
+        await appState.loadSidebarSchemas(
+            config: config,
+            adapter: adapter,
+            preferredSchema: "tenant_b"
+        )
+        await appState.loadSidebar(
+            config: config,
+            adapter: adapter,
+            schema: "tenant_b"
+        )
+        XCTAssertEqual(appState.selectedSidebarSchema, "tenant_b")
+        XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_b"])
+
+        await olderItemsGate.release()
+        await olderReload.value
+
+        XCTAssertEqual(appState.selectedSidebarSchema, "tenant_b")
+        XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_b"])
+    }
 }
 
 @MainActor
