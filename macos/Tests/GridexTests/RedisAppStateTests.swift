@@ -1065,6 +1065,7 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "'SELECT' 7"), "db7")
         XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SEL\"ECT\" 8"), "db8")
         XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SELECT '9"), "db9")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "\u{017F}elect 10"), "db10")
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT -1"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT five"))
