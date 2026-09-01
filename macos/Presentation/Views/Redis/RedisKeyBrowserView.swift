@@ -28,6 +28,7 @@ enum RedisKeyBrowserBehavior {
 struct RedisKeyBrowserContext: Hashable {
     let connectionID: UUID
     let databaseName: String
+    let sessionID: ObjectIdentifier
 }
 
 struct RedisKeyBrowserContentState {
@@ -90,11 +91,13 @@ struct RedisKeyBrowserView: View {
     }
 
     private var activeContext: RedisKeyBrowserContext? {
-        guard let connectionID = appState.activeConnectionId,
+        guard let adapter = appState.activeAdapter as? RedisAdapter,
+              let connectionID = appState.activeConnectionId,
               let databaseName = appState.currentDatabaseName else { return nil }
         return RedisKeyBrowserContext(
             connectionID: connectionID,
-            databaseName: databaseName
+            databaseName: databaseName,
+            sessionID: ObjectIdentifier(adapter)
         )
     }
 
@@ -309,17 +312,12 @@ struct RedisKeyBrowserView: View {
         capturedNonce: Int,
         context: RedisKeyBrowserContext
     ) async {
+        guard let redis = appState.activeAdapter as? RedisAdapter,
+              ObjectIdentifier(redis) == context.sessionID,
+              activeContext == context else { return }
+
         contentState.beginLoading(in: context)
         isLoading = true
-
-        guard let redis = appState.activeAdapter as? RedisAdapter else {
-            publishError(
-                "Not connected to Redis",
-                capturedNonce: capturedNonce,
-                context: context
-            )
-            return
-        }
 
         do {
             let result = try await redis.scanKeyNames()

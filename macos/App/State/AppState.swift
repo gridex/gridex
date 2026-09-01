@@ -161,6 +161,7 @@ final class AppState: ObservableObject {
     struct RedisTabContext: Hashable {
         let connectionID: UUID
         let databaseName: String
+        let sessionID: ObjectIdentifier
     }
 
     struct ContentTab: Identifiable {
@@ -273,6 +274,9 @@ final class AppState: ObservableObject {
                 group.cancelAll()
                 return result
             }
+            if config.databaseType == .redis {
+                currentDatabaseName = nil
+            }
             activeConnectionId = config.id
             activeAdapter = connection.adapter
             activeConfig = config
@@ -323,6 +327,10 @@ final class AppState: ObservableObject {
                         let dbName = try? await adapter.currentDatabase()
                         let databases = (try? await adapter.listDatabases()) ?? []
                         await MainActor.run {
+                            guard self.activeConnectionId == config.id,
+                                  let activeAdapter = self.activeAdapter,
+                                  ObjectIdentifier(activeAdapter) == ObjectIdentifier(adapter)
+                            else { return }
                             self.currentDatabaseName = dbName ?? config.database ?? config.name
                             self.availableDatabases = databases
                         }
@@ -516,38 +524,65 @@ final class AppState: ObservableObject {
     // MARK: - Redis Tabs
 
     private var currentRedisTabContext: RedisTabContext? {
-        guard let connectionID = activeConnectionId,
+        guard let adapter = activeAdapter as? RedisAdapter,
+              let connectionID = activeConnectionId,
               let databaseName = currentDatabaseName else { return nil }
         return RedisTabContext(
             connectionID: connectionID,
-            databaseName: databaseName
+            databaseName: databaseName,
+            sessionID: ObjectIdentifier(adapter)
         )
     }
 
     func activeRedisAdapter(for context: RedisTabContext) -> RedisAdapter? {
-        guard currentRedisTabContext == context else { return nil }
-        return activeAdapter as? RedisAdapter
+        guard let adapter = activeAdapter as? RedisAdapter,
+              currentRedisTabContext == context,
+              ObjectIdentifier(adapter) == context.sessionID else { return nil }
+        return adapter
+    }
+
+    func performRedisDatabaseTransition(
+        to databaseName: String,
+        performSelect: () async throws -> Void
+    ) async rethrows {
+        let previousDatabaseName = currentDatabaseName
+        let connectionID = activeConnectionId
+        let sessionID = activeAdapter.map(ObjectIdentifier.init)
+        currentDatabaseName = nil
+
+        do {
+            try await performSelect()
+            guard activeConnectionId == connectionID,
+                  activeAdapter.map(ObjectIdentifier.init) == sessionID else { return }
+            currentDatabaseName = databaseName
+        } catch {
+            if activeConnectionId == connectionID,
+               activeAdapter.map(ObjectIdentifier.init) == sessionID {
+                currentDatabaseName = previousDatabaseName
+            }
+            throw error
+        }
     }
 
     var isRedisFlatKeyListOpen: Bool {
-        let context = currentRedisTabContext
+        guard let context = currentRedisTabContext else { return false }
         return tabs.contains {
             $0.type == .dataGrid
                 && $0.tableName == "Keys"
                 && $0.schema == nil
-                && $0.databaseName == currentDatabaseName
+                && $0.databaseName == context.databaseName
                 && $0.redisContext == context
         }
     }
 
     func openRedisFlatKeyList() {
-        let context = currentRedisTabContext
+        guard let context = currentRedisTabContext else { return }
         let tabID: UUID
         if let existing = tabs.first(where: {
             $0.type == .dataGrid
                 && $0.tableName == "Keys"
                 && $0.schema == nil
-                && $0.databaseName == currentDatabaseName
+                && $0.databaseName == context.databaseName
                 && $0.redisContext == context
         }) {
             tabID = existing.id
@@ -558,25 +593,23 @@ final class AppState: ObservableObject {
                 title: "Keys",
                 tableName: "Keys",
                 schema: nil,
-                databaseName: currentDatabaseName,
+                databaseName: context.databaseName,
                 redisContext: context
             )
             tabs.append(tab)
             tabID = tab.id
-            if let databaseName = currentDatabaseName {
-                ensureTabGroup(for: databaseName)
-            }
+            ensureTabGroup(for: context.databaseName)
         }
         activeTabId = tabID
         cachedDataGridState(for: tabID).showFilterBar = true
     }
 
     func openRedisKeyDetail(key: String) {
-        let context = currentRedisTabContext
+        guard let context = currentRedisTabContext else { return }
         if let existing = tabs.first(where: {
             $0.type == .redisKeyDetail
                 && $0.tableName == key
-                && $0.databaseName == currentDatabaseName
+                && $0.databaseName == context.databaseName
                 && $0.redisContext == context
         }) {
             activeTabId = existing.id
@@ -588,12 +621,12 @@ final class AppState: ObservableObject {
             title: key,
             tableName: key,
             schema: nil,
-            databaseName: currentDatabaseName,
+            databaseName: context.databaseName,
             redisContext: context
         )
         tabs.append(tab)
         activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+        ensureTabGroup(for: context.databaseName)
     }
 
     func openRedisServerInfo() {
@@ -716,8 +749,9 @@ final class AppState: ObservableObject {
             case .redis:
                 // Redis: SELECT <db_number>
                 let dbNum = databaseName.replacingOccurrences(of: "db", with: "")
-                _ = try await adapter.executeRaw(sql: "SELECT \(dbNum)")
-                currentDatabaseName = databaseName
+                try await performRedisDatabaseTransition(to: databaseName) {
+                    _ = try await adapter.executeRaw(sql: "SELECT \(dbNum)")
+                }
 
             case .mongodb:
                 // MongoDB: reconnect to the new database
