@@ -103,6 +103,78 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    func test_reloadAfterStructureChange_replaysLateUserSortAndFilterRequest() async throws {
+        let (grid, adapter) = try await makeCountingGrid()
+        grid.sortColumn = "rank"
+        grid.sortAscending = true
+        await grid.loadPage(0)
+
+        let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
+        let structureReload = Task { @MainActor in
+            await grid.reloadAfterStructureChange()
+        }
+        await adapter.waitForHeldFetch()
+
+        grid.sortAscending = false
+        grid.activeFilter = FilterExpression(
+            conditions: [FilterCondition(column: "rank", op: .greaterOrEqual, value: .integer(20))],
+            combinator: .and
+        )
+        let sortRequestStarted = AsyncSignal()
+        let filterRequestStarted = AsyncSignal()
+        let lateSortRequest = Task { @MainActor in
+            await Task.yield()
+            sortRequestStarted.signal()
+            await grid.loadPage(0)
+        }
+        let lateFilterRequest = Task { @MainActor in
+            await Task.yield()
+            filterRequestStarted.signal()
+            await grid.applyFilter()
+        }
+        await sortRequestStarted.wait()
+        await filterRequestStarted.wait()
+
+        fetchGate.open()
+        await structureReload.value
+        await lateSortRequest.value
+        await lateFilterRequest.value
+
+        XCTAssertFalse(grid.sortAscending)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [30, 20])
+        try await adapter.disconnect()
+    }
+
+    func test_reloadAfterStructureChange_discardsOlderLoadResultsAndMetadataCache() async throws {
+        let (grid, adapter) = try await makeCountingGrid()
+        DataGridViewState.clearMetadataCache()
+
+        let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
+        let olderLoad = Task { @MainActor in
+            await grid.load(tableName: "scores", schema: nil, adapter: adapter)
+        }
+        await adapter.waitForHeldFetch()
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN id TO record_id")
+        await grid.reloadAfterStructureChange()
+        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "rank"])
+        XCTAssertEqual(grid.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(grid.tableDescription?.columns.map(\.name), ["record_id", "rank"])
+
+        fetchGate.open()
+        await olderLoad.value
+
+        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "rank"])
+        XCTAssertEqual(grid.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(grid.tableDescription?.columns.map(\.name), ["record_id", "rank"])
+
+        let cacheProbe = DataGridViewState()
+        await cacheProbe.load(tableName: "scores", schema: nil, adapter: adapter)
+        XCTAssertEqual(cacheProbe.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(cacheProbe.tableDescription?.columns.map(\.name), ["record_id", "rank"])
+        try await adapter.disconnect()
+    }
+
     private func makeGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
         DataGridViewState.clearMetadataCache()
         let adapter = SQLiteAdapter()
@@ -157,28 +229,50 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     private let lock = NSLock()
     private var fetchRowsCalls = 0
     private var describeTableCalls = 0
-    var fetchDelayNanoseconds: UInt64 = 0
+    private var fetchDelay: UInt64 = 0
+    private var nextHeldFetchGate: AsyncGate?
+    private var heldFetchStarted: AsyncSignal?
+    private var heldFetchHasResumed = false
+    private var heldTableDescription: TableDescription?
 
     var databaseType: DatabaseType { base.databaseType }
     var isConnected: Bool { base.isConnected }
 
     var fetchRowsCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return fetchRowsCalls
+        withLock(lock) { fetchRowsCalls }
     }
 
     var describeTableCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return describeTableCalls
+        withLock(lock) { describeTableCalls }
+    }
+
+    var fetchDelayNanoseconds: UInt64 {
+        get { withLock(lock) { fetchDelay } }
+        set { withLock(lock) { fetchDelay = newValue } }
     }
 
     func resetCounts() {
-        lock.lock()
-        fetchRowsCalls = 0
-        describeTableCalls = 0
-        lock.unlock()
+        withLock(lock) {
+            fetchRowsCalls = 0
+            describeTableCalls = 0
+        }
+    }
+
+    func holdNextFetchAndCaptureTableDescription() -> AsyncGate {
+        let gate = AsyncGate()
+        let started = AsyncSignal()
+        withLock(lock) {
+            nextHeldFetchGate = gate
+            heldFetchStarted = started
+            heldFetchHasResumed = false
+            heldTableDescription = nil
+        }
+        return gate
+    }
+
+    func waitForHeldFetch() async {
+        let started = withLock(lock) { heldFetchStarted }
+        await started?.wait()
     }
 
     func connect(config: ConnectionConfig, password: String?) async throws {
@@ -222,9 +316,15 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func describeTable(name: String, schema: String?) async throws -> TableDescription {
-        lock.lock()
-        describeTableCalls += 1
-        lock.unlock()
+        let heldDescription = withLock(lock) { () -> TableDescription? in
+            describeTableCalls += 1
+            guard heldFetchHasResumed, let heldTableDescription else { return nil }
+            self.heldTableDescription = nil
+            return heldTableDescription
+        }
+        if let heldDescription {
+            return heldDescription
+        }
         return try await base.describeTable(name: name, schema: schema)
     }
 
@@ -269,11 +369,37 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func fetchRows(table: String, schema: String?, columns: [String]?, where filter: FilterExpression?, orderBy: [QuerySortDescriptor]?, limit: Int, offset: Int) async throws -> QueryResult {
-        lock.lock()
-        fetchRowsCalls += 1
-        lock.unlock()
-        if fetchDelayNanoseconds > 0 {
-            try await Task.sleep(nanoseconds: fetchDelayNanoseconds)
+        let heldFetchGate = withLock(lock) { () -> AsyncGate? in
+            fetchRowsCalls += 1
+            defer { nextHeldFetchGate = nil }
+            return nextHeldFetchGate
+        }
+        if let heldFetchGate {
+            let result = try await base.fetchRows(
+                table: table,
+                schema: schema,
+                columns: columns,
+                where: filter,
+                orderBy: orderBy,
+                limit: limit,
+                offset: offset
+            )
+            let description = try await base.describeTable(name: table, schema: schema)
+            let started = withLock(lock) { () -> AsyncSignal? in
+                heldTableDescription = description
+                return heldFetchStarted
+            }
+            started?.signal()
+            await heldFetchGate.wait()
+            withLock(lock) {
+                heldFetchHasResumed = true
+            }
+            return result
+        }
+
+        let delay = withLock(lock) { fetchDelay }
+        if delay > 0 {
+            try await Task.sleep(nanoseconds: delay)
         }
         return try await base.fetchRows(
             table: table,
@@ -293,4 +419,50 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     func currentDatabase() async throws -> String? {
         try await base.currentDatabase()
     }
+}
+
+private final class AsyncSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var signaled = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        let pendingWaiters = withLock(lock) { () -> [CheckedContinuation<Void, Never>] in
+            signaled = true
+            defer { waiters.removeAll() }
+            return waiters
+        }
+        pendingWaiters.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = withLock(lock) { () -> Bool in
+                guard !signaled else { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
+        }
+    }
+}
+
+private final class AsyncGate: @unchecked Sendable {
+    private let signal = AsyncSignal()
+
+    func open() {
+        signal.signal()
+    }
+
+    func wait() async {
+        await signal.wait()
+    }
+}
+
+private func withLock<T>(_ lock: NSLock, _ body: () throws -> T) rethrows -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return try body()
 }
