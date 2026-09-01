@@ -108,14 +108,12 @@ final class RedisAppStateTests: XCTestCase {
 
         state.openRedisFlatKeyList()
         let firstConnectionTabID = try XCTUnwrap(state.activeTabId)
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: firstConnection,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(firstAdapter)
-            )
+        let firstConnectionContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext
         )
+        XCTAssertEqual(firstConnectionContext.connectionID, firstConnection)
+        XCTAssertEqual(firstConnectionContext.databaseName, "db0")
+        XCTAssertTrue(state.activeRedisAdapter(for: firstConnectionContext) === firstAdapter)
 
         state.activeConnectionId = secondConnection
         state.activeAdapter = secondAdapter
@@ -125,22 +123,23 @@ final class RedisAppStateTests: XCTestCase {
 
         XCTAssertEqual(state.tabs.count, 2)
         XCTAssertNotEqual(secondConnectionTabID, firstConnectionTabID)
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: secondConnection,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(secondAdapter)
-            )
+        let secondConnectionContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext
         )
+        XCTAssertEqual(secondConnectionContext.connectionID, secondConnection)
+        XCTAssertEqual(secondConnectionContext.databaseName, "db0")
+        XCTAssertTrue(state.activeRedisAdapter(for: secondConnectionContext) === secondAdapter)
         XCTAssertTrue(state.isRedisFlatKeyListOpen)
 
         state.activeConnectionId = firstConnection
         state.activeAdapter = firstAdapter
+        XCTAssertNil(state.activeRedisAdapter(for: firstConnectionContext))
         state.openRedisFlatKeyList()
+        let reacceptedFirstConnectionTabID = try XCTUnwrap(state.activeTabId)
 
-        XCTAssertEqual(state.tabs.count, 2)
-        XCTAssertEqual(state.activeTabId, firstConnectionTabID)
+        XCTAssertEqual(state.tabs.count, 3)
+        XCTAssertNotEqual(reacceptedFirstConnectionTabID, firstConnectionTabID)
+        XCTAssertNotEqual(reacceptedFirstConnectionTabID, secondConnectionTabID)
     }
 
     func test_openRedisKeyDetail_reusesSameNamedKeyOnlyWithinCurrentDatabase() throws {
@@ -186,14 +185,12 @@ final class RedisAppStateTests: XCTestCase {
 
         state.openRedisKeyDetail(key: "session:42")
         let firstConnectionTabID = try XCTUnwrap(state.activeTabId)
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: firstConnection,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(firstAdapter)
-            )
+        let firstConnectionContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext
         )
+        XCTAssertEqual(firstConnectionContext.connectionID, firstConnection)
+        XCTAssertEqual(firstConnectionContext.databaseName, "db0")
+        XCTAssertTrue(state.activeRedisAdapter(for: firstConnectionContext) === firstAdapter)
 
         state.activeConnectionId = secondConnection
         state.activeAdapter = secondAdapter
@@ -202,21 +199,22 @@ final class RedisAppStateTests: XCTestCase {
 
         XCTAssertEqual(state.tabs.count, 2)
         XCTAssertNotEqual(secondConnectionTabID, firstConnectionTabID)
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: secondConnection,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(secondAdapter)
-            )
+        let secondConnectionContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext
         )
+        XCTAssertEqual(secondConnectionContext.connectionID, secondConnection)
+        XCTAssertEqual(secondConnectionContext.databaseName, "db0")
+        XCTAssertTrue(state.activeRedisAdapter(for: secondConnectionContext) === secondAdapter)
 
         state.activeConnectionId = firstConnection
         state.activeAdapter = firstAdapter
+        XCTAssertNil(state.activeRedisAdapter(for: firstConnectionContext))
         state.openRedisKeyDetail(key: "session:42")
+        let reacceptedFirstConnectionTabID = try XCTUnwrap(state.activeTabId)
 
-        XCTAssertEqual(state.tabs.count, 2)
-        XCTAssertEqual(state.activeTabId, firstConnectionTabID)
+        XCTAssertEqual(state.tabs.count, 3)
+        XCTAssertNotEqual(reacceptedFirstConnectionTabID, firstConnectionTabID)
+        XCTAssertNotEqual(reacceptedFirstConnectionTabID, secondConnectionTabID)
     }
 
     func test_activeRedisAdapterForTabContext_rejectsConnectionAndDatabaseChanges() throws {
@@ -283,22 +281,18 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.tabs.count, 4)
         XCTAssertNotEqual(secondFlatTabID, firstFlatTabID)
         XCTAssertNotEqual(secondDetailTabID, firstDetailTabID)
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == secondFlatTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: connectionID,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(secondAdapter)
-            )
+        let secondFlatContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == secondFlatTabID })?.redisContext
         )
-        XCTAssertEqual(
-            state.tabs.first(where: { $0.id == secondDetailTabID })?.redisContext,
-            AppState.RedisTabContext(
-                connectionID: connectionID,
-                databaseName: "db0",
-                sessionID: ObjectIdentifier(secondAdapter)
-            )
+        let secondDetailContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == secondDetailTabID })?.redisContext
         )
+        XCTAssertEqual(secondFlatContext.connectionID, connectionID)
+        XCTAssertEqual(secondFlatContext.databaseName, "db0")
+        XCTAssertEqual(secondDetailContext.connectionID, connectionID)
+        XCTAssertEqual(secondDetailContext.databaseName, "db0")
+        XCTAssertTrue(state.activeRedisAdapter(for: secondFlatContext) === secondAdapter)
+        XCTAssertTrue(state.activeRedisAdapter(for: secondDetailContext) === secondAdapter)
     }
 
     func test_redisDatabaseTransitionInvalidatesOldContextBeforeAwaitingSelect() async throws {
