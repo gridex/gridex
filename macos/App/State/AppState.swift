@@ -106,10 +106,16 @@ final class AppState: ObservableObject {
     @Published var showRedisAddKey = false
     @Published private(set) var redisKeyBrowserRefreshNonce = 0
 
-    struct RedisSessionRevisionToken: Hashable {
+    struct RedisSessionRevisionToken: Hashable, Sendable {
         let connectionID: UUID
         let sessionID: UUID
         let databaseRevision: UInt64
+    }
+
+    struct RedisConnectionMetadataSnapshot: Sendable {
+        let databaseName: String
+        let availableDatabases: [String]
+        let databaseSize: Int?
     }
 
     private(set) var redisSessionID: UUID?
@@ -318,6 +324,8 @@ final class AppState: ObservableObject {
             }
             if config.databaseType == .redis {
                 currentDatabaseName = nil
+                availableDatabases.removeAll()
+                redisDBSize = nil
             }
             activeConnectionId = config.id
             activeAdapter = connection.adapter
@@ -325,6 +333,9 @@ final class AppState: ObservableObject {
             connectionTitle = "Gridex — \(config.name)"
             statusConnection = config.displayHost
             isConnecting = false
+            let redisMetadataToken = config.databaseType == .redis
+                ? currentRedisSessionRevisionToken
+                : nil
 
             // Load sidebar immediately (most important for user)
             await loadSidebar(config: config, adapter: connection.adapter)
@@ -364,25 +375,41 @@ final class AppState: ObservableObject {
                         }
                     }
 
-                    // Current database + available databases
-                    group.addTask {
-                        let dbName = try? await adapter.currentDatabase()
-                        let databases = (try? await adapter.listDatabases()) ?? []
-                        await MainActor.run {
-                            guard self.activeConnectionId == config.id,
-                                  let activeAdapter = self.activeAdapter,
-                                  ObjectIdentifier(activeAdapter) == ObjectIdentifier(adapter)
-                            else { return }
-                            self.currentDatabaseName = dbName ?? config.database ?? config.name
-                            self.availableDatabases = databases
+                    if config.databaseType == .redis {
+                        if let redisMetadataToken {
+                            group.addTask {
+                                _ = await self.loadRedisConnectionMetadata(
+                                    for: redisMetadataToken
+                                ) { redis in
+                                    async let databaseNameTask: String? = try? await redis.currentDatabase()
+                                    async let databasesTask: [String] = (try? await redis.listDatabases()) ?? []
+                                    async let databaseSizeTask: Int? = try? await redis.dbSize()
+                                    let (databaseName, databases, databaseSize) = await (
+                                        databaseNameTask,
+                                        databasesTask,
+                                        databaseSizeTask
+                                    )
+                                    return RedisConnectionMetadataSnapshot(
+                                        databaseName: databaseName ?? config.database ?? config.name,
+                                        availableDatabases: databases,
+                                        databaseSize: databaseSize
+                                    )
+                                }
+                            }
                         }
-                    }
-
-                    // Redis DBSIZE
-                    if config.databaseType == .redis, let redis = adapter as? RedisAdapter {
+                    } else {
+                        // Current database + available databases
                         group.addTask {
-                            let size = try? await redis.dbSize()
-                            await MainActor.run { self.redisDBSize = size }
+                            let dbName = try? await adapter.currentDatabase()
+                            let databases = (try? await adapter.listDatabases()) ?? []
+                            await MainActor.run {
+                                guard self.activeConnectionId == config.id,
+                                      let activeAdapter = self.activeAdapter,
+                                      ObjectIdentifier(activeAdapter) == ObjectIdentifier(adapter)
+                                else { return }
+                                self.currentDatabaseName = dbName ?? config.database ?? config.name
+                                self.availableDatabases = databases
+                            }
                         }
                     }
                 }
@@ -599,6 +626,74 @@ final class AppState: ObservableObject {
         return adapter
     }
 
+    func performRedisOperation<Value>(
+        for context: RedisTabContext,
+        operation: (RedisAdapter) async throws -> Value
+    ) async -> Result<Value, Error>? {
+        let token = RedisSessionRevisionToken(
+            connectionID: context.connectionID,
+            sessionID: context.sessionID,
+            databaseRevision: context.databaseRevision
+        )
+        return await performOwnedRedisOperation(
+            for: token,
+            contextIsCurrent: { self.currentRedisContext == context },
+            operation: operation
+        )
+    }
+
+    @discardableResult
+    func loadRedisConnectionMetadata(
+        for token: RedisSessionRevisionToken,
+        load: (RedisAdapter) async throws -> RedisConnectionMetadataSnapshot
+    ) async -> Bool {
+        let result = await performOwnedRedisOperation(
+            for: token,
+            contextIsCurrent: { true },
+            operation: load,
+            publish: { snapshot in
+                self.currentDatabaseName = snapshot.databaseName
+                self.availableDatabases = snapshot.availableDatabases
+                self.redisDBSize = snapshot.databaseSize
+            }
+        )
+        guard case .success? = result else { return false }
+        return true
+    }
+
+    private func performOwnedRedisOperation<Value>(
+        for token: RedisSessionRevisionToken,
+        contextIsCurrent: () -> Bool,
+        operation: (RedisAdapter) async throws -> Value,
+        publish: (Value) -> Void = { _ in }
+    ) async -> Result<Value, Error>? {
+        guard isCurrentRedisSessionRevision(token),
+              contextIsCurrent(),
+              !Task.isCancelled else { return nil }
+
+        await acquireRedisOperationLease()
+        defer { releaseRedisOperationLease() }
+
+        guard isCurrentRedisSessionRevision(token),
+              contextIsCurrent(),
+              !Task.isCancelled,
+              let adapter = activeAdapter as? RedisAdapter else { return nil }
+
+        do {
+            let value = try await operation(adapter)
+            guard isCurrentRedisSessionRevision(token),
+                  contextIsCurrent(),
+                  !Task.isCancelled else { return nil }
+            publish(value)
+            return .success(value)
+        } catch {
+            guard isCurrentRedisSessionRevision(token),
+                  contextIsCurrent(),
+                  !Task.isCancelled else { return nil }
+            return .failure(error)
+        }
+    }
+
     func performRedisDatabaseTransition(
         to databaseName: String,
         performSelect: () async throws -> Void
@@ -697,6 +792,7 @@ final class AppState: ObservableObject {
         batch.pendingRevisions.insert(revision)
         redisDatabaseTransitionBatch = batch
         currentDatabaseName = nil
+        redisDBSize = nil
 
         return RedisSessionRevisionToken(
             connectionID: connectionID,
