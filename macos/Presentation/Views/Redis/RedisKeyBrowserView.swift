@@ -19,6 +19,56 @@ enum RedisKeyBrowserBehavior {
     ) -> Bool {
         !isCancelled && capturedNonce == currentNonce
     }
+
+    static func openKeyAccessibilityLabel(for key: String) -> String {
+        "Open key \(key)"
+    }
+}
+
+struct RedisKeyBrowserContext: Hashable {
+    let connectionID: UUID
+    let databaseName: String
+}
+
+struct RedisKeyBrowserContentState {
+    private var context: RedisKeyBrowserContext?
+    private var lastSuccessfulResult: RedisKeyScanResult?
+    private var errorMessage: String?
+
+    init() {}
+
+    mutating func beginLoading(in context: RedisKeyBrowserContext) {
+        if self.context != context {
+            lastSuccessfulResult = nil
+        }
+        self.context = context
+        errorMessage = nil
+    }
+
+    mutating func publishSuccess(
+        _ result: RedisKeyScanResult,
+        in context: RedisKeyBrowserContext
+    ) {
+        guard self.context == context else { return }
+        lastSuccessfulResult = result
+        errorMessage = nil
+    }
+
+    mutating func publishFailure(
+        _ message: String,
+        in context: RedisKeyBrowserContext
+    ) {
+        guard self.context == context else { return }
+        errorMessage = message
+    }
+
+    func visibleResult(in context: RedisKeyBrowserContext) -> RedisKeyScanResult? {
+        self.context == context ? lastSuccessfulResult : nil
+    }
+
+    func visibleErrorMessage(in context: RedisKeyBrowserContext) -> String? {
+        self.context == context ? errorMessage : nil
+    }
 }
 
 enum RedisKeyBrowserMode: String, CaseIterable, Identifiable {
@@ -31,10 +81,32 @@ struct RedisKeyBrowserView: View {
     @EnvironmentObject private var appState: AppState
     @AppStorage("redis.keyBrowser.delimiter") private var delimiter = ":"
     @State private var mode: RedisKeyBrowserMode = .tree
-    @State private var lastSuccessfulResult = RedisKeyScanResult(keys: [], isTruncated: false)
-    @State private var hasSuccessfulResult = false
+    @State private var contentState = RedisKeyBrowserContentState()
     @State private var isLoading = false
-    @State private var errorMessage: String?
+
+    private struct LoadRequest: Hashable {
+        let context: RedisKeyBrowserContext?
+        let refreshNonce: Int
+    }
+
+    private var activeContext: RedisKeyBrowserContext? {
+        guard let connectionID = appState.activeConnectionId,
+              let databaseName = appState.currentDatabaseName else { return nil }
+        return RedisKeyBrowserContext(
+            connectionID: connectionID,
+            databaseName: databaseName
+        )
+    }
+
+    private var visibleResult: RedisKeyScanResult? {
+        guard let activeContext else { return nil }
+        return contentState.visibleResult(in: activeContext)
+    }
+
+    private var visibleErrorMessage: String? {
+        guard let activeContext else { return nil }
+        return contentState.visibleErrorMessage(in: activeContext)
+    }
 
     private var effectiveDelimiter: String {
         RedisKeyBrowserBehavior.effectiveDelimiter(for: delimiter)
@@ -42,13 +114,18 @@ struct RedisKeyBrowserView: View {
 
     private var namespaceNodes: [RedisKeyNamespaceNode] {
         RedisKeyNamespaceTree.build(
-            keys: lastSuccessfulResult.keys,
+            keys: visibleResult?.keys ?? [],
             delimiter: effectiveDelimiter
         )
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let loadRequest = LoadRequest(
+            context: activeContext,
+            refreshNonce: appState.redisKeyBrowserRefreshNonce
+        )
+
+        return VStack(spacing: 0) {
             toolbar
             Divider()
 
@@ -66,9 +143,15 @@ struct RedisKeyBrowserView: View {
         .onReceive(NotificationCenter.default.publisher(for: .reloadData)) { _ in
             appState.requestRedisKeyBrowserRefresh()
         }
-        .task(id: appState.redisKeyBrowserRefreshNonce) {
-            let capturedNonce = appState.redisKeyBrowserRefreshNonce
-            await scanKeys(capturedNonce: capturedNonce)
+        .task(id: loadRequest) {
+            guard let context = loadRequest.context else {
+                isLoading = false
+                return
+            }
+            await scanKeys(
+                capturedNonce: loadRequest.refreshNonce,
+                context: context
+            )
         }
     }
 
@@ -118,22 +201,14 @@ struct RedisKeyBrowserView: View {
 
     @ViewBuilder
     private var treeContent: some View {
-        if !hasSuccessfulResult {
-            if let errorMessage {
-                errorView(errorMessage)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        } else {
+        if let result = visibleResult {
             VStack(spacing: 0) {
-                if let errorMessage {
+                if let errorMessage = visibleErrorMessage {
                     errorBanner(errorMessage)
                     Divider()
                 }
 
-                if lastSuccessfulResult.keys.isEmpty {
+                if result.keys.isEmpty {
                     Text("No keys found")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
@@ -152,7 +227,7 @@ struct RedisKeyBrowserView: View {
                     }
                 }
 
-                if lastSuccessfulResult.isTruncated {
+                if result.isTruncated {
                     Divider()
                     Text("Showing the first 10,000 keys. Use Flat mode to filter with SCAN.")
                         .font(.system(size: 10))
@@ -161,6 +236,12 @@ struct RedisKeyBrowserView: View {
                         .padding(8)
                 }
             }
+        } else if let errorMessage = visibleErrorMessage {
+            errorView(errorMessage)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -170,12 +251,20 @@ struct RedisKeyBrowserView: View {
             Image(systemName: "list.bullet.rectangle")
                 .font(.system(size: 24))
                 .foregroundStyle(.secondary)
-            Text("The existing Keys tab is open.")
+            Text(appState.isRedisFlatKeyListOpen
+                 ? "The existing Keys tab is open."
+                 : "The Keys tab is closed.")
                 .font(.system(size: 12, weight: .medium))
-            Text("Use its SCAN filter to narrow the flat key list.")
+            Text(appState.isRedisFlatKeyListOpen
+                 ? "Use its SCAN filter to narrow the flat key list."
+                 : "Open it to use the SCAN filter for the flat key list.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            Button(appState.isRedisFlatKeyListOpen ? "Show Keys Tab" : "Open Keys Tab") {
+                appState.openRedisFlatKeyList()
+            }
+            .controlSize(.small)
             Button("Show Tree") { mode = .tree }
                 .controlSize(.small)
             Spacer()
@@ -216,12 +305,19 @@ struct RedisKeyBrowserView: View {
     }
 
     @MainActor
-    private func scanKeys(capturedNonce: Int) async {
+    private func scanKeys(
+        capturedNonce: Int,
+        context: RedisKeyBrowserContext
+    ) async {
+        contentState.beginLoading(in: context)
         isLoading = true
-        errorMessage = nil
 
         guard let redis = appState.activeAdapter as? RedisAdapter else {
-            publishError("Not connected to Redis", capturedNonce: capturedNonce)
+            publishError(
+                "Not connected to Redis",
+                capturedNonce: capturedNonce,
+                context: context
+            )
             return
         }
 
@@ -231,26 +327,32 @@ struct RedisKeyBrowserView: View {
                 capturedNonce: capturedNonce,
                 currentNonce: appState.redisKeyBrowserRefreshNonce,
                 isCancelled: Task.isCancelled
-            ) else { return }
+            ), activeContext == context else { return }
 
-            lastSuccessfulResult = result
-            hasSuccessfulResult = true
-            errorMessage = nil
+            contentState.publishSuccess(result, in: context)
             isLoading = false
         } catch {
-            publishError(error.localizedDescription, capturedNonce: capturedNonce)
+            publishError(
+                error.localizedDescription,
+                capturedNonce: capturedNonce,
+                context: context
+            )
         }
     }
 
     @MainActor
-    private func publishError(_ message: String, capturedNonce: Int) {
+    private func publishError(
+        _ message: String,
+        capturedNonce: Int,
+        context: RedisKeyBrowserContext
+    ) {
         guard RedisKeyBrowserBehavior.shouldPublish(
             capturedNonce: capturedNonce,
             currentNonce: appState.redisKeyBrowserRefreshNonce,
             isCancelled: Task.isCancelled
-        ) else { return }
+        ), activeContext == context else { return }
 
-        errorMessage = message
+        contentState.publishFailure(message, in: context)
         isLoading = false
     }
 }
@@ -294,6 +396,9 @@ private struct RedisKeyNamespaceNodeView: View {
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(
+                    RedisKeyBrowserBehavior.openKeyAccessibilityLabel(for: concreteKey)
+                ))
                 .help("Open key \(concreteKey)")
             }
         }
@@ -319,6 +424,9 @@ private struct RedisKeyNamespaceNodeView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(
+                RedisKeyBrowserBehavior.openKeyAccessibilityLabel(for: concreteKey)
+            ))
             .help("Open key \(concreteKey)")
         } else {
             Text(RedisKeyNamespaceTree.displayLabel(for: node.segment))

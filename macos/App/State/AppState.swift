@@ -509,14 +509,49 @@ final class AppState: ObservableObject {
 
     // MARK: - Redis Tabs
 
+    var isRedisFlatKeyListOpen: Bool {
+        tabs.contains {
+            $0.type == .dataGrid
+                && $0.tableName == "Keys"
+                && $0.schema == nil
+                && $0.databaseName == currentDatabaseName
+        }
+    }
+
     func openRedisFlatKeyList() {
-        openTable(name: "Keys", schema: nil)
-        guard let tabID = activeTabId else { return }
+        let tabID: UUID
+        if let existing = tabs.first(where: {
+            $0.type == .dataGrid
+                && $0.tableName == "Keys"
+                && $0.schema == nil
+                && $0.databaseName == currentDatabaseName
+        }) {
+            tabID = existing.id
+        } else {
+            let tab = ContentTab(
+                id: UUID(),
+                type: .dataGrid,
+                title: "Keys",
+                tableName: "Keys",
+                schema: nil,
+                databaseName: currentDatabaseName
+            )
+            tabs.append(tab)
+            tabID = tab.id
+            if let databaseName = currentDatabaseName {
+                ensureTabGroup(for: databaseName)
+            }
+        }
+        activeTabId = tabID
         cachedDataGridState(for: tabID).showFilterBar = true
     }
 
     func openRedisKeyDetail(key: String) {
-        if let existing = tabs.first(where: { $0.type == .redisKeyDetail && $0.tableName == key }) {
+        if let existing = tabs.first(where: {
+            $0.type == .redisKeyDetail
+                && $0.tableName == key
+                && $0.databaseName == currentDatabaseName
+        }) {
             activeTabId = existing.id
             return
         }
