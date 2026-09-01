@@ -596,6 +596,19 @@ final class DataGridViewState: ObservableObject {
     func reloadAfterStructureChange() async {
         Self.metadataCache.removeValue(forKey: cacheKey)
         guard let adapter else { return }
+
+        do {
+            let description = try await adapter.describeTable(name: tableName, schema: schema)
+            self.primaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
+            self.tableDescription = description
+            if let sortColumn, !description.columns.contains(where: { $0.name == sortColumn }) {
+                self.sortColumn = nil
+            }
+        } catch {
+            errorMessage = Self.detailedErrorMessage(error)
+            return
+        }
+
         await load(tableName: tableName, schema: schema, adapter: adapter)
     }
 
