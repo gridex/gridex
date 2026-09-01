@@ -219,6 +219,37 @@ final class RedisKeyBrowserViewStateTests: XCTestCase {
         )
     }
 
+    func test_refreshInvalidationRejectsCurrentSuccessBeforeReplacementRegisters() async {
+        let state = RedisKeyBrowserViewState()
+        let context = redisContext()
+        let gate = RedisOwnershipTestGate()
+        var refreshNonce = 0
+
+        let scan = Task { @MainActor in
+            await state.scan(
+                in: context,
+                isCurrent: { refreshNonce == 0 }
+            ) {
+                await gate.enterAndWait()
+                return Optional<Result<RedisKeyScanResult, Error>>.some(
+                    .success(RedisKeyScanResult(
+                        keys: ["obsolete:key"],
+                        isTruncated: false
+                    ))
+                )
+            }
+        }
+        await gate.waitUntilEntered()
+
+        refreshNonce = 1
+        await gate.release()
+        await scan.value
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertNil(state.visibleResult(in: context))
+        XCTAssertNil(state.visibleErrorMessage(in: context))
+    }
+
     func test_deactivateInvalidatesRunningScanAndStopsItsLoadingState() async {
         let state = RedisKeyBrowserViewState()
         let context = redisContext()
