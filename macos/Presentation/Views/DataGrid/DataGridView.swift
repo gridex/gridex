@@ -170,8 +170,8 @@ private struct DataGridContentView: View {
         .onChange(of: viewModel.executionTime) { _, time in
             appState.statusQueryTime = time
         }
-        .onChange(of: viewModel.sortColumn) { _, sortColumn in
-            Task { await viewModel.handleSortColumnChange(sortColumn) }
+        .onChange(of: viewModel.sortColumn) { previousSortColumn, sortColumn in
+            Task { await viewModel.handleSortColumnChange(from: previousSortColumn, to: sortColumn) }
         }
         .onChange(of: viewModel.sortAscending) { _, _ in
             Task { await viewModel.loadPage(0) }
@@ -413,7 +413,8 @@ final class DataGridViewState: ObservableObject {
     private(set) var tableName: String = ""
     private(set) var schema: String?
     private var loadGeneration = 0
-    private var pendingProgrammaticSortClear = false
+    private var loadingGeneration: Int?
+    private var pendingProgrammaticSortClear: ProgrammaticSortClear?
     weak var appState: AppState?
 
     // MARK: - Schema metadata cache (survives tab switches)
@@ -428,11 +429,37 @@ final class DataGridViewState: ObservableObject {
         var tableDescription: TableDescription?
     }
 
-    private static var metadataCache: [String: TableMetadataCache] = [:]
-    private static var metadataCacheGenerations: [String: Int] = [:]
+    private struct MetadataCacheKey: Hashable {
+        let adapterIdentity: ObjectIdentifier
+        let connectionID: UUID?
+        let databaseName: String?
+        let schema: String
+        let tableName: String
+    }
 
-    private var cacheKey: String {
-        "\(schema ?? "public").\(tableName)"
+    private struct ProgrammaticSortClear {
+        let generation: Int
+        let clearedColumn: String
+    }
+
+    private static var metadataCache: [MetadataCacheKey: TableMetadataCache] = [:]
+    private static var metadataCacheGenerations: [MetadataCacheKey: Int] = [:]
+
+    private func metadataCacheKey(
+        adapter: any DatabaseAdapter,
+        tableName: String,
+        schema: String?
+    ) -> MetadataCacheKey {
+        let isActiveAdapter = (appState?.activeAdapter as AnyObject?) === (adapter as AnyObject)
+        let connectionID = isActiveAdapter ? appState?.activeConnectionId : nil
+        let databaseName = isActiveAdapter ? (appState?.currentDatabaseName ?? appState?.activeConfig?.database) : nil
+        return MetadataCacheKey(
+            adapterIdentity: ObjectIdentifier(adapter),
+            connectionID: connectionID,
+            databaseName: databaseName,
+            schema: schema ?? "public",
+            tableName: tableName
+        )
     }
 
     static func clearMetadataCache() {
@@ -463,11 +490,22 @@ final class DataGridViewState: ObservableObject {
         return loadGeneration
     }
 
-    private func isCurrentRequest(_ generation: Int, cacheKey: String, cacheGeneration: Int) -> Bool {
+    private func beginLoading(for generation: Int) {
+        loadingGeneration = generation
+        isLoading = true
+    }
+
+    private func finishLoading(for generation: Int) {
+        guard loadingGeneration == generation else { return }
+        loadingGeneration = nil
+        isLoading = false
+    }
+
+    private func isCurrentRequest(_ generation: Int, cacheKey: MetadataCacheKey, cacheGeneration: Int) -> Bool {
         generation == loadGeneration && Self.metadataCacheGenerations[cacheKey, default: 0] == cacheGeneration
     }
 
-    private static func invalidateMetadataCache(for key: String) -> Int {
+    private static func invalidateMetadataCache(for key: MetadataCacheKey) -> Int {
         metadataCache.removeValue(forKey: key)
         metadataCacheGenerations[key, default: 0] += 1
         return metadataCacheGenerations[key, default: 0]
@@ -486,11 +524,11 @@ final class DataGridViewState: ObservableObject {
         self.adapter = adapter
         self.tableName = tableName
         self.schema = schema
-        let requestCacheKey = cacheKey
+        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = cacheGeneration ?? Self.metadataCacheGenerations[requestCacheKey, default: 0]
         guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
 
-        isLoading = true
+        beginLoading(for: requestGeneration)
 
         // Apply cache immediately if available (before any query)
         let hasCachedMeta: Bool
@@ -535,11 +573,11 @@ final class DataGridViewState: ObservableObject {
         } catch {
             guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
-            isLoading = false
+            finishLoading(for: requestGeneration)
             return
         }
 
-        isLoading = false
+        finishLoading(for: requestGeneration)
 
         // 2. Load metadata in background (FK icons, structure) — doesn't block row display
         if hasCachedMeta {
@@ -636,8 +674,9 @@ final class DataGridViewState: ObservableObject {
     func reloadAfterStructureChange() async {
         guard let adapter else { return }
         let requestGeneration = nextLoadGeneration()
-        let requestCacheKey = cacheKey
+        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = Self.invalidateMetadataCache(for: requestCacheKey)
+        beginLoading(for: requestGeneration)
 
         let description: TableDescription
         do {
@@ -646,12 +685,16 @@ final class DataGridViewState: ObservableObject {
             self.primaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
             self.tableDescription = description
             if let sortColumn, !description.columns.contains(where: { $0.name == sortColumn }) {
-                pendingProgrammaticSortClear = true
+                pendingProgrammaticSortClear = ProgrammaticSortClear(
+                    generation: requestGeneration,
+                    clearedColumn: sortColumn
+                )
                 self.sortColumn = nil
             }
         } catch {
             guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
+            finishLoading(for: requestGeneration)
             return
         }
 
@@ -665,20 +708,28 @@ final class DataGridViewState: ObservableObject {
         )
     }
 
-    func handleSortColumnChange(_ sortColumn: String?) async {
-        if pendingProgrammaticSortClear, sortColumn == nil {
-            pendingProgrammaticSortClear = false
+    func handleSortColumnChange(from previousSortColumn: String?, to sortColumn: String?) async {
+        if let pendingProgrammaticSortClear,
+           pendingProgrammaticSortClear.generation == loadGeneration,
+           previousSortColumn == pendingProgrammaticSortClear.clearedColumn,
+           sortColumn == nil {
+            self.pendingProgrammaticSortClear = nil
             return
         }
+        pendingProgrammaticSortClear = nil
         await loadPage(0)
+    }
+
+    func handleSortColumnChange(_ sortColumn: String?) async {
+        await handleSortColumnChange(from: pendingProgrammaticSortClear?.clearedColumn, to: sortColumn)
     }
 
     func loadPage(_ page: Int) async {
         guard let adapter else { return }
         let requestGeneration = nextLoadGeneration()
-        let requestCacheKey = cacheKey
+        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = Self.metadataCacheGenerations[requestCacheKey, default: 0]
-        isLoading = true
+        beginLoading(for: requestGeneration)
 
         do {
             let offset = page * pageSize
@@ -709,11 +760,11 @@ final class DataGridViewState: ObservableObject {
                 }
             }
             guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
-            isLoading = false
+            finishLoading(for: requestGeneration)
         } catch {
             guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
-            isLoading = false
+            finishLoading(for: requestGeneration)
         }
     }
 
