@@ -956,6 +956,33 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertNil(state.activeRedisAdapter(for: oldContext))
     }
 
+    func test_redisCLISelectServerErrorKeepsThePreviouslySelectedDatabase() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+
+        let result = await state.performRedisCLIStatement("SELECT 999") { _, _ in
+            QueryResult(
+                columns: [ColumnHeader(name: "error", dataType: "string")],
+                rows: [[.string("ERR DB index is out of range")]],
+                rowsAffected: 0,
+                executionTime: 0.01,
+                queryType: .select
+            )
+        }
+
+        guard case .success(let queryResult)? = result else {
+            return XCTFail("Expected the Redis error response to remain displayable")
+        }
+        XCTAssertEqual(queryResult.columns.first?.name, "error")
+        XCTAssertEqual(state.currentDatabaseName, "db0")
+        XCTAssertEqual(state.currentRedisContext?.databaseName, "db0")
+    }
+
     func test_redisCLINonSelectSerializesWithTransitionAndDiscardsStaleResult() async throws {
         let state = AppState()
         establishRedisContext(
