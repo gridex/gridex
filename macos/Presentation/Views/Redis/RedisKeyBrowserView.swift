@@ -27,6 +27,39 @@ enum RedisKeyBrowserBehavior {
 
 typealias RedisKeyBrowserContext = AppState.RedisTabContext
 
+@MainActor
+final class RedisRequestCoordinator {
+    enum Completion<Value> {
+        case current(Result<Value, Error>)
+        case stale
+        case superseded
+    }
+
+    private var generation: UInt64 = 0
+
+    func perform<Value>(
+        for context: RedisKeyBrowserContext,
+        execute: () async -> Result<Value, Error>?
+    ) async -> Completion<Value> {
+        _ = context
+        generation &+= 1
+        let requestGeneration = generation
+        let result = await execute()
+
+        guard requestGeneration == generation else {
+            return .superseded
+        }
+        guard let result else {
+            return .stale
+        }
+        return .current(result)
+    }
+
+    func invalidate() {
+        generation &+= 1
+    }
+}
+
 struct RedisKeyBrowserContentState {
     private var context: RedisKeyBrowserContext?
     private var lastSuccessfulResult: RedisKeyScanResult?
@@ -68,6 +101,48 @@ struct RedisKeyBrowserContentState {
     }
 }
 
+@MainActor
+final class RedisKeyBrowserViewState: ObservableObject {
+    @Published private(set) var isLoading = false
+
+    private var contentState = RedisKeyBrowserContentState()
+    private let coordinator = RedisRequestCoordinator()
+
+    func scan(
+        in context: RedisKeyBrowserContext,
+        execute: () async -> Result<RedisKeyScanResult, Error>?
+    ) async {
+        contentState.beginLoading(in: context)
+        isLoading = true
+
+        switch await coordinator.perform(for: context, execute: execute) {
+        case .current(.success(let result)):
+            contentState.publishSuccess(result, in: context)
+            isLoading = false
+        case .current(.failure(let error)):
+            contentState.publishFailure(error.localizedDescription, in: context)
+            isLoading = false
+        case .stale:
+            isLoading = false
+        case .superseded:
+            break
+        }
+    }
+
+    func deactivate() {
+        coordinator.invalidate()
+        isLoading = false
+    }
+
+    func visibleResult(in context: RedisKeyBrowserContext) -> RedisKeyScanResult? {
+        contentState.visibleResult(in: context)
+    }
+
+    func visibleErrorMessage(in context: RedisKeyBrowserContext) -> String? {
+        contentState.visibleErrorMessage(in: context)
+    }
+}
+
 enum RedisKeyBrowserMode: String, CaseIterable, Identifiable {
     case tree, flat
 
@@ -78,8 +153,7 @@ struct RedisKeyBrowserView: View {
     @EnvironmentObject private var appState: AppState
     @AppStorage("redis.keyBrowser.delimiter") private var delimiter = ":"
     @State private var mode: RedisKeyBrowserMode = .tree
-    @State private var contentState = RedisKeyBrowserContentState()
-    @State private var isLoading = false
+    @StateObject private var viewState = RedisKeyBrowserViewState()
 
     private struct LoadRequest: Hashable {
         let context: RedisKeyBrowserContext?
@@ -92,12 +166,12 @@ struct RedisKeyBrowserView: View {
 
     private var visibleResult: RedisKeyScanResult? {
         guard let activeContext else { return nil }
-        return contentState.visibleResult(in: activeContext)
+        return viewState.visibleResult(in: activeContext)
     }
 
     private var visibleErrorMessage: String? {
         guard let activeContext else { return nil }
-        return contentState.visibleErrorMessage(in: activeContext)
+        return viewState.visibleErrorMessage(in: activeContext)
     }
 
     private var effectiveDelimiter: String {
@@ -137,14 +211,12 @@ struct RedisKeyBrowserView: View {
         }
         .task(id: loadRequest) {
             guard let context = loadRequest.context else {
-                isLoading = false
+                viewState.deactivate()
                 return
             }
-            await scanKeys(
-                capturedNonce: loadRequest.refreshNonce,
-                context: context
-            )
+            await scanKeys(context: context)
         }
+        .onDisappear { viewState.deactivate() }
     }
 
     private var toolbar: some View {
@@ -165,7 +237,7 @@ struct RedisKeyBrowserView: View {
                     appState.requestRedisKeyBrowserRefresh()
                 } label: {
                     HStack(spacing: 4) {
-                        if isLoading {
+                        if viewState.isLoading {
                             ProgressView()
                                 .controlSize(.small)
                                 .frame(width: 12, height: 12)
@@ -297,49 +369,12 @@ struct RedisKeyBrowserView: View {
     }
 
     @MainActor
-    private func scanKeys(
-        capturedNonce: Int,
-        context: RedisKeyBrowserContext
-    ) async {
-        guard let redis = appState.activeRedisAdapter(for: context),
-              activeContext == context else { return }
-
-        contentState.beginLoading(in: context)
-        isLoading = true
-
-        do {
-            let result = try await redis.scanKeyNames()
-            guard RedisKeyBrowserBehavior.shouldPublish(
-                capturedNonce: capturedNonce,
-                currentNonce: appState.redisKeyBrowserRefreshNonce,
-                isCancelled: Task.isCancelled
-            ), activeContext == context else { return }
-
-            contentState.publishSuccess(result, in: context)
-            isLoading = false
-        } catch {
-            publishError(
-                error.localizedDescription,
-                capturedNonce: capturedNonce,
-                context: context
-            )
+    private func scanKeys(context: RedisKeyBrowserContext) async {
+        await viewState.scan(in: context) {
+            await appState.performRedisOperation(for: context) { redis in
+                try await redis.scanKeyNames()
+            }
         }
-    }
-
-    @MainActor
-    private func publishError(
-        _ message: String,
-        capturedNonce: Int,
-        context: RedisKeyBrowserContext
-    ) {
-        guard RedisKeyBrowserBehavior.shouldPublish(
-            capturedNonce: capturedNonce,
-            currentNonce: appState.redisKeyBrowserRefreshNonce,
-            isCancelled: Task.isCancelled
-        ), activeContext == context else { return }
-
-        contentState.publishFailure(message, in: context)
-        isLoading = false
     }
 }
 
