@@ -175,6 +175,87 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    func test_metadataCache_isolatesSameNamedTablesOnDifferentConnections() async throws {
+        DataGridViewState.clearMetadataCache()
+        let (firstGrid, firstAdapter) = try await makeConnectionGrid(
+            name: "first-connection",
+            createTableSQL: "CREATE TABLE scores (id INTEGER PRIMARY KEY, rank INTEGER NOT NULL)",
+            insertSQL: "INSERT INTO scores (id, rank) VALUES (1, 30), (2, 10), (3, 20)"
+        )
+        let (secondGrid, secondAdapter) = try await makeConnectionGrid(
+            name: "second-connection",
+            createTableSQL: "CREATE TABLE scores (record_id TEXT PRIMARY KEY, rank INTEGER NOT NULL)",
+            insertSQL: "INSERT INTO scores (record_id, rank) VALUES ('c', 30), ('a', 10), ('b', 20)"
+        )
+
+        await firstGrid.load(tableName: "scores", schema: nil, adapter: firstAdapter)
+        await secondGrid.load(tableName: "scores", schema: nil, adapter: secondAdapter)
+
+        XCTAssertEqual(firstGrid.primaryKeyColumns, ["id"])
+        XCTAssertEqual(secondGrid.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(secondGrid.tableDescription?.columns.map(\.name), ["record_id", "rank"])
+        try await firstAdapter.disconnect()
+        try await secondAdapter.disconnect()
+    }
+
+    func test_structureRefreshOnOneConnection_doesNotCancelSameNamedTablePageLoadOnAnother() async throws {
+        let (firstGrid, firstAdapter) = try await makeCountingGrid()
+        let (secondGrid, secondAdapter) = try await makeCountingGrid(clearingMetadataCache: false)
+
+        let fetchGate = secondAdapter.holdNextFetchAndCaptureTableDescription()
+        let secondPageLoad = Task { @MainActor in
+            await secondGrid.loadPage(0)
+        }
+        await secondAdapter.waitForHeldFetch()
+
+        await firstGrid.reloadAfterStructureChange()
+        fetchGate.open()
+        await secondPageLoad.value
+
+        XCTAssertFalse(secondGrid.isLoading)
+        XCTAssertEqual(secondGrid.rows.compactMap { $0[1].intValue }, [30, 10, 20])
+        try await firstAdapter.disconnect()
+        try await secondAdapter.disconnect()
+    }
+
+    func test_failedStructureRefreshSettlesSupersededPageLoad() async throws {
+        let (grid, adapter) = try await makeCountingGrid()
+        let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
+        let pageLoad = Task { @MainActor in
+            await grid.loadPage(0)
+        }
+        await adapter.waitForHeldFetch()
+
+        adapter.failNextDescribeTable()
+        await grid.reloadAfterStructureChange()
+        fetchGate.open()
+        await pageLoad.value
+
+        XCTAssertFalse(grid.isLoading)
+        try await adapter.disconnect()
+    }
+
+    func test_missedProgrammaticSortClearDoesNotSuppressLaterUserClear() async throws {
+        let (grid, adapter) = try await makeCountingGrid()
+        grid.sortColumn = "rank"
+        await grid.loadPage(0)
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN rank TO score")
+        await grid.reloadAfterStructureChange()
+
+        grid.sortColumn = "score"
+        await grid.handleSortColumnChange("score")
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [10, 20, 30])
+
+        adapter.resetCounts()
+        grid.sortColumn = nil
+        await grid.handleSortColumnChange(nil)
+
+        XCTAssertEqual(adapter.fetchRowsCount, 1)
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [30, 10, 20])
+        try await adapter.disconnect()
+    }
+
     private func makeGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
         DataGridViewState.clearMetadataCache()
         let adapter = SQLiteAdapter()
@@ -207,8 +288,23 @@ final class DataGridRefreshTests: XCTestCase {
         return (grid, adapter)
     }
 
-    private func makeCountingGrid() async throws -> (DataGridViewState, CountingSQLiteAdapter) {
-        DataGridViewState.clearMetadataCache()
+    private func makeConnectionGrid(
+        name: String,
+        createTableSQL: String,
+        insertSQL: String
+    ) async throws -> (DataGridViewState, SQLiteAdapter) {
+        let adapter = SQLiteAdapter()
+        let config = ConnectionConfig(name: name, databaseType: .sqlite, filePath: ":memory:")
+        try await adapter.connect(config: config, password: nil)
+        _ = try await adapter.executeRaw(sql: createTableSQL)
+        _ = try await adapter.executeRaw(sql: insertSQL)
+        return (DataGridViewState(), adapter)
+    }
+
+    private func makeCountingGrid(clearingMetadataCache: Bool = true) async throws -> (DataGridViewState, CountingSQLiteAdapter) {
+        if clearingMetadataCache {
+            DataGridViewState.clearMetadataCache()
+        }
         let adapter = CountingSQLiteAdapter()
         let config = ConnectionConfig(
             name: "refresh-counting-test",
@@ -234,6 +330,7 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     private var heldFetchStarted: AsyncSignal?
     private var heldFetchHasResumed = false
     private var heldTableDescription: TableDescription?
+    private var failNextDescribe = false
 
     var databaseType: DatabaseType { base.databaseType }
     var isConnected: Bool { base.isConnected }
@@ -273,6 +370,12 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     func waitForHeldFetch() async {
         let started = withLock(lock) { heldFetchStarted }
         await started?.wait()
+    }
+
+    func failNextDescribeTable() {
+        withLock(lock) {
+            failNextDescribe = true
+        }
     }
 
     func connect(config: ConnectionConfig, password: String?) async throws {
@@ -316,13 +419,20 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func describeTable(name: String, schema: String?) async throws -> TableDescription {
-        let heldDescription = withLock(lock) { () -> TableDescription? in
+        let result = withLock(lock) { () -> (heldDescription: TableDescription?, shouldFail: Bool) in
             describeTableCalls += 1
-            guard heldFetchHasResumed, let heldTableDescription else { return nil }
+            if failNextDescribe {
+                failNextDescribe = false
+                return (nil, true)
+            }
+            guard heldFetchHasResumed, let heldTableDescription else { return (nil, false) }
             self.heldTableDescription = nil
-            return heldTableDescription
+            return (heldTableDescription, false)
         }
-        if let heldDescription {
+        if result.shouldFail {
+            throw CountingSQLiteAdapterError.describeFailed
+        }
+        if let heldDescription = result.heldDescription {
             return heldDescription
         }
         return try await base.describeTable(name: name, schema: schema)
@@ -447,6 +557,10 @@ private final class AsyncSignal: @unchecked Sendable {
             }
         }
     }
+}
+
+private enum CountingSQLiteAdapterError: Error {
+    case describeFailed
 }
 
 private final class AsyncGate: @unchecked Sendable {
