@@ -124,6 +124,7 @@ final class AppState: ObservableObject {
         let statement: String
         let result: Result<QueryResult, Error>
         let duration: TimeInterval
+        let databaseName: String
     }
 
     private(set) var redisSessionID: UUID?
@@ -205,13 +206,19 @@ final class AppState: ObservableObject {
     /// Persist a user-executed SQL query to the sidebar History (SwiftData).
     /// Called ONLY from the SQL query editor — not from data grid loads,
     /// structure inspections, or internal DML. Survives app restarts.
-    func recordQueryHistory(sql: String, duration: TimeInterval?, rowCount: Int? = nil, error: String? = nil) {
+    func recordQueryHistory(
+        sql: String,
+        duration: TimeInterval?,
+        rowCount: Int? = nil,
+        error: String? = nil,
+        database: String? = nil
+    ) {
         guard let connectionId = activeConnectionId else { return }
-        let database = currentDatabaseName ?? ""
+        let historyDatabase = database ?? currentDatabaseName ?? ""
         let historyEntry = QueryHistoryEntry(
             id: UUID(),
             connectionId: connectionId,
-            database: database,
+            database: historyDatabase,
             sql: sql,
             executedAt: Date(),
             duration: duration ?? 0,
@@ -771,6 +778,7 @@ final class AppState: ObservableObject {
                 await Self.executeRedisCLICommands(
                     commands,
                     using: adapter,
+                    databaseName: context.databaseName,
                     execute: execute
                 )
             }
@@ -793,7 +801,8 @@ final class AppState: ObservableObject {
                     RedisCLIStatementExecution(
                         statement: command,
                         result: result,
-                        duration: Date().timeIntervalSince(start)
+                        duration: Date().timeIntervalSince(start),
+                        databaseName: currentDatabaseName ?? context.databaseName
                     )
                 )
                 if case .failure = result { break }
@@ -812,6 +821,7 @@ final class AppState: ObservableObject {
     private static func executeRedisCLICommands(
         _ commands: [String],
         using adapter: RedisAdapter,
+        databaseName: String,
         execute: (RedisAdapter, String) async throws -> QueryResult
     ) async -> [RedisCLIStatementExecution] {
         var executions: [RedisCLIStatementExecution] = []
@@ -827,7 +837,8 @@ final class AppState: ObservableObject {
                 RedisCLIStatementExecution(
                     statement: command,
                     result: result,
-                    duration: Date().timeIntervalSince(start)
+                    duration: Date().timeIntervalSince(start),
+                    databaseName: databaseName
                 )
             )
             if case .failure = result { break }

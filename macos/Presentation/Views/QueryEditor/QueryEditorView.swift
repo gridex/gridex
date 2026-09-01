@@ -381,7 +381,8 @@ struct QueryEditorView: View {
                 appState.recordQueryHistory(
                     sql: execution.statement,
                     duration: execution.duration,
-                    rowCount: result.rowCount
+                    rowCount: result.rowCount,
+                    database: execution.databaseName
                 )
                 if !result.columns.isEmpty {
                     lastResult = result
@@ -392,7 +393,8 @@ struct QueryEditorView: View {
                 appState.recordQueryHistory(
                     sql: execution.statement,
                     duration: execution.duration,
-                    error: error.localizedDescription
+                    error: error.localizedDescription,
+                    database: execution.databaseName
                 )
                 errorMessage = error.localizedDescription
                 appState.refreshSidebar()
