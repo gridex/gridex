@@ -209,6 +209,7 @@ struct TabItemView: View {
                     .padding(.leading, 14)
                     .padding(.trailing, 7)
                     .frame(height: 38)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
@@ -219,6 +220,7 @@ struct TabItemView: View {
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 14)
                     .frame(height: 38)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .opacity(isHovering || isActive ? 1 : 0)
