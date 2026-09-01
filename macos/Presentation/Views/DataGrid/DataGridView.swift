@@ -412,6 +412,7 @@ final class DataGridViewState: ObservableObject {
     private(set) var adapter: (any DatabaseAdapter)?
     private(set) var tableName: String = ""
     private(set) var schema: String?
+    private var isReloadingStructure = false
     weak var appState: AppState?
 
     // MARK: - Schema metadata cache (survives tab switches)
@@ -454,7 +455,7 @@ final class DataGridViewState: ObservableObject {
         return nil
     }
 
-    func load(tableName: String, schema: String?, adapter: (any DatabaseAdapter)?) async {
+    func load(tableName: String, schema: String?, adapter: (any DatabaseAdapter)?, prefetchedDescription: TableDescription? = nil) async {
         guard let adapter else { return }
         self.adapter = adapter
         self.tableName = tableName
@@ -521,7 +522,10 @@ final class DataGridViewState: ObservableObject {
         }
 
         let start = Date()
-        async let descTask = adapter.describeTable(name: tableName, schema: schema)
+        async let descTask: TableDescription? = {
+            if let prefetchedDescription { return prefetchedDescription }
+            return try? await adapter.describeTable(name: tableName, schema: schema)
+        }()
         async let enumTask: [String: [String]] = {
             guard adapter.databaseType == .postgresql else { return [:] }
             let sql = """
@@ -545,7 +549,7 @@ final class DataGridViewState: ObservableObject {
             return enums
         }()
 
-        if let desc = try? await descTask {
+        if let desc = await descTask {
             let dur = Date().timeIntervalSince(start)
             self.primaryKeyColumns = desc.columns.filter { $0.isPrimaryKey }.map { $0.name }
             for col in desc.columns {
@@ -596,9 +600,12 @@ final class DataGridViewState: ObservableObject {
     func reloadAfterStructureChange() async {
         Self.metadataCache.removeValue(forKey: cacheKey)
         guard let adapter else { return }
+        isReloadingStructure = true
+        defer { isReloadingStructure = false }
 
+        let description: TableDescription
         do {
-            let description = try await adapter.describeTable(name: tableName, schema: schema)
+            description = try await adapter.describeTable(name: tableName, schema: schema)
             self.primaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
             self.tableDescription = description
             if let sortColumn, !description.columns.contains(where: { $0.name == sortColumn }) {
@@ -609,11 +616,11 @@ final class DataGridViewState: ObservableObject {
             return
         }
 
-        await load(tableName: tableName, schema: schema, adapter: adapter)
+        await load(tableName: tableName, schema: schema, adapter: adapter, prefetchedDescription: description)
     }
 
     func loadPage(_ page: Int) async {
-        guard let adapter else { return }
+        guard !isReloadingStructure, let adapter else { return }
         isLoading = true
         defer { isLoading = false }
 
