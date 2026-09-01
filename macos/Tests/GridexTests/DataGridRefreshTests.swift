@@ -218,6 +218,51 @@ final class DataGridRefreshTests: XCTestCase {
         try await secondAdapter.disconnect()
     }
 
+    func test_structureRefreshOnSameLogicalTable_settlesOtherGridHeldPageLoad() async throws {
+        let (firstGrid, adapter) = try await makeCountingGrid()
+        let secondGrid = DataGridViewState()
+        await secondGrid.load(tableName: "scores", schema: nil, adapter: adapter)
+
+        let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
+        let secondPageLoad = Task { @MainActor in
+            await secondGrid.loadPage(0)
+        }
+        await adapter.waitForHeldFetch()
+
+        await firstGrid.reloadAfterStructureChange()
+        fetchGate.open()
+        await secondPageLoad.value
+
+        XCTAssertFalse(secondGrid.isLoading)
+        try await adapter.disconnect()
+    }
+
+    func test_metadataCache_distinguishesNilSchemaFromLiteralPublicSchema() async throws {
+        let (defaultSchemaGrid, adapter) = try await makeCountingGrid()
+        adapter.setDescriptionPrimaryKey("rank", forSchema: "public")
+
+        let literalPublicGrid = DataGridViewState()
+        await literalPublicGrid.load(tableName: "scores", schema: "public", adapter: adapter)
+
+        XCTAssertEqual(defaultSchemaGrid.primaryKeyColumns, ["id"])
+        XCTAssertEqual(literalPublicGrid.primaryKeyColumns, ["rank"])
+        try await adapter.disconnect()
+    }
+
+    func test_metadataCache_withoutAppState_usesPerGridFallbackScope() async throws {
+        let (firstDatabaseGrid, adapter) = try await makeCountingGrid()
+        adapter.selectLogicalMetadataDatabase(primaryKeyColumn: "rank")
+
+        let secondDatabaseGrid = DataGridViewState()
+        XCTAssertNil(firstDatabaseGrid.appState)
+        XCTAssertNil(secondDatabaseGrid.appState)
+        await secondDatabaseGrid.load(tableName: "scores", schema: nil, adapter: adapter)
+
+        XCTAssertEqual(firstDatabaseGrid.primaryKeyColumns, ["id"])
+        XCTAssertEqual(secondDatabaseGrid.primaryKeyColumns, ["rank"])
+        try await adapter.disconnect()
+    }
+
     func test_failedStructureRefreshSettlesSupersededPageLoad() async throws {
         let (grid, adapter) = try await makeCountingGrid()
         let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
@@ -331,6 +376,8 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     private var heldFetchHasResumed = false
     private var heldTableDescription: TableDescription?
     private var failNextDescribe = false
+    private var descriptionPrimaryKeysBySchema: [String: String] = [:]
+    private var logicalMetadataPrimaryKey: String?
 
     var databaseType: DatabaseType { base.databaseType }
     var isConnected: Bool { base.isConnected }
@@ -378,6 +425,18 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
         }
     }
 
+    func setDescriptionPrimaryKey(_ column: String, forSchema schema: String) {
+        withLock(lock) {
+            descriptionPrimaryKeysBySchema[schema] = column
+        }
+    }
+
+    func selectLogicalMetadataDatabase(primaryKeyColumn: String) {
+        withLock(lock) {
+            logicalMetadataPrimaryKey = primaryKeyColumn
+        }
+    }
+
     func connect(config: ConnectionConfig, password: String?) async throws {
         try await base.connect(config: config, password: password)
     }
@@ -419,23 +478,55 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func describeTable(name: String, schema: String?) async throws -> TableDescription {
-        let result = withLock(lock) { () -> (heldDescription: TableDescription?, shouldFail: Bool) in
+        let result = withLock(lock) { () -> (heldDescription: TableDescription?, shouldFail: Bool, primaryKeyOverride: String?) in
             describeTableCalls += 1
             if failNextDescribe {
                 failNextDescribe = false
-                return (nil, true)
+                return (nil, true, nil)
             }
-            guard heldFetchHasResumed, let heldTableDescription else { return (nil, false) }
+            let primaryKeyOverride = schema.flatMap { descriptionPrimaryKeysBySchema[$0] }
+                ?? logicalMetadataPrimaryKey
+            guard heldFetchHasResumed, let heldTableDescription else {
+                return (nil, false, primaryKeyOverride)
+            }
             self.heldTableDescription = nil
-            return (heldTableDescription, false)
+            return (heldTableDescription, false, primaryKeyOverride)
         }
         if result.shouldFail {
             throw CountingSQLiteAdapterError.describeFailed
         }
+        let description: TableDescription
         if let heldDescription = result.heldDescription {
-            return heldDescription
+            description = heldDescription
+        } else {
+            description = try await base.describeTable(name: name, schema: schema)
         }
-        return try await base.describeTable(name: name, schema: schema)
+        guard let primaryKeyOverride = result.primaryKeyOverride else {
+            return description
+        }
+        return TableDescription(
+            name: description.name,
+            schema: schema,
+            columns: description.columns.map { column in
+                ColumnInfo(
+                    name: column.name,
+                    dataType: column.dataType,
+                    isNullable: column.isNullable,
+                    defaultValue: column.defaultValue,
+                    isPrimaryKey: column.name == primaryKeyOverride,
+                    isAutoIncrement: column.isAutoIncrement && column.name == primaryKeyOverride,
+                    comment: column.comment,
+                    ordinalPosition: column.ordinalPosition,
+                    characterMaxLength: column.characterMaxLength,
+                    checkConstraint: column.checkConstraint
+                )
+            },
+            indexes: description.indexes,
+            foreignKeys: description.foreignKeys,
+            constraints: description.constraints,
+            comment: description.comment,
+            estimatedRowCount: description.estimatedRowCount
+        )
     }
 
     func listIndexes(table: String, schema: String?) async throws -> [IndexInfo] {
