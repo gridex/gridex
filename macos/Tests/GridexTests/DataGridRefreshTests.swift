@@ -148,6 +148,18 @@ final class DataGridRefreshTests: XCTestCase {
     func test_reloadAfterStructureChange_discardsOlderLoadResultsAndMetadataCache() async throws {
         let (grid, adapter) = try await makeCountingGrid()
         DataGridViewState.clearMetadataCache()
+        let appState = AppState()
+        let config = ConnectionConfig(
+            name: "shared-refresh-cache-scope",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        appState.activeAdapter = adapter
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.currentDatabaseName = "main"
+        grid.appState = appState
+        await grid.load(tableName: "scores", schema: nil, adapter: adapter)
 
         let fetchGate = adapter.holdNextFetchAndCaptureTableDescription()
         let olderLoad = Task { @MainActor in
@@ -169,6 +181,7 @@ final class DataGridRefreshTests: XCTestCase {
         XCTAssertEqual(grid.tableDescription?.columns.map(\.name), ["record_id", "rank"])
 
         let cacheProbe = DataGridViewState()
+        cacheProbe.appState = appState
         await cacheProbe.load(tableName: "scores", schema: nil, adapter: adapter)
         XCTAssertEqual(cacheProbe.primaryKeyColumns, ["record_id"])
         XCTAssertEqual(cacheProbe.tableDescription?.columns.map(\.name), ["record_id", "rank"])
