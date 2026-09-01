@@ -110,12 +110,18 @@ final class RedisKeyBrowserViewState: ObservableObject {
 
     func scan(
         in context: RedisKeyBrowserContext,
+        isCurrent: () -> Bool = { true },
         execute: () async -> Result<RedisKeyScanResult, Error>?
     ) async {
         contentState.beginLoading(in: context)
         isLoading = true
 
-        switch await coordinator.perform(for: context, execute: execute) {
+        let completion = await coordinator.perform(for: context) {
+            let result = await execute()
+            return isCurrent() ? result : nil
+        }
+
+        switch completion {
         case .current(.success(let result)):
             contentState.publishSuccess(result, in: context)
             isLoading = false
@@ -214,7 +220,10 @@ struct RedisKeyBrowserView: View {
                 viewState.deactivate()
                 return
             }
-            await scanKeys(context: context)
+            await scanKeys(
+                capturedNonce: loadRequest.refreshNonce,
+                context: context
+            )
         }
         .onDisappear { viewState.deactivate() }
     }
@@ -369,8 +378,20 @@ struct RedisKeyBrowserView: View {
     }
 
     @MainActor
-    private func scanKeys(context: RedisKeyBrowserContext) async {
-        await viewState.scan(in: context) {
+    private func scanKeys(
+        capturedNonce: Int,
+        context: RedisKeyBrowserContext
+    ) async {
+        await viewState.scan(
+            in: context,
+            isCurrent: {
+                RedisKeyBrowserBehavior.shouldPublish(
+                    capturedNonce: capturedNonce,
+                    currentNonce: appState.redisKeyBrowserRefreshNonce,
+                    isCancelled: Task.isCancelled
+                ) && activeContext == context
+            }
+        ) {
             await appState.performRedisOperation(for: context) { redis in
                 try await redis.scanKeyNames()
             }
