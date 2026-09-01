@@ -249,9 +249,8 @@ struct SidebarView: View {
                     get: { appState.selectedSidebarSchema },
                     set: { schema in
                         guard schema != appState.selectedSidebarSchema else { return }
-                        appState.selectedSidebarSchema = schema
-                        appState.selectedSidebarItem = nil
-                        appState.refreshSidebar()
+                        appState.clearSidebarSelection()
+                        appState.refreshSidebar(preferredSchema: schema)
                     }
                 )) {
                     ForEach(appState.sidebarSchemas, id: \.self) { schema in
@@ -324,7 +323,7 @@ struct SidebarItemRow: View {
 
     // Leaf item (table, view, function)
     private var leafRow: some View {
-        let isActive = appState.selectedSidebarItem == item.type
+        let isActive = appState.isSidebarItemActive(item)
         let isPendingDelete: Bool = {
             if case .table(let name) = item.type {
                 return appState.pendingTableDeletions[tableReference(name)] != nil
@@ -371,20 +370,20 @@ struct SidebarItemRow: View {
         .onTapGesture(count: 2) {
             switch item.type {
             case .table(let name), .view(let name):
-                appState.openTable(name: name, schema: item.schema)
+                appState.openTable(name: name, schema: item.schema, sidebarItemType: item.type)
                 NotificationCenter.default.post(name: .reloadData, object: nil)
             default:
                 break
             }
         }
         .onTapGesture {
-            appState.selectedSidebarItem = item.type
+            appState.selectSidebarItem(item.type, schema: item.schema)
             // Open table/view on single click
             switch item.type {
             case .table(let name):
-                appState.openTable(name: name, schema: item.schema)
+                appState.openTable(name: name, schema: item.schema, sidebarItemType: item.type)
             case .view(let name):
-                appState.openTable(name: name, schema: item.schema)
+                appState.openTable(name: name, schema: item.schema, sidebarItemType: item.type)
             case .function(let name):
                 appState.openFunction(name: name, schema: item.schema)
             case .procedure(let name):
@@ -564,7 +563,7 @@ struct SidebarItemRow: View {
             }
         } else if case .table(let name) = item.type {
             Button("Open in new tab") {
-                appState.openTable(name: name, schema: item.schema)
+                appState.openTable(name: name, schema: item.schema, sidebarItemType: item.type)
             }
 
             Button("Open structure") {

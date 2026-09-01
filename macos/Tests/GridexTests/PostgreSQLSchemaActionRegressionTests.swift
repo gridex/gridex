@@ -13,6 +13,9 @@ final class SidebarLoadPublicationTests: XCTestCase {
         let appState = AppState()
         let config = makePostgreSQLConfig()
 
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.activeAdapter = adapter
         appState.selectedSidebarSchema = "tenant_a"
         let staleLoad = Task {
             await appState.loadSidebar(config: config, adapter: adapter, schema: "tenant_a")

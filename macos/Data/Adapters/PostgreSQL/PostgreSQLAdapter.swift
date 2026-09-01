@@ -217,23 +217,37 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
             appendBinding(param, to: &bindings)
         }
 
-        let pgQuery = PostgresQuery(unsafeSQL: sql, binds: bindings)
-        let rows = try await client.query(pgQuery)
-        let columns = rows.columns.map { col in
-            ColumnHeader(name: col.name, dataType: col.dataType.description)
-        }
-
-        var resultRows: [[RowValue]] = []
-        for try await row in rows {
-            var rowValues: [RowValue] = []
-            for (cell, meta) in zip(row, rows.columns) {
-                rowValues.append(decodeCell(cell, dataType: meta.dataType))
+        return try await Self.withFormattedQueryErrors {
+            let pgQuery = PostgresQuery(unsafeSQL: sql, binds: bindings)
+            let rows = try await client.query(pgQuery)
+            let columns = rows.columns.map { col in
+                ColumnHeader(name: col.name, dataType: col.dataType.description)
             }
-            resultRows.append(rowValues)
-        }
 
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
-        return QueryResult(columns: columns, rows: resultRows, rowsAffected: resultRows.count, executionTime: duration, queryType: queryType)
+            var resultRows: [[RowValue]] = []
+            for try await row in rows {
+                var rowValues: [RowValue] = []
+                for (cell, meta) in zip(row, rows.columns) {
+                    rowValues.append(self.decodeCell(cell, dataType: meta.dataType))
+                }
+                resultRows.append(rowValues)
+            }
+
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            return QueryResult(columns: columns, rows: resultRows, rowsAffected: resultRows.count, executionTime: duration, queryType: queryType)
+        }
+    }
+
+    static func withFormattedQueryErrors<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as GridexError {
+            throw error
+        } catch {
+            throw GridexError.queryExecutionFailed(formatPostgresError(error))
+        }
     }
 
     private func appendBinding(_ value: RowValue, to bindings: inout PostgresBindings) {
