@@ -1202,7 +1202,10 @@ struct WorkspaceView: View {
     private func tabContent(for tab: AppState.ContentTab) -> some View {
         switch tab.type {
         case .dataGrid:
-            if let tableName = tab.tableName {
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) == nil {
+                redisContextMismatchView
+            } else if let tableName = tab.tableName {
                 DataGridView(tableName: tableName, schema: tab.schema, tabId: tab.id, initialViewMode: tab.initialViewMode)
             }
         case .queryEditor:
@@ -1234,13 +1237,29 @@ struct WorkspaceView: View {
         // Redis-specific tabs
         case .redisKeyDetail:
             if let keyName = tab.tableName {
-                RedisKeyDetailView(keyName: keyName)
+                RedisKeyDetailView(
+                    keyName: keyName,
+                    redisContext: tab.redisContext
+                )
             }
         case .redisServerInfo:
             RedisServerInfoView()
         case .redisSlowLog:
             RedisSlowLogView()
         }
+    }
+
+    private var redisContextMismatchView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text("This Redis tab belongs to another connection or database.")
+                .font(.system(size: 12, weight: .medium))
+            Text("Reopen it from the current Redis key browser to continue.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

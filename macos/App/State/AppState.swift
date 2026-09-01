@@ -158,6 +158,11 @@ final class AppState: ObservableObject {
 
     // MARK: - Tab Types
 
+    struct RedisTabContext: Hashable {
+        let connectionID: UUID
+        let databaseName: String
+    }
+
     struct ContentTab: Identifiable {
         let id: UUID
         let type: TabState.TabType
@@ -166,6 +171,7 @@ final class AppState: ObservableObject {
         let schema: String?
         var databaseName: String?
         var initialViewMode: String? // "data" or "structure"
+        var redisContext: RedisTabContext?
     }
 
     struct TabGroup: Identifiable {
@@ -509,22 +515,40 @@ final class AppState: ObservableObject {
 
     // MARK: - Redis Tabs
 
+    private var currentRedisTabContext: RedisTabContext? {
+        guard let connectionID = activeConnectionId,
+              let databaseName = currentDatabaseName else { return nil }
+        return RedisTabContext(
+            connectionID: connectionID,
+            databaseName: databaseName
+        )
+    }
+
+    func activeRedisAdapter(for context: RedisTabContext) -> RedisAdapter? {
+        guard currentRedisTabContext == context else { return nil }
+        return activeAdapter as? RedisAdapter
+    }
+
     var isRedisFlatKeyListOpen: Bool {
-        tabs.contains {
+        let context = currentRedisTabContext
+        return tabs.contains {
             $0.type == .dataGrid
                 && $0.tableName == "Keys"
                 && $0.schema == nil
                 && $0.databaseName == currentDatabaseName
+                && $0.redisContext == context
         }
     }
 
     func openRedisFlatKeyList() {
+        let context = currentRedisTabContext
         let tabID: UUID
         if let existing = tabs.first(where: {
             $0.type == .dataGrid
                 && $0.tableName == "Keys"
                 && $0.schema == nil
                 && $0.databaseName == currentDatabaseName
+                && $0.redisContext == context
         }) {
             tabID = existing.id
         } else {
@@ -534,7 +558,8 @@ final class AppState: ObservableObject {
                 title: "Keys",
                 tableName: "Keys",
                 schema: nil,
-                databaseName: currentDatabaseName
+                databaseName: currentDatabaseName,
+                redisContext: context
             )
             tabs.append(tab)
             tabID = tab.id
@@ -547,15 +572,25 @@ final class AppState: ObservableObject {
     }
 
     func openRedisKeyDetail(key: String) {
+        let context = currentRedisTabContext
         if let existing = tabs.first(where: {
             $0.type == .redisKeyDetail
                 && $0.tableName == key
                 && $0.databaseName == currentDatabaseName
+                && $0.redisContext == context
         }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisKeyDetail, title: key, tableName: key, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisKeyDetail,
+            title: key,
+            tableName: key,
+            schema: nil,
+            databaseName: currentDatabaseName,
+            redisContext: context
+        )
         tabs.append(tab)
         activeTabId = tab.id
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
