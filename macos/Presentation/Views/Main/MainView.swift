@@ -1049,6 +1049,13 @@ struct WorkspaceView: View {
         return screenWidth * 0.5
     }
 
+    private var activeGridAllowsMutations: Bool {
+        guard let activeTabId = appState.activeTabId,
+              let tab = appState.tabs.first(where: { $0.id == activeTabId }),
+              tab.type == .dataGrid else { return true }
+        return tab.redisContext == nil
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             // Sidebar — always in hierarchy; width animates between 0 and sidebarWidth
@@ -1142,6 +1149,7 @@ struct WorkspaceView: View {
                 } label: {
                     Image(systemName: "trash")
                 }
+                .disabled(!activeGridAllowsMutations)
                 .help("Delete Selected Rows")
 
                 Button {
@@ -1149,6 +1157,7 @@ struct WorkspaceView: View {
                 } label: {
                     Image(systemName: "text.insert")
                 }
+                .disabled(!activeGridAllowsMutations)
                 .help("Commit Changes")
 
                 // ER Diagram (SQL databases only)
@@ -1206,7 +1215,13 @@ struct WorkspaceView: View {
                appState.activeRedisAdapter(for: context) == nil {
                 redisContextMismatchView
             } else if let tableName = tab.tableName {
-                DataGridView(tableName: tableName, schema: tab.schema, tabId: tab.id, initialViewMode: tab.initialViewMode)
+                DataGridView(
+                    tableName: tableName,
+                    schema: tab.schema,
+                    tabId: tab.id,
+                    redisContext: tab.redisContext,
+                    initialViewMode: tab.initialViewMode
+                )
             }
         case .queryEditor:
             QueryEditorView(tabId: tab.id)

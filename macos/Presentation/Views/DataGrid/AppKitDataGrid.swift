@@ -39,6 +39,8 @@ struct AppKitDataGrid: NSViewRepresentable {
         tableView.target = context.coordinator
 
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = context.coordinator
         let copyRowItem = NSMenuItem(title: "Copy Row", action: #selector(context.coordinator.copyRow(_:)), keyEquivalent: "")
         copyRowItem.target = context.coordinator
         let copyCellItem = NSMenuItem(title: "Copy Cell", action: #selector(context.coordinator.copyCell(_:)), keyEquivalent: "")
@@ -75,7 +77,7 @@ struct AppKitDataGrid: NSViewRepresentable {
     // MARK: - Coordinator
 
     @MainActor
-    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+    class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
         weak var tableView: NSTableView?
         var onSelectRows: ((Set<Int>) -> Void)?
         var onFKClick: ((_ refTable: String, _ refColumn: String, _ value: String) -> Void)?
@@ -104,6 +106,10 @@ struct AppKitDataGrid: NSViewRepresentable {
         private var columnNameToIndex: [String: Int] = [:]
         private var dateColumnIndices: Set<Int> = []
         private var boolColumnIndices: Set<Int> = []
+
+        private var allowsMutations: Bool {
+            viewModel?.allowsMutations == true
+        }
 
         private func rebuildPendingChangeCaches() {
             deletedRows = []
@@ -338,16 +344,16 @@ struct AppKitDataGrid: NSViewRepresentable {
 
             let newAlignment: NSTextAlignment = value.isNumeric ? .right : .left
             if cell.textAlignment != newAlignment { cell.textAlignment = newAlignment; dirty = true }
-            cell.isDateColumn = isDateColumn(col)
-            cell.isBooleanColumn = isBoolColumn(col)
+            cell.isDateColumn = allowsMutations && isDateColumn(col)
+            cell.isBooleanColumn = allowsMutations && isBoolColumn(col)
 
             let colName = col < columns.count ? columns[col].name : ""
             cell.foreignKeyTarget = foreignKeyColumns[colName]
             cell.foreignKeyRefColumn = foreignKeyRefColumns[colName]
             cell.cellValue = value == .null ? "" : newText
             cell.onFKClick = onFKClick
-            cell.hasDefaultValue = columnDefaults[colName] != nil
-            cell.hasEnumValues = columnEnumValues[colName] != nil
+            cell.hasDefaultValue = allowsMutations && columnDefaults[colName] != nil
+            cell.hasEnumValues = allowsMutations && columnEnumValues[colName] != nil
 
             let isModified = modifiedCells.contains("\(row):\(colName)")
             let newBg = isModified ? NSColor.Gridex.cellModified : nil
@@ -480,6 +486,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         func beginEditing(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView, col < columns.count, row < rows.count else { return }
             if tableView.subviews.contains(where: { $0 is EditContainerView }) { return }
 
@@ -506,6 +513,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         private func beginTextEditing(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView, col < columns.count, row < rows.count else { return }
 
             isEditing = true
@@ -557,6 +565,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         private var pendingDateEdit: (row: Int, col: Int)?
 
         private func showDateMenu(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView else { return }
             pendingDateEdit = (row, col)
 
@@ -648,6 +657,10 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         private func commitDateValue(_ value: RowValue) {
+            guard allowsMutations else {
+                pendingDateEdit = nil
+                return
+            }
             guard let edit = pendingDateEdit else { return }
             pendingDateEdit = nil
 
@@ -683,6 +696,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         private var pendingDefaultEdit: (row: Int, col: Int)?
 
         private func showDefaultMenu(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView else { return }
             pendingDefaultEdit = (row, col)
 
@@ -739,6 +753,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         private func commitDefaultValue(_ value: RowValue, edit: (row: Int, col: Int)) {
+            guard allowsMutations else { return }
             guard edit.row < rows.count, edit.col < columns.count else { return }
 
             let oldValue = rows[edit.row][edit.col]
@@ -770,6 +785,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         private var pendingEnumEdit: (row: Int, col: Int)?
 
         private func showEnumMenu(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView else { return }
             pendingEnumEdit = (row, col)
 
@@ -835,6 +851,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         private func commitEnumValue(_ value: RowValue, edit: (row: Int, col: Int)) {
+            guard allowsMutations else { return }
             guard edit.row < rows.count, edit.col < columns.count else { return }
 
             let oldValue = rows[edit.row][edit.col]
@@ -866,6 +883,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         private var pendingBoolEdit: (row: Int, col: Int)?
 
         private func showBooleanMenu(row: Int, col: Int) {
+            guard allowsMutations else { return }
             guard let tableView else { return }
             pendingBoolEdit = (row, col)
 
@@ -922,6 +940,7 @@ struct AppKitDataGrid: NSViewRepresentable {
         }
 
         private func commitBoolValue(_ value: RowValue, edit: (row: Int, col: Int)) {
+            guard allowsMutations else { return }
             guard edit.row < rows.count, edit.col < columns.count else { return }
 
             let oldValue = rows[edit.row][edit.col]
@@ -965,12 +984,13 @@ struct AppKitDataGrid: NSViewRepresentable {
         private func finishEditing(_ editor: NSTextField, commit: Bool, nextCol: Bool = false) {
             guard let info = objc_getAssociatedObject(editor, &Self.editInfoKey) as? EditInfo else { return }
             objc_setAssociatedObject(editor, &Self.editInfoKey, nil, .OBJC_ASSOCIATION_RETAIN)
+            let shouldCommit = commit && allowsMutations
 
             // Save scroll position before any changes — removing the editor
             // and changing first responder can cause NSTableView to auto-scroll.
             let savedContentOffset = tableView?.enclosingScrollView?.contentView.bounds.origin
 
-            if commit {
+            if shouldCommit {
                 if insertedRowIndices.contains(info.row) {
                     viewModel?.commitNewRowEdit(rowIndex: info.row, colIdx: info.col, newText: editor.stringValue)
                 } else {
@@ -985,7 +1005,7 @@ struct AppKitDataGrid: NSViewRepresentable {
             if let tableView,
                let cellView = tableView.view(atColumn: info.col, row: info.row, makeIfNecessary: false) as? DataGridCellView {
                 cellView.isEditingActive = false
-                if commit, let vm = viewModel {
+                if shouldCommit, let vm = viewModel {
                     rows = vm.rows
                     pendingChanges = vm.changeTracker.pendingChanges
                     rebuildPendingChangeCaches()
@@ -1006,7 +1026,7 @@ struct AppKitDataGrid: NSViewRepresentable {
             isEditing = false
 
             // Tab → open next column for editing
-            if nextCol, commit {
+            if nextCol, shouldCommit {
                 let nextColIdx = info.col + 1
                 if nextColIdx < columns.count {
                     beginEditing(row: info.row, col: nextColIdx)
@@ -1039,6 +1059,13 @@ struct AppKitDataGrid: NSViewRepresentable {
             }
         }
 
+        nonisolated func menuWillOpen(_ menu: NSMenu) {
+            MainActor.assumeIsolated {
+                menu.items.first(where: { $0.action == #selector(deleteRows(_:)) })?
+                    .isEnabled = allowsMutations
+            }
+        }
+
         // MARK: - Copy
 
         @objc nonisolated func copyRow(_ sender: Any?) {
@@ -1067,7 +1094,7 @@ struct AppKitDataGrid: NSViewRepresentable {
 
         @objc nonisolated func deleteRows(_ sender: Any?) {
             MainActor.assumeIsolated {
-                guard let vm = viewModel, let tableView else { return }
+                guard allowsMutations, let vm = viewModel, let tableView else { return }
                 // If right-clicked row is not in selection, delete just that row
                 let clickedRow = tableView.clickedRow
                 if clickedRow >= 0, !tableView.selectedRowIndexes.contains(clickedRow) {

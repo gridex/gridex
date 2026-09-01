@@ -964,8 +964,11 @@ final class AppState: ObservableObject {
             tabID = tab.id
             ensureTabGroup(for: context.databaseName)
         }
+        let gridState = cachedDataGridState(for: tabID)
+        gridState.appState = self
+        gridState.bindRedisContext(context)
+        gridState.showFilterBar = true
         activeTabId = tabID
-        cachedDataGridState(for: tabID).showFilterBar = true
     }
 
     func openRedisKeyDetail(key: String) {
