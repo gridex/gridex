@@ -130,6 +130,8 @@ final class AppState: ObservableObject {
     }
 
     private var redisDatabaseTransitionBatch: RedisDatabaseTransitionBatch?
+    private var redisOperationLeaseIsHeld = false
+    private var redisOperationLeaseWaiters: [CheckedContinuation<Void, Never>] = []
 
     func requestRedisKeyBrowserRefresh() {
         redisKeyBrowserRefreshNonce &+= 1
@@ -616,6 +618,19 @@ final class AppState: ObservableObject {
             return false
         }
 
+        await acquireRedisOperationLease()
+        defer { releaseRedisOperationLease() }
+
+        guard isPendingRedisDatabaseTransition(token) else {
+            discardRedisDatabaseTransition(token)
+            return false
+        }
+
+        guard !Task.isCancelled else {
+            _ = finishRedisDatabaseTransition(token, outcome: .failure)
+            return false
+        }
+
         do {
             try await performSelect()
             return finishRedisDatabaseTransition(
@@ -626,6 +641,26 @@ final class AppState: ObservableObject {
             _ = finishRedisDatabaseTransition(token, outcome: .failure)
             throw error
         }
+    }
+
+    private func acquireRedisOperationLease() async {
+        guard redisOperationLeaseIsHeld else {
+            redisOperationLeaseIsHeld = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            redisOperationLeaseWaiters.append(continuation)
+        }
+    }
+
+    private func releaseRedisOperationLease() {
+        guard !redisOperationLeaseWaiters.isEmpty else {
+            redisOperationLeaseIsHeld = false
+            return
+        }
+
+        redisOperationLeaseWaiters.removeFirst().resume()
     }
 
     private func rotateRedisSession(for adapter: (any DatabaseAdapter)?) {
@@ -691,6 +726,23 @@ final class AppState: ObservableObject {
         let ownsPostTransitionPublication = token.databaseRevision == batch.latestRevision
         redisDatabaseTransitionBatch = batch.pendingRevisions.isEmpty ? nil : batch
         return ownsPostTransitionPublication
+    }
+
+    private func isPendingRedisDatabaseTransition(_ token: RedisSessionRevisionToken) -> Bool {
+        guard isCurrentRedisSession(token),
+              let batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID else { return false }
+        return batch.pendingRevisions.contains(token.databaseRevision)
+    }
+
+    private func discardRedisDatabaseTransition(_ token: RedisSessionRevisionToken) {
+        guard var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID else { return }
+
+        batch.pendingRevisions.remove(token.databaseRevision)
+        redisDatabaseTransitionBatch = batch.pendingRevisions.isEmpty ? nil : batch
     }
 
     private func isCurrentRedisSession(_ token: RedisSessionRevisionToken) -> Bool {
