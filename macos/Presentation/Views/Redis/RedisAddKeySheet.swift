@@ -150,8 +150,10 @@ struct RedisAddKeySheet: View {
         isCreating = true
         errorMessage = nil
 
+        let capturedKeyName = keyName
+        let capturedKeyType = keyType
         let data: RedisKeyData
-        switch keyType {
+        switch capturedKeyType {
         case .string: data = .string(value: stringValue)
         case .hash: data = .hash(fields: hashFields.filter { !$0.field.isEmpty })
         case .list: data = .list(items: listItems.filter { !$0.isEmpty })
@@ -166,8 +168,8 @@ struct RedisAddKeySheet: View {
         Task {
             let result = await appState.performRedisOperation(for: redisContext) { redis in
                 try await redis.redisInsertTyped(
-                    key: keyName,
-                    type: keyType,
+                    key: capturedKeyName,
+                    type: capturedKeyType,
                     data: data,
                     ttl: ttl
                 )
