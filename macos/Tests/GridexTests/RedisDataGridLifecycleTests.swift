@@ -22,6 +22,16 @@ final class RedisDataGridLifecycleTests: XCTestCase {
         )
     }
 
+    func test_openRedisFlatKeyListClearsStaleGlobalRowCountBeforeDisplay() {
+        let appState = AppState()
+        establishRedisContext(on: appState, databaseName: "db0")
+        appState.statusRowCount = 42
+
+        appState.openRedisFlatKeyList()
+
+        XCTAssertNil(appState.statusRowCount)
+    }
+
     func test_redisContextMakesGridReadOnlyAndAllMutationEntryPointsNoOp() async {
         let state = DataGridViewState()
         state.bindRedisContext(redisContext(databaseName: "db0", revision: 1))
