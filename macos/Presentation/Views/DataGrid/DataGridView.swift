@@ -414,6 +414,7 @@ final class DataGridViewState: ObservableObject {
     private(set) var schema: String?
     private var loadGeneration = 0
     private var loadingGeneration: Int?
+    private var latestPageRequest: PageRequest?
     private var pendingProgrammaticSortClear: ProgrammaticSortClear?
     weak var appState: AppState?
 
@@ -441,6 +442,11 @@ final class DataGridViewState: ObservableObject {
     private struct ProgrammaticSortClear {
         let generation: Int
         let clearedColumn: String
+    }
+
+    private struct PageRequest {
+        let generation: Int
+        let page: Int
     }
 
     private static var metadataCache: [MetadataCacheKey: TableMetadataCache] = [:]
@@ -504,16 +510,28 @@ final class DataGridViewState: ObservableObject {
         isLoading = false
     }
 
-    private func isCurrentRequest(_ generation: Int, cacheKey: MetadataCacheKey, cacheGeneration: Int) -> Bool {
-        generation == loadGeneration && Self.metadataCacheGenerations[cacheKey, default: 0] == cacheGeneration
+    private func isCurrentMetadataScope(cacheKey: MetadataCacheKey, cacheGeneration: Int) -> Bool {
+        guard let adapter else { return false }
+        let currentCacheKey = metadataCacheKey(
+            adapter: adapter,
+            tableName: tableName,
+            schema: schema
+        )
+        return currentCacheKey == cacheKey
+            && Self.metadataCacheGenerations[cacheKey, default: 0] == cacheGeneration
     }
 
-    private func continueIfCurrentRequest(
+    private func isCurrentRowRequest(_ generation: Int, cacheKey: MetadataCacheKey, cacheGeneration: Int) -> Bool {
+        generation == loadGeneration
+            && isCurrentMetadataScope(cacheKey: cacheKey, cacheGeneration: cacheGeneration)
+    }
+
+    private func continueIfCurrentRowRequest(
         _ generation: Int,
         cacheKey: MetadataCacheKey,
         cacheGeneration: Int
     ) -> Bool {
-        guard isCurrentRequest(
+        guard isCurrentRowRequest(
             generation,
             cacheKey: cacheKey,
             cacheGeneration: cacheGeneration
@@ -539,15 +557,23 @@ final class DataGridViewState: ObservableObject {
         cacheGeneration: Int? = nil
     ) async {
         guard let adapter else { return }
-        let requestGeneration = generation ?? nextLoadGeneration()
-        self.adapter = adapter
-        self.tableName = tableName
-        self.schema = schema
+        let requestGeneration: Int
+        if let generation {
+            requestGeneration = generation
+        } else {
+            requestGeneration = nextLoadGeneration()
+            latestPageRequest = nil
+            self.adapter = adapter
+            self.tableName = tableName
+            self.schema = schema
+        }
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = cacheGeneration ?? Self.metadataCacheGenerations[requestCacheKey, default: 0]
-        guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
-
-        beginLoading(for: requestGeneration)
+        guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+            finishLoading(for: requestGeneration)
+            return
+        }
+        let requestFilter = activeFilter
 
         // Apply cache immediately if available (before any query)
         let hasCachedMeta: Bool
@@ -558,7 +584,9 @@ final class DataGridViewState: ObservableObject {
             self.columnDefaults = cached.columnDefaults
             self.columnEnumValues = cached.columnEnumValues
             self.tableDescription = cached.tableDescription
-            if let count = cached.estimatedRowCount, count > 0 {
+            if activeFilter == nil,
+               let count = cached.estimatedRowCount,
+               count > 0 {
                 self.totalRows = count
             }
             hasCachedMeta = true
@@ -572,37 +600,46 @@ final class DataGridViewState: ObservableObject {
 
         // Fetch rows first, load metadata in background (non-blocking)
         let sort = effectiveSortDescriptors
-        let filter = activeFilter
         let fetchSQL = buildFetchSQL(orderBy: sort, limit: pageSize, offset: 0)
 
-        // 1. Fetch rows — show data ASAP
-        do {
-            let start = Date()
-            let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: filter, orderBy: sort, limit: pageSize, offset: 0)
-            let duration = Date().timeIntervalSince(start)
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
-            logQuery(sql: fetchSQL, duration: duration)
+        // 1. Fetch rows — show data ASAP. A superseded row request may still
+        // finish metadata loading for the same logical table below.
+        if requestGeneration == loadGeneration {
+            beginLoading(for: requestGeneration)
+            do {
+                let start = Date()
+                let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: requestFilter, orderBy: sort, limit: pageSize, offset: 0)
+                let duration = Date().timeIntervalSince(start)
+                if isCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) {
+                    logQuery(sql: fetchSQL, duration: duration)
 
-            self.columns = result.columns
-            self.rows = result.rows
-            rebuildDisplayCache()
-            if self.totalRows == 0 { self.totalRows = result.rowCount }
-            self.executionTime = result.executionTime
-            computeColumnWidths(columns: result.columns, rows: result.rows)
-        } catch {
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
-            errorMessage = Self.detailedErrorMessage(error)
+                    self.columns = result.columns
+                    self.rows = result.rows
+                    rebuildDisplayCache()
+                    if self.totalRows == 0 { self.totalRows = result.rowCount }
+                    self.executionTime = result.executionTime
+                    computeColumnWidths(columns: result.columns, rows: result.rows)
+                } else {
+                    finishLoading(for: requestGeneration)
+                    guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                }
+            } catch {
+                if isCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) {
+                    errorMessage = Self.detailedErrorMessage(error)
+                    finishLoading(for: requestGeneration)
+                    return
+                }
+                finishLoading(for: requestGeneration)
+                guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            }
             finishLoading(for: requestGeneration)
-            return
         }
-
-        finishLoading(for: requestGeneration)
 
         // 2. Load metadata in background (FK icons, structure) — doesn't block row display
         if hasCachedMeta {
             Task {
                 if let desc = try? await adapter.describeTable(name: tableName, schema: schema) {
-                    guard self.continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard self.isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
                     self.tableDescription = desc
                     Self.metadataCache[requestCacheKey]?.tableDescription = desc
                     self.objectWillChange.send()
@@ -639,8 +676,9 @@ final class DataGridViewState: ObservableObject {
             return enums
         }()
 
+        var metadataEstimatedRowCount: Int?
         if let desc = await descTask {
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             let dur = Date().timeIntervalSince(start)
             self.primaryKeyColumns = desc.columns.filter { $0.isPrimaryKey }.map { $0.name }
             for col in desc.columns {
@@ -656,7 +694,10 @@ final class DataGridViewState: ObservableObject {
                     }
                 }
             }
-            if let count = desc.estimatedRowCount, count > 0 {
+            metadataEstimatedRowCount = desc.estimatedRowCount
+            if activeFilter == nil,
+               let count = metadataEstimatedRowCount,
+               count > 0 {
                 self.totalRows = count
             }
             self.tableDescription = desc
@@ -664,7 +705,7 @@ final class DataGridViewState: ObservableObject {
         }
 
         let enumValues = await enumTask
-        guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+        guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
         self.columnEnumValues = enumValues
 
         // Save to cache
@@ -674,7 +715,7 @@ final class DataGridViewState: ObservableObject {
             foreignKeyRefColumns: self.foreignKeyRefColumns,
             columnDefaults: self.columnDefaults,
             columnEnumValues: self.columnEnumValues,
-            estimatedRowCount: self.totalRows,
+            estimatedRowCount: metadataEstimatedRowCount,
             tableDescription: self.tableDescription
         )
         self.objectWillChange.send()
@@ -692,18 +733,39 @@ final class DataGridViewState: ObservableObject {
     /// Invalidate cache and reload everything (after structure changes like ADD COLUMN)
     func reloadAfterStructureChange() async {
         guard let adapter else { return }
+        let requestTableName = tableName
+        let requestSchema = schema
+        let previousPrimaryKeyColumns = primaryKeyColumns
         let requestGeneration = nextLoadGeneration()
-        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
+        latestPageRequest = nil
+        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: requestTableName, schema: requestSchema)
         let requestCacheGeneration = Self.invalidateMetadataCache(for: requestCacheKey)
         beginLoading(for: requestGeneration)
 
         let description: TableDescription
+        var rowReplayRequest: PageRequest?
         do {
-            description = try await adapter.describeTable(name: tableName, schema: schema)
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
-            self.primaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
+            description = try await adapter.describeTable(name: requestTableName, schema: requestSchema)
+            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+                finishLoading(for: requestGeneration)
+                return
+            }
+            let refreshedPrimaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
+            let hasInvalidExplicitSort = sortColumn.map { sortColumn in
+                !description.columns.contains(where: { $0.name == sortColumn })
+            } ?? false
+            let hasChangedImplicitSort = sortColumn == nil
+                && previousPrimaryKeyColumns != refreshedPrimaryKeyColumns
+            if requestGeneration != loadGeneration,
+               (hasInvalidExplicitSort || hasChangedImplicitSort),
+               let latestPageRequest,
+               latestPageRequest.generation == loadGeneration {
+                rowReplayRequest = latestPageRequest
+            }
+
+            self.primaryKeyColumns = refreshedPrimaryKeyColumns
             self.tableDescription = description
-            if let sortColumn, !description.columns.contains(where: { $0.name == sortColumn }) {
+            if let sortColumn, hasInvalidExplicitSort {
                 pendingProgrammaticSortClear = ProgrammaticSortClear(
                     generation: requestGeneration,
                     clearedColumn: sortColumn
@@ -711,20 +773,29 @@ final class DataGridViewState: ObservableObject {
                 self.sortColumn = nil
             }
         } catch {
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+                finishLoading(for: requestGeneration)
+                return
+            }
             errorMessage = Self.detailedErrorMessage(error)
             finishLoading(for: requestGeneration)
             return
         }
 
         await load(
-            tableName: tableName,
-            schema: schema,
+            tableName: requestTableName,
+            schema: requestSchema,
             adapter: adapter,
             prefetchedDescription: description,
             generation: requestGeneration,
             cacheGeneration: requestCacheGeneration
         )
+
+        if let rowReplayRequest,
+           rowReplayRequest.generation == loadGeneration,
+           isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) {
+            await loadPage(rowReplayRequest.page)
+        }
     }
 
     func handleSortColumnChange(from previousSortColumn: String?, to sortColumn: String?) async {
@@ -746,6 +817,7 @@ final class DataGridViewState: ObservableObject {
     func loadPage(_ page: Int) async {
         guard let adapter else { return }
         let requestGeneration = nextLoadGeneration()
+        latestPageRequest = PageRequest(generation: requestGeneration, page: page)
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = Self.metadataCacheGenerations[requestCacheKey, default: 0]
         beginLoading(for: requestGeneration)
@@ -758,10 +830,18 @@ final class DataGridViewState: ObservableObject {
             let start = Date()
             let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: filter, orderBy: sort, limit: pageSize, offset: offset)
             let duration = Date().timeIntervalSince(start)
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             logQuery(sql: sql, duration: duration)
+            errorMessage = nil
+            let columnsChanged = columns != result.columns
+            if columnsChanged {
+                self.columns = result.columns
+            }
             self.rows = result.rows
             rebuildDisplayCache()
+            if columnsChanged {
+                computeColumnWidths(columns: result.columns, rows: result.rows)
+            }
             self.currentPage = page
             self.executionTime = result.executionTime
             // Update row count when filter is active via a proper COUNT query
@@ -770,7 +850,7 @@ final class DataGridViewState: ObservableObject {
                 if let countResult = try? await adapter.executeRaw(sql: countSQL),
                    let firstRow = countResult.rows.first,
                    let firstVal = firstRow.first {
-                    guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard continueIfCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
                     switch firstVal {
                     case .integer(let n): self.totalRows = Int(n)
                     case .string(let s): self.totalRows = Int(s) ?? (result.rows.count + offset)
@@ -778,10 +858,10 @@ final class DataGridViewState: ObservableObject {
                     }
                 }
             }
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             finishLoading(for: requestGeneration)
         } catch {
-            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
             finishLoading(for: requestGeneration)
         }
