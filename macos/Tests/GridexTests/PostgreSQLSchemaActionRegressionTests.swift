@@ -249,11 +249,11 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
         true
     }
 
-    func execute(query: String, parameters: [QueryParameter]?) async throws -> QueryResult {
+    func execute(query: String, parameters: [QueryParameter]?) async throws -> Gridex.QueryResult {
         emptyResult
     }
 
-    func executeRaw(sql: String) async throws -> QueryResult {
+    func executeRaw(sql: String) async throws -> Gridex.QueryResult {
         rawExecutions.append(sql)
         transactionEvents.append(.statement(sql))
         if sql == failingStatement {
@@ -262,7 +262,7 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
         return emptyResult
     }
 
-    func executeWithRowValues(sql: String, parameters: [RowValue]) async throws -> QueryResult {
+    func executeWithRowValues(sql: String, parameters: [RowValue]) async throws -> Gridex.QueryResult {
         parameterizedExecutions.append((sql, parameters))
         return emptyResult
     }
@@ -308,7 +308,7 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
 
     func getFunctionSource(name: String, schema: String?) async throws -> String { "" }
 
-    func insertRow(table: String, schema: String?, values: [String: RowValue]) async throws -> QueryResult {
+    func insertRow(table: String, schema: String?, values: [String: RowValue]) async throws -> Gridex.QueryResult {
         emptyResult
     }
 
@@ -317,11 +317,11 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
         schema: String?,
         set: [String: RowValue],
         where: [String: RowValue]
-    ) async throws -> QueryResult {
+    ) async throws -> Gridex.QueryResult {
         emptyResult
     }
 
-    func deleteRow(table: String, schema: String?, where: [String: RowValue]) async throws -> QueryResult {
+    func deleteRow(table: String, schema: String?, where: [String: RowValue]) async throws -> Gridex.QueryResult {
         emptyResult
     }
 
@@ -345,7 +345,7 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
         orderBy: [QuerySortDescriptor]?,
         limit: Int,
         offset: Int
-    ) async throws -> QueryResult {
+    ) async throws -> Gridex.QueryResult {
         emptyResult
     }
 
@@ -353,8 +353,8 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
 
     func currentDatabase() async throws -> String? { "postgres" }
 
-    private var emptyResult: QueryResult {
-        QueryResult(
+    private var emptyResult: Gridex.QueryResult {
+        Gridex.QueryResult(
             columns: [],
             rows: [],
             rowsAffected: 0,
