@@ -82,6 +82,40 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.activeTabId, db0TabID)
     }
 
+    func test_openRedisFlatKeyList_reusesOnlyWithinTheActiveConnection() throws {
+        let firstConnection = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let secondConnection = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let state = AppState()
+        state.currentDatabaseName = "db0"
+        state.activeConnectionId = firstConnection
+
+        state.openRedisFlatKeyList()
+        let firstConnectionTabID = try XCTUnwrap(state.activeTabId)
+        XCTAssertEqual(
+            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext,
+            AppState.RedisTabContext(connectionID: firstConnection, databaseName: "db0")
+        )
+
+        state.activeConnectionId = secondConnection
+        XCTAssertFalse(state.isRedisFlatKeyListOpen)
+        state.openRedisFlatKeyList()
+        let secondConnectionTabID = try XCTUnwrap(state.activeTabId)
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertNotEqual(secondConnectionTabID, firstConnectionTabID)
+        XCTAssertEqual(
+            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext,
+            AppState.RedisTabContext(connectionID: secondConnection, databaseName: "db0")
+        )
+        XCTAssertTrue(state.isRedisFlatKeyListOpen)
+
+        state.activeConnectionId = firstConnection
+        state.openRedisFlatKeyList()
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertEqual(state.activeTabId, firstConnectionTabID)
+    }
+
     func test_openRedisKeyDetail_reusesSameNamedKeyOnlyWithinCurrentDatabase() throws {
         let state = AppState()
         state.currentDatabaseName = "db0"
@@ -103,6 +137,62 @@ final class RedisAppStateTests: XCTestCase {
 
         XCTAssertEqual(state.tabs.count, 2)
         XCTAssertEqual(state.activeTabId, db0TabID)
+    }
+
+    func test_openRedisKeyDetail_reusesSameNamedKeyOnlyWithinActiveConnection() throws {
+        let firstConnection = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let secondConnection = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let state = AppState()
+        state.currentDatabaseName = "db0"
+        state.activeConnectionId = firstConnection
+
+        state.openRedisKeyDetail(key: "session:42")
+        let firstConnectionTabID = try XCTUnwrap(state.activeTabId)
+        XCTAssertEqual(
+            state.tabs.first(where: { $0.id == firstConnectionTabID })?.redisContext,
+            AppState.RedisTabContext(connectionID: firstConnection, databaseName: "db0")
+        )
+
+        state.activeConnectionId = secondConnection
+        state.openRedisKeyDetail(key: "session:42")
+        let secondConnectionTabID = try XCTUnwrap(state.activeTabId)
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertNotEqual(secondConnectionTabID, firstConnectionTabID)
+        XCTAssertEqual(
+            state.tabs.first(where: { $0.id == secondConnectionTabID })?.redisContext,
+            AppState.RedisTabContext(connectionID: secondConnection, databaseName: "db0")
+        )
+
+        state.activeConnectionId = firstConnection
+        state.openRedisKeyDetail(key: "session:42")
+
+        XCTAssertEqual(state.tabs.count, 2)
+        XCTAssertEqual(state.activeTabId, firstConnectionTabID)
+    }
+
+    func test_activeRedisAdapterForTabContext_rejectsConnectionAndDatabaseChanges() throws {
+        let firstConnection = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let secondConnection = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let adapter = RedisAdapter()
+        let state = AppState()
+        state.activeAdapter = adapter
+        state.activeConnectionId = firstConnection
+        state.currentDatabaseName = "db0"
+        state.openRedisKeyDetail(key: "session:42")
+        let tabID = try XCTUnwrap(state.activeTabId)
+        let capturedContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == tabID })?.redisContext
+        )
+
+        XCTAssertTrue(state.activeRedisAdapter(for: capturedContext) === adapter)
+
+        state.activeConnectionId = secondConnection
+        XCTAssertNil(state.activeRedisAdapter(for: capturedContext))
+
+        state.activeConnectionId = firstConnection
+        state.currentDatabaseName = "db1"
+        XCTAssertNil(state.activeRedisAdapter(for: capturedContext))
     }
 
     func test_flatKeyListOpenStateBecomesFalseAfterCloseAndCanReopen() throws {
