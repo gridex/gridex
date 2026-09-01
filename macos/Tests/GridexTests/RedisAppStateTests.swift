@@ -1201,6 +1201,45 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.currentDatabaseName, "db2")
     }
 
+    func test_redisCLISelectCannotLeapfrogAPendingExternalTransition() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let oldContext = try XCTUnwrap(state.currentRedisContext)
+        let externalSelectGate = AsyncTestGate()
+        var cliSelectExecuted = false
+
+        let externalTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await externalSelectGate.enterAndWait()
+            }
+        }
+        await externalSelectGate.waitUntilEntered()
+
+        let cliBatch = Task { @MainActor in
+            await state.performRedisCLIStatements(
+                ["SELECT 5"],
+                from: oldContext
+            ) { _, _ in
+                cliSelectExecuted = true
+                return self.redisCLIResult(value: "OK")
+            }
+        }
+
+        await Task.yield()
+        XCTAssertFalse(cliSelectExecuted)
+        await externalSelectGate.release()
+        await externalTransition.value
+        let result = await cliBatch.value
+        XCTAssertNil(result)
+        XCTAssertFalse(cliSelectExecuted)
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+    }
+
     func test_redisOperationalTabsAreScopedToExactDatabaseContext() throws {
         let state = AppState()
         establishRedisContext(
