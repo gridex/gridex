@@ -239,9 +239,23 @@ final class DataGridRefreshTests: XCTestCase {
 
     func test_metadataCache_distinguishesNilSchemaFromLiteralPublicSchema() async throws {
         let (defaultSchemaGrid, adapter) = try await makeCountingGrid()
+        let appState = AppState()
+        let config = ConnectionConfig(
+            name: "shared-schema-cache-scope",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        appState.activeAdapter = adapter
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.currentDatabaseName = "main"
+        defaultSchemaGrid.appState = appState
+        await defaultSchemaGrid.load(tableName: "scores", schema: nil, adapter: adapter)
+
         adapter.setDescriptionPrimaryKey("rank", forSchema: "public")
 
         let literalPublicGrid = DataGridViewState()
+        literalPublicGrid.appState = appState
         await literalPublicGrid.load(tableName: "scores", schema: "public", adapter: adapter)
 
         XCTAssertEqual(defaultSchemaGrid.primaryKeyColumns, ["id"])

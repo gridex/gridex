@@ -433,7 +433,8 @@ final class DataGridViewState: ObservableObject {
         let adapterIdentity: ObjectIdentifier
         let connectionID: UUID?
         let databaseName: String?
-        let schema: String
+        let fallbackScopeID: UUID?
+        let schema: String?
         let tableName: String
     }
 
@@ -444,6 +445,7 @@ final class DataGridViewState: ObservableObject {
 
     private static var metadataCache: [MetadataCacheKey: TableMetadataCache] = [:]
     private static var metadataCacheGenerations: [MetadataCacheKey: Int] = [:]
+    private let metadataCacheFallbackScopeID = UUID()
 
     private func metadataCacheKey(
         adapter: any DatabaseAdapter,
@@ -457,7 +459,8 @@ final class DataGridViewState: ObservableObject {
             adapterIdentity: ObjectIdentifier(adapter),
             connectionID: connectionID,
             databaseName: databaseName,
-            schema: schema ?? "public",
+            fallbackScopeID: connectionID == nil ? metadataCacheFallbackScopeID : nil,
+            schema: schema,
             tableName: tableName
         )
     }
@@ -505,6 +508,22 @@ final class DataGridViewState: ObservableObject {
         generation == loadGeneration && Self.metadataCacheGenerations[cacheKey, default: 0] == cacheGeneration
     }
 
+    private func continueIfCurrentRequest(
+        _ generation: Int,
+        cacheKey: MetadataCacheKey,
+        cacheGeneration: Int
+    ) -> Bool {
+        guard isCurrentRequest(
+            generation,
+            cacheKey: cacheKey,
+            cacheGeneration: cacheGeneration
+        ) else {
+            finishLoading(for: generation)
+            return false
+        }
+        return true
+    }
+
     private static func invalidateMetadataCache(for key: MetadataCacheKey) -> Int {
         metadataCache.removeValue(forKey: key)
         metadataCacheGenerations[key, default: 0] += 1
@@ -526,7 +545,7 @@ final class DataGridViewState: ObservableObject {
         self.schema = schema
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = cacheGeneration ?? Self.metadataCacheGenerations[requestCacheKey, default: 0]
-        guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+        guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
 
         beginLoading(for: requestGeneration)
 
@@ -561,7 +580,7 @@ final class DataGridViewState: ObservableObject {
             let start = Date()
             let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: filter, orderBy: sort, limit: pageSize, offset: 0)
             let duration = Date().timeIntervalSince(start)
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             logQuery(sql: fetchSQL, duration: duration)
 
             self.columns = result.columns
@@ -571,7 +590,7 @@ final class DataGridViewState: ObservableObject {
             self.executionTime = result.executionTime
             computeColumnWidths(columns: result.columns, rows: result.rows)
         } catch {
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
             finishLoading(for: requestGeneration)
             return
@@ -583,7 +602,7 @@ final class DataGridViewState: ObservableObject {
         if hasCachedMeta {
             Task {
                 if let desc = try? await adapter.describeTable(name: tableName, schema: schema) {
-                    guard self.isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard self.continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
                     self.tableDescription = desc
                     Self.metadataCache[requestCacheKey]?.tableDescription = desc
                     self.objectWillChange.send()
@@ -621,7 +640,7 @@ final class DataGridViewState: ObservableObject {
         }()
 
         if let desc = await descTask {
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             let dur = Date().timeIntervalSince(start)
             self.primaryKeyColumns = desc.columns.filter { $0.isPrimaryKey }.map { $0.name }
             for col in desc.columns {
@@ -645,7 +664,7 @@ final class DataGridViewState: ObservableObject {
         }
 
         let enumValues = await enumTask
-        guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+        guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
         self.columnEnumValues = enumValues
 
         // Save to cache
@@ -681,7 +700,7 @@ final class DataGridViewState: ObservableObject {
         let description: TableDescription
         do {
             description = try await adapter.describeTable(name: tableName, schema: schema)
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             self.primaryKeyColumns = description.columns.filter { $0.isPrimaryKey }.map { $0.name }
             self.tableDescription = description
             if let sortColumn, !description.columns.contains(where: { $0.name == sortColumn }) {
@@ -692,7 +711,7 @@ final class DataGridViewState: ObservableObject {
                 self.sortColumn = nil
             }
         } catch {
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
             finishLoading(for: requestGeneration)
             return
@@ -739,7 +758,7 @@ final class DataGridViewState: ObservableObject {
             let start = Date()
             let result = try await adapter.fetchRows(table: tableName, schema: schema, columns: nil, where: filter, orderBy: sort, limit: pageSize, offset: offset)
             let duration = Date().timeIntervalSince(start)
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             logQuery(sql: sql, duration: duration)
             self.rows = result.rows
             rebuildDisplayCache()
@@ -751,7 +770,7 @@ final class DataGridViewState: ObservableObject {
                 if let countResult = try? await adapter.executeRaw(sql: countSQL),
                    let firstRow = countResult.rows.first,
                    let firstVal = firstRow.first {
-                    guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
                     switch firstVal {
                     case .integer(let n): self.totalRows = Int(n)
                     case .string(let s): self.totalRows = Int(s) ?? (result.rows.count + offset)
@@ -759,10 +778,10 @@ final class DataGridViewState: ObservableObject {
                     }
                 }
             }
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             finishLoading(for: requestGeneration)
         } catch {
-            guard isCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard continueIfCurrentRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
             errorMessage = Self.detailedErrorMessage(error)
             finishLoading(for: requestGeneration)
         }
