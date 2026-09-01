@@ -93,6 +93,61 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    func test_invalidSortObserverDoesNotOverrideRefreshReplayPage() async throws {
+        let (grid, adapter) = try await makeCountingGrid()
+        let appState = AppState()
+        grid.appState = appState
+        grid.sortColumn = "rank"
+        await grid.loadPage(0)
+        adapter.resetCounts()
+        appState.clearQueryLog()
+
+        let observerGate = AsyncGate()
+        let observerStarted = AsyncSignal()
+        let observerFinished = expectation(description: "delayed sort observer finishes")
+        let sortObserver = grid.$sortColumn
+            .dropFirst()
+            .sink { sortColumn in
+                Task { @MainActor in
+                    observerStarted.signal()
+                    await observerGate.wait()
+                    await grid.handleSortColumnChange(from: "rank", to: sortColumn)
+                    observerFinished.fulfill()
+                }
+            }
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN rank TO score")
+        let descriptionGate = adapter.holdNextDescribeTable()
+        let structureReload = Task { @MainActor in
+            await grid.reloadAfterStructureChange()
+        }
+        await adapter.waitForHeldDescribeTable()
+
+        await grid.loadPage(1)
+        XCTAssertEqual(grid.currentPage, 1)
+
+        descriptionGate.open()
+        await observerStarted.wait()
+        await structureReload.value
+
+        let replayLogs = appState.queryLog.filter { $0.sql.hasPrefix("SELECT * FROM") }
+        XCTAssertEqual(adapter.fetchRowsCount, 2)
+        XCTAssertEqual(grid.currentPage, 1)
+        XCTAssertEqual(replayLogs.count, 2)
+        XCTAssertTrue(replayLogs.allSatisfy { $0.sql.contains("OFFSET 300") })
+
+        observerGate.open()
+        await fulfillment(of: [observerFinished], timeout: 1)
+
+        let finalRowLogs = appState.queryLog.filter { $0.sql.hasPrefix("SELECT * FROM") }
+        XCTAssertEqual(adapter.fetchRowsCount, 2)
+        XCTAssertEqual(grid.currentPage, 1)
+        XCTAssertEqual(finalRowLogs.count, 2)
+        XCTAssertTrue(finalRowLogs.allSatisfy { $0.sql.contains("OFFSET 300") })
+        withExtendedLifetime(sortObserver) {}
+        try await adapter.disconnect()
+    }
+
     func test_reloadAfterStructureChange_describesTableOnce() async throws {
         let (grid, adapter) = try await makeCountingGrid()
         adapter.resetCounts()
@@ -195,6 +250,95 @@ final class DataGridRefreshTests: XCTestCase {
         await cacheProbe.load(tableName: "scores", schema: nil, adapter: adapter)
         XCTAssertEqual(cacheProbe.primaryKeyColumns, ["id"])
         XCTAssertEqual(cacheProbe.tableDescription?.columns.map(\.name), ["id", "rank"])
+        await Task.yield()
+        try await adapter.disconnect()
+    }
+
+    func test_newerFullLoadMetadataRemainsAuthoritativeWhenOlderLoadCompletesLast() async throws {
+        DataGridViewState.clearMetadataCache()
+        let adapter = CountingSQLiteAdapter(databaseType: .postgresql)
+        let config = ConnectionConfig(
+            name: "same-scope-full-load-metadata-race",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        try await adapter.connect(config: config, password: nil)
+        _ = try await adapter.executeRaw(sql: "CREATE TABLE metadata_race (id TEXT PRIMARY KEY, status TEXT, parent_id TEXT)")
+        _ = try await adapter.executeRaw(sql: "INSERT INTO metadata_race (id, status, parent_id) VALUES ('old-row', 'old', 'old-parent')")
+
+        let appState = AppState()
+        appState.activeAdapter = adapter
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.currentDatabaseName = "main"
+
+        let olderDescription = makeMetadataRaceDescription(
+            primaryKey: "id",
+            defaultValue: "'old'",
+            referencedTable: "old_parent",
+            referencedColumn: "old_id"
+        )
+        let newerDescription = makeMetadataRaceDescription(
+            primaryKey: "parent_id",
+            defaultValue: "'new'",
+            referencedTable: "new_parent",
+            referencedColumn: "new_id"
+        )
+        let olderDescriptionRequest = adapter.enqueueHeldDescription(olderDescription)
+        let newerDescriptionRequest = adapter.enqueueHeldDescription(newerDescription)
+        let olderEnumRequest = adapter.enqueueHeldEnumValues(["status": ["old_a", "old_b"]])
+        let newerEnumRequest = adapter.enqueueHeldEnumValues(["status": ["new_a", "new_b"]])
+
+        let grid = DataGridViewState()
+        grid.appState = appState
+        let olderLoad = Task { @MainActor in
+            await grid.load(tableName: "metadata_race", schema: nil, adapter: adapter)
+        }
+        await olderDescriptionRequest.started.wait()
+        await olderEnumRequest.started.wait()
+
+        _ = try await adapter.executeRaw(sql: "DELETE FROM metadata_race")
+        _ = try await adapter.executeRaw(sql: "INSERT INTO metadata_race (id, status, parent_id) VALUES ('new-row', 'new', 'new-parent')")
+        let newerLoad = Task { @MainActor in
+            await grid.load(tableName: "metadata_race", schema: nil, adapter: adapter)
+        }
+        await newerDescriptionRequest.started.wait()
+        await newerEnumRequest.started.wait()
+
+        newerDescriptionRequest.gate.open()
+        newerEnumRequest.gate.open()
+        await newerLoad.value
+
+        XCTAssertEqual(grid.rows.first?.first?.stringValue, "new-row")
+        XCTAssertEqual(grid.primaryKeyColumns, ["parent_id"])
+        XCTAssertEqual(grid.tableDescription, newerDescription)
+        XCTAssertEqual(grid.columnDefaults["status"], "'new'")
+        XCTAssertEqual(grid.foreignKeyColumns["parent_id"], "new_parent")
+        XCTAssertEqual(grid.foreignKeyRefColumns["parent_id"], "new_id")
+        XCTAssertEqual(grid.columnEnumValues["status"], ["new_a", "new_b"])
+
+        olderDescriptionRequest.gate.open()
+        olderEnumRequest.gate.open()
+        await olderLoad.value
+
+        XCTAssertEqual(grid.rows.first?.first?.stringValue, "new-row")
+        XCTAssertEqual(grid.primaryKeyColumns, ["parent_id"])
+        XCTAssertEqual(grid.tableDescription, newerDescription)
+        XCTAssertEqual(grid.columnDefaults["status"], "'new'")
+        XCTAssertEqual(grid.foreignKeyColumns["parent_id"], "new_parent")
+        XCTAssertEqual(grid.foreignKeyRefColumns["parent_id"], "new_id")
+        XCTAssertEqual(grid.columnEnumValues["status"], ["new_a", "new_b"])
+
+        adapter.failNextDescribeTable()
+        let cacheProbe = DataGridViewState()
+        cacheProbe.appState = appState
+        await cacheProbe.load(tableName: "metadata_race", schema: nil, adapter: adapter)
+        XCTAssertEqual(cacheProbe.primaryKeyColumns, ["parent_id"])
+        XCTAssertEqual(cacheProbe.tableDescription, newerDescription)
+        XCTAssertEqual(cacheProbe.columnDefaults["status"], "'new'")
+        XCTAssertEqual(cacheProbe.foreignKeyColumns["parent_id"], "new_parent")
+        XCTAssertEqual(cacheProbe.foreignKeyRefColumns["parent_id"], "new_id")
+        XCTAssertEqual(cacheProbe.columnEnumValues["status"], ["new_a", "new_b"])
         await Task.yield()
         try await adapter.disconnect()
     }
@@ -492,6 +636,70 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    private func makeMetadataRaceDescription(
+        primaryKey: String,
+        defaultValue: String,
+        referencedTable: String,
+        referencedColumn: String
+    ) -> TableDescription {
+        TableDescription(
+            name: "metadata_race",
+            schema: nil,
+            columns: [
+                ColumnInfo(
+                    name: "id",
+                    dataType: "text",
+                    isNullable: false,
+                    defaultValue: nil,
+                    isPrimaryKey: primaryKey == "id",
+                    isAutoIncrement: false,
+                    comment: nil,
+                    ordinalPosition: 0,
+                    characterMaxLength: nil,
+                    checkConstraint: nil
+                ),
+                ColumnInfo(
+                    name: "status",
+                    dataType: "status_enum",
+                    isNullable: true,
+                    defaultValue: defaultValue,
+                    isPrimaryKey: primaryKey == "status",
+                    isAutoIncrement: false,
+                    comment: nil,
+                    ordinalPosition: 1,
+                    characterMaxLength: nil,
+                    checkConstraint: nil
+                ),
+                ColumnInfo(
+                    name: "parent_id",
+                    dataType: "text",
+                    isNullable: true,
+                    defaultValue: nil,
+                    isPrimaryKey: primaryKey == "parent_id",
+                    isAutoIncrement: false,
+                    comment: nil,
+                    ordinalPosition: 2,
+                    characterMaxLength: nil,
+                    checkConstraint: nil
+                ),
+            ],
+            indexes: [],
+            foreignKeys: [
+                ForeignKeyInfo(
+                    name: "fk_metadata_race_parent",
+                    columns: ["parent_id"],
+                    referencedTable: referencedTable,
+                    referencedColumns: [referencedColumn],
+                    onDelete: .noAction,
+                    onUpdate: .noAction
+                ),
+            ],
+            constraints: [],
+            comment: nil,
+            estimatedRowCount: 1
+        )
+    }
+
     private func makeGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
         DataGridViewState.clearMetadataCache()
         let adapter = SQLiteAdapter()
@@ -557,7 +765,20 @@ final class DataGridRefreshTests: XCTestCase {
 }
 
 private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable {
+    private struct HeldDescriptionResult {
+        let description: TableDescription
+        let gate: AsyncGate
+        let started: AsyncSignal
+    }
+
+    private struct HeldEnumResult {
+        let values: [String: [String]]
+        let gate: AsyncGate
+        let started: AsyncSignal
+    }
+
     private let base = SQLiteAdapter()
+    private let reportedDatabaseType: DatabaseType
     private let lock = NSLock()
     private var fetchRowsCalls = 0
     private var describeTableCalls = 0
@@ -571,8 +792,14 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     private var failNextDescribe = false
     private var descriptionPrimaryKeysBySchema: [String: String] = [:]
     private var logicalMetadataPrimaryKey: String?
+    private var heldDescriptionResults: [HeldDescriptionResult] = []
+    private var heldEnumResults: [HeldEnumResult] = []
 
-    var databaseType: DatabaseType { base.databaseType }
+    init(databaseType: DatabaseType = .sqlite) {
+        reportedDatabaseType = databaseType
+    }
+
+    var databaseType: DatabaseType { reportedDatabaseType }
     var isConnected: Bool { base.isConnected }
 
     var fetchRowsCount: Int {
@@ -633,6 +860,30 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
         }
     }
 
+    func enqueueHeldDescription(_ description: TableDescription) -> (gate: AsyncGate, started: AsyncSignal) {
+        let result = HeldDescriptionResult(
+            description: description,
+            gate: AsyncGate(),
+            started: AsyncSignal()
+        )
+        withLock(lock) {
+            heldDescriptionResults.append(result)
+        }
+        return (result.gate, result.started)
+    }
+
+    func enqueueHeldEnumValues(_ values: [String: [String]]) -> (gate: AsyncGate, started: AsyncSignal) {
+        let result = HeldEnumResult(
+            values: values,
+            gate: AsyncGate(),
+            started: AsyncSignal()
+        )
+        withLock(lock) {
+            heldEnumResults.append(result)
+        }
+        return (result.gate, result.started)
+    }
+
     func setDescriptionPrimaryKey(_ column: String, forSchema schema: String) {
         withLock(lock) {
             descriptionPrimaryKeysBySchema[schema] = column
@@ -666,7 +917,29 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func executeWithRowValues(sql: String, parameters: [RowValue]) async throws -> QueryResult {
-        try await base.executeWithRowValues(sql: sql, parameters: parameters)
+        if sql.contains("JOIN pg_enum") {
+            let heldResult = withLock(lock) { () -> HeldEnumResult? in
+                guard !heldEnumResults.isEmpty else { return nil }
+                return heldEnumResults.removeFirst()
+            }
+            if let heldResult {
+                heldResult.started.signal()
+                await heldResult.gate.wait()
+                let rows: [[RowValue]] = heldResult.values.keys.sorted().flatMap { column in
+                    heldResult.values[column, default: []].map { value in
+                        [.string(column), .string(value)]
+                    }
+                }
+                return QueryResult(
+                    columns: [ColumnHeader(name: "attname"), ColumnHeader(name: "enumlabel")],
+                    rows: rows,
+                    rowsAffected: rows.count,
+                    executionTime: 0,
+                    queryType: .select
+                )
+            }
+        }
+        return try await base.executeWithRowValues(sql: sql, parameters: parameters)
     }
 
     func listDatabases() async throws -> [String] {
@@ -686,6 +959,17 @@ private final class CountingSQLiteAdapter: DatabaseAdapter, @unchecked Sendable 
     }
 
     func describeTable(name: String, schema: String?) async throws -> TableDescription {
+        let heldResult = withLock(lock) { () -> HeldDescriptionResult? in
+            guard !heldDescriptionResults.isEmpty else { return nil }
+            describeTableCalls += 1
+            return heldDescriptionResults.removeFirst()
+        }
+        if let heldResult {
+            heldResult.started.signal()
+            await heldResult.gate.wait()
+            return heldResult.description
+        }
+
         let result = withLock(lock) { () -> (heldDescription: TableDescription?, shouldFail: Bool, primaryKeyOverride: String?, gate: AsyncGate?, started: AsyncSignal?) in
             describeTableCalls += 1
             if failNextDescribe {
