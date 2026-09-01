@@ -43,7 +43,15 @@ struct TableDescription: Codable, Sendable, Equatable {
     }
 
     func toDDL(dialect: SQLDialect) -> String {
-        var ddl = "CREATE TABLE \(dialect.quoteIdentifier(name)) (\n"
+        let tableIdentifier: String
+        switch dialect {
+        case .postgresql:
+            tableIdentifier = dialect.qualifiedIdentifier(name, schema: schema)
+        default:
+            tableIdentifier = dialect.quoteIdentifier(name)
+        }
+
+        var ddl = "CREATE TABLE \(tableIdentifier) (\n"
         ddl += columns.map { "  \($0.name) \($0.dataType)\($0.isNullable ? "" : " NOT NULL")\($0.defaultValue.map { " DEFAULT \($0)" } ?? "")" }.joined(separator: ",\n")
         ddl += "\n);"
         return ddl

@@ -73,6 +73,7 @@ final class AppState: ObservableObject {
     @Published var connectionError: String?
     @Published var serverVersion: String?
     @Published var sslInfo: String?
+    private var sidebarLoadGeneration = 0
 
     // MARK: - Tab State
 
@@ -371,6 +372,9 @@ final class AppState: ObservableObject {
         adapter: any DatabaseAdapter,
         schema: String? = nil
     ) async {
+        sidebarLoadGeneration &+= 1
+        let loadGeneration = sidebarLoadGeneration
+
         do {
             // Run all queries in parallel instead of sequential
             async let tablesTask = adapter.listTables(schema: schema)
@@ -412,6 +416,8 @@ final class AppState: ObservableObject {
                 items.append(SidebarItem(title: "Views", type: .group("views"), schema: schema, iconName: "", children: viewItems))
             }
 
+            guard loadGeneration == sidebarLoadGeneration else { return }
+            guard config.databaseType != .postgresql || schema == selectedSidebarSchema else { return }
             sidebarItems = items
         } catch {
             print("Sidebar load error: \(error)")
@@ -731,6 +737,7 @@ final class AppState: ObservableObject {
     }
 
     func disconnect() {
+        sidebarLoadGeneration &+= 1
         if let adapter = activeAdapter {
             Task { try? await adapter.disconnect() }
         }

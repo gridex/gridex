@@ -718,21 +718,11 @@ struct SidebarItemRow: View {
         }
 
         let statements = Self.splitSQLStatements(content)
-
-        var successCount = 0
-        var firstError: String?
-        for stmt in statements {
-            do {
-                _ = try await adapter.executeRaw(sql: stmt)
-                successCount += 1
-            } catch {
-                if firstError == nil {
-                    firstError = error.localizedDescription
-                }
-            }
-        }
-
-        return ImportSQLResult(success: successCount, total: statements.count, firstError: firstError)
+        return await SQLDumpExecutor.execute(
+            statements: statements,
+            schema: item.schema,
+            using: adapter
+        )
     }
 
     /// Split a SQL dump into individual statements. Correctly handles:

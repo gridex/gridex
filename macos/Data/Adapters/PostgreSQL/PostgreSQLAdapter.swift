@@ -8,6 +8,7 @@ import PostgresNIO
 import NIOCore
 import NIOPosix
 import NIOSSL
+import Logging
 
 final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendable {
     let databaseType: DatabaseType = .postgresql
@@ -657,6 +658,34 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
     func beginTransaction() async throws { _ = try await executeRaw(sql: "BEGIN") }
     func commitTransaction() async throws { _ = try await executeRaw(sql: "COMMIT") }
     func rollbackTransaction() async throws { _ = try await executeRaw(sql: "ROLLBACK") }
+
+    func executeStatements(_ statements: [String], inSchemaTransaction schema: String) async throws {
+        try ensureConnected()
+        guard let client else { throw GridexError.queryExecutionFailed("No connection") }
+
+        let logger = Logger(label: "gridex.postgresql.sql-dump")
+        let quotedSchema = databaseType.sqlDialect.quoteIdentifier(schema)
+
+        do {
+            try await client.withTransaction(logger: logger) { connection in
+                let setupRows = try await connection.query(
+                    PostgresQuery(unsafeSQL: "SET LOCAL search_path TO \(quotedSchema)"),
+                    logger: logger
+                )
+                for try await _ in setupRows {}
+
+                for statement in statements {
+                    let rows = try await connection.query(
+                        PostgresQuery(unsafeSQL: statement),
+                        logger: logger
+                    )
+                    for try await _ in rows {}
+                }
+            }
+        } catch {
+            throw GridexError.queryExecutionFailed(Self.formatPostgresError(error))
+        }
+    }
 
     // MARK: - Pagination
 
