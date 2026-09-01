@@ -487,6 +487,12 @@ final class DataGridViewState: ObservableObject {
     }
 
     func bindRedisContext(_ context: AppState.RedisTabContext) {
+        // Redis's flat key grid never owns an editable Details callback. Clear
+        // any SQL grid selection even when this cached grid is rebound to the
+        // same context (for example when reopening its existing tab).
+        appState?.selectedRowDetails = nil
+        appState?.onDetailFieldEdit = nil
+
         guard redisContext != context else { return }
 
         redisRequestCoordinator.invalidate()
@@ -515,8 +521,6 @@ final class DataGridViewState: ObservableObject {
         commitError = nil
         showCommitPreview = false
         isCommitting = false
-        appState?.selectedRowDetails = nil
-        appState?.onDetailFieldEdit = nil
     }
 
     func performRedisLoad(
