@@ -926,6 +926,97 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.tabs.first(where: { $0.id == reopenedTabID })?.databaseName, "db3")
     }
 
+    func test_redisCLISelectPublishesOwnedDatabaseContextAndInvalidatesOldRevision() async throws {
+        let adapter = RedisAdapter()
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: adapter,
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let oldContext = try XCTUnwrap(state.currentRedisContext)
+        var receivedStatement: String?
+        var usedActiveAdapter = false
+
+        let result = await state.performRedisCLIStatement("  select 5  ") { receivedAdapter, statement in
+            receivedStatement = statement
+            usedActiveAdapter = receivedAdapter === adapter
+            return self.redisCLIResult(value: "OK")
+        }
+
+        guard case .success(let queryResult)? = result else {
+            return XCTFail("Expected the owned SELECT result to remain current")
+        }
+        XCTAssertEqual(queryResult.rows, [[.string("OK")]])
+        XCTAssertEqual(receivedStatement, "select 5")
+        XCTAssertTrue(usedActiveAdapter)
+        XCTAssertEqual(state.currentDatabaseName, "db5")
+        XCTAssertEqual(state.redisDatabaseRevision, oldContext.databaseRevision + 1)
+        XCTAssertNil(state.activeRedisAdapter(for: oldContext))
+    }
+
+    func test_redisCLINonSelectSerializesWithTransitionAndDiscardsStaleResult() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let commandGate = AsyncTestGate()
+        let selectGate = AsyncTestGate()
+        let events = AsyncTestEventRecorder()
+
+        let command = Task { @MainActor in
+            await state.performRedisCLIStatement("GET session:42") { _, _ in
+                await events.record("command:start")
+                await commandGate.enterAndWait()
+                await events.record("command:end")
+                return self.redisCLIResult(value: "value")
+            }
+        }
+        await commandGate.waitUntilEntered()
+
+        let transition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await events.record("select:start")
+                await selectGate.enterAndWait()
+                await events.record("select:end")
+            }
+        }
+        while state.redisDatabaseRevision < 1 {
+            await Task.yield()
+        }
+
+        let selectEnteredBeforeCommandFinished = await selectGate.enteredSnapshot()
+        XCTAssertFalse(selectEnteredBeforeCommandFinished)
+
+        await commandGate.release()
+        let commandResult = await command.value
+        await selectGate.waitUntilEntered()
+        await selectGate.release()
+        await transition.value
+
+        XCTAssertNil(commandResult)
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(
+            recordedEvents,
+            ["command:start", "command:end", "select:start", "select:end"]
+        )
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+    }
+
+    func test_redisCLISelectParserAcceptsOnlyOneNonnegativeDatabaseIndex() {
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SELECT 5"), "db5")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "  select 005  "), "db5")
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT"))
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT -1"))
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT five"))
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT 1 extra"))
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "GET SELECT 1"))
+    }
+
     private func establishRedisContext(
         on state: AppState,
         adapter: RedisAdapter,
@@ -939,6 +1030,16 @@ final class RedisAppStateTests: XCTestCase {
 
     private func redisConfig() -> ConnectionConfig {
         ConnectionConfig(name: "Redis", databaseType: .redis)
+    }
+
+    private func redisCLIResult(value: String) -> QueryResult {
+        QueryResult(
+            columns: [ColumnHeader(name: "result", dataType: "string")],
+            rows: [[.string(value)]],
+            rowsAffected: 0,
+            executionTime: 0.01,
+            queryType: .select
+        )
     }
 }
 
