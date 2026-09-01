@@ -59,7 +59,9 @@ final class AppState: ObservableObject {
     // MARK: - Connection State
 
     @Published var activeConnectionId: UUID?
-    @Published var activeAdapter: (any DatabaseAdapter)?
+    @Published var activeAdapter: (any DatabaseAdapter)? {
+        didSet { rotateRedisSession(for: activeAdapter) }
+    }
     @Published var activeConfig: ConnectionConfig?
     @Published var sidebarItems: [SidebarItem] = []
     @Published var connectionTitle: String = "Gridex"
@@ -103,6 +105,31 @@ final class AppState: ObservableObject {
     @Published var showFlushDBConfirm = false
     @Published var showRedisAddKey = false
     @Published private(set) var redisKeyBrowserRefreshNonce = 0
+
+    struct RedisSessionRevisionToken: Hashable {
+        let connectionID: UUID
+        let sessionID: UUID
+        let databaseRevision: UInt64
+    }
+
+    private(set) var redisSessionID: UUID?
+    private(set) var redisDatabaseRevision: UInt64 = 0
+
+    private enum RedisDatabaseTransitionOutcome {
+        case success(databaseName: String)
+        case failure
+    }
+
+    private struct RedisDatabaseTransitionBatch {
+        let connectionID: UUID
+        let sessionID: UUID
+        let baseDatabaseName: String?
+        var latestRevision: UInt64
+        var pendingRevisions: Set<UInt64>
+        var outcomes: [UInt64: RedisDatabaseTransitionOutcome]
+    }
+
+    private var redisDatabaseTransitionBatch: RedisDatabaseTransitionBatch?
 
     func requestRedisKeyBrowserRefresh() {
         redisKeyBrowserRefreshNonce &+= 1
@@ -161,7 +188,20 @@ final class AppState: ObservableObject {
     struct RedisTabContext: Hashable {
         let connectionID: UUID
         let databaseName: String
-        let sessionID: ObjectIdentifier
+        let sessionID: UUID
+        let databaseRevision: UInt64
+
+        init(
+            connectionID: UUID,
+            databaseName: String,
+            sessionID: UUID,
+            databaseRevision: UInt64 = 0
+        ) {
+            self.connectionID = connectionID
+            self.databaseName = databaseName
+            self.sessionID = sessionID
+            self.databaseRevision = databaseRevision
+        }
     }
 
     struct ContentTab: Identifiable {
@@ -523,21 +563,37 @@ final class AppState: ObservableObject {
 
     // MARK: - Redis Tabs
 
-    private var currentRedisTabContext: RedisTabContext? {
-        guard let adapter = activeAdapter as? RedisAdapter,
+    var currentRedisContext: RedisTabContext? {
+        guard activeAdapter is RedisAdapter,
               let connectionID = activeConnectionId,
-              let databaseName = currentDatabaseName else { return nil }
+              let databaseName = currentDatabaseName,
+              let sessionID = redisSessionID else { return nil }
         return RedisTabContext(
             connectionID: connectionID,
             databaseName: databaseName,
-            sessionID: ObjectIdentifier(adapter)
+            sessionID: sessionID,
+            databaseRevision: redisDatabaseRevision
         )
+    }
+
+    var currentRedisSessionRevisionToken: RedisSessionRevisionToken? {
+        guard activeAdapter is RedisAdapter,
+              let connectionID = activeConnectionId,
+              let sessionID = redisSessionID else { return nil }
+        return RedisSessionRevisionToken(
+            connectionID: connectionID,
+            sessionID: sessionID,
+            databaseRevision: redisDatabaseRevision
+        )
+    }
+
+    func isCurrentRedisSessionRevision(_ token: RedisSessionRevisionToken) -> Bool {
+        currentRedisSessionRevisionToken == token
     }
 
     func activeRedisAdapter(for context: RedisTabContext) -> RedisAdapter? {
         guard let adapter = activeAdapter as? RedisAdapter,
-              currentRedisTabContext == context,
-              ObjectIdentifier(adapter) == context.sessionID else { return nil }
+              currentRedisContext == context else { return nil }
         return adapter
     }
 
@@ -545,27 +601,106 @@ final class AppState: ObservableObject {
         to databaseName: String,
         performSelect: () async throws -> Void
     ) async rethrows {
-        let previousDatabaseName = currentDatabaseName
-        let connectionID = activeConnectionId
-        let sessionID = activeAdapter.map(ObjectIdentifier.init)
-        currentDatabaseName = nil
+        _ = try await performRedisDatabaseTransitionWithOwnership(
+            to: databaseName,
+            performSelect: performSelect
+        )
+    }
+
+    private func performRedisDatabaseTransitionWithOwnership(
+        to databaseName: String,
+        performSelect: () async throws -> Void
+    ) async rethrows -> Bool {
+        guard let token = beginRedisDatabaseTransition() else {
+            try await performSelect()
+            return false
+        }
 
         do {
             try await performSelect()
-            guard activeConnectionId == connectionID,
-                  activeAdapter.map(ObjectIdentifier.init) == sessionID else { return }
-            currentDatabaseName = databaseName
+            return finishRedisDatabaseTransition(
+                token,
+                outcome: .success(databaseName: databaseName)
+            )
         } catch {
-            if activeConnectionId == connectionID,
-               activeAdapter.map(ObjectIdentifier.init) == sessionID {
-                currentDatabaseName = previousDatabaseName
-            }
+            _ = finishRedisDatabaseTransition(token, outcome: .failure)
             throw error
         }
     }
 
+    private func rotateRedisSession(for adapter: (any DatabaseAdapter)?) {
+        redisDatabaseTransitionBatch = nil
+        redisDatabaseRevision = 0
+        redisSessionID = adapter is RedisAdapter ? UUID() : nil
+    }
+
+    private func beginRedisDatabaseTransition() -> RedisSessionRevisionToken? {
+        guard activeAdapter is RedisAdapter,
+              let connectionID = activeConnectionId,
+              let sessionID = redisSessionID else { return nil }
+
+        redisDatabaseRevision &+= 1
+        let revision = redisDatabaseRevision
+
+        if redisDatabaseTransitionBatch?.connectionID != connectionID
+            || redisDatabaseTransitionBatch?.sessionID != sessionID {
+            redisDatabaseTransitionBatch = RedisDatabaseTransitionBatch(
+                connectionID: connectionID,
+                sessionID: sessionID,
+                baseDatabaseName: currentDatabaseName,
+                latestRevision: revision,
+                pendingRevisions: [],
+                outcomes: [:]
+            )
+        }
+
+        guard var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == connectionID,
+              batch.sessionID == sessionID else { return nil }
+
+        batch.latestRevision = revision
+        batch.pendingRevisions.insert(revision)
+        redisDatabaseTransitionBatch = batch
+        currentDatabaseName = nil
+
+        return RedisSessionRevisionToken(
+            connectionID: connectionID,
+            sessionID: sessionID,
+            databaseRevision: revision
+        )
+    }
+
+    private func finishRedisDatabaseTransition(
+        _ token: RedisSessionRevisionToken,
+        outcome: RedisDatabaseTransitionOutcome
+    ) -> Bool {
+        guard isCurrentRedisSession(token),
+              var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID,
+              batch.pendingRevisions.remove(token.databaseRevision) != nil else { return false }
+
+        batch.outcomes[token.databaseRevision] = outcome
+        currentDatabaseName = batch.outcomes.keys.sorted().reduce(batch.baseDatabaseName) { databaseName, revision in
+            guard case .success(let nextDatabaseName) = batch.outcomes[revision] else {
+                return databaseName
+            }
+            return nextDatabaseName
+        }
+
+        let ownsPostTransitionPublication = token.databaseRevision == batch.latestRevision
+        redisDatabaseTransitionBatch = batch.pendingRevisions.isEmpty ? nil : batch
+        return ownsPostTransitionPublication
+    }
+
+    private func isCurrentRedisSession(_ token: RedisSessionRevisionToken) -> Bool {
+        activeAdapter is RedisAdapter
+            && activeConnectionId == token.connectionID
+            && redisSessionID == token.sessionID
+    }
+
     var isRedisFlatKeyListOpen: Bool {
-        guard let context = currentRedisTabContext else { return false }
+        guard let context = currentRedisContext else { return false }
         return tabs.contains {
             $0.type == .dataGrid
                 && $0.tableName == "Keys"
@@ -576,7 +711,7 @@ final class AppState: ObservableObject {
     }
 
     func openRedisFlatKeyList() {
-        guard let context = currentRedisTabContext else { return }
+        guard let context = currentRedisContext else { return }
         let tabID: UUID
         if let existing = tabs.first(where: {
             $0.type == .dataGrid
@@ -605,7 +740,7 @@ final class AppState: ObservableObject {
     }
 
     func openRedisKeyDetail(key: String) {
-        guard let context = currentRedisTabContext else { return }
+        guard let context = currentRedisContext else { return }
         if let existing = tabs.first(where: {
             $0.type == .redisKeyDetail
                 && $0.tableName == key
@@ -715,6 +850,7 @@ final class AppState: ObservableObject {
     /// PostgreSQL requires a full reconnect; MySQL/SQLite can use USE.
     func switchDatabase(_ databaseName: String) async {
         guard let adapter = activeAdapter, var config = activeConfig else { return }
+        var ownsPostSwitchPublication = true
 
         do {
             switch config.databaseType {
@@ -749,7 +885,7 @@ final class AppState: ObservableObject {
             case .redis:
                 // Redis: SELECT <db_number>
                 let dbNum = databaseName.replacingOccurrences(of: "db", with: "")
-                try await performRedisDatabaseTransition(to: databaseName) {
+                ownsPostSwitchPublication = try await performRedisDatabaseTransitionWithOwnership(to: databaseName) {
                     _ = try await adapter.executeRaw(sql: "SELECT \(dbNum)")
                 }
 
@@ -770,6 +906,7 @@ final class AppState: ObservableObject {
                 currentDatabaseName = databaseName
             }
 
+            guard ownsPostSwitchPublication else { return }
             ensureTabGroup(for: databaseName)
 
             // Reload sidebar for the new database

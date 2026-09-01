@@ -36,8 +36,7 @@ final class RedisKeyBrowserBehaviorTests: XCTestCase {
 
     func test_contentState_doesNotExposeDb0ResultWhenDb1LoadFails() {
         let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        let adapter = RedisAdapter()
-        let sessionID = ObjectIdentifier(adapter)
+        let sessionID = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
         let db0 = RedisKeyBrowserContext(
             connectionID: connectionID,
             databaseName: "db0",
@@ -68,17 +67,15 @@ final class RedisKeyBrowserBehaviorTests: XCTestCase {
     func test_contentState_scopesRetainedResultAndErrorToConnectionAndDatabase() {
         let firstConnection = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         let secondConnection = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
-        let firstAdapter = RedisAdapter()
-        let secondAdapter = RedisAdapter()
         let firstScope = RedisKeyBrowserContext(
             connectionID: firstConnection,
             databaseName: "db4",
-            sessionID: ObjectIdentifier(firstAdapter)
+            sessionID: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
         )
         let otherConnectionSameDatabase = RedisKeyBrowserContext(
             connectionID: secondConnection,
             databaseName: "db4",
-            sessionID: ObjectIdentifier(secondAdapter)
+            sessionID: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
         )
         var state = RedisKeyBrowserContentState()
 
@@ -96,19 +93,17 @@ final class RedisKeyBrowserBehaviorTests: XCTestCase {
         XCTAssertNil(state.visibleErrorMessage(in: otherConnectionSameDatabase))
     }
 
-    func test_contentState_doesNotExposePriorAdapterSessionForSameConnectionAndDatabase() {
+    func test_contentState_doesNotExposePriorSessionForSameConnectionAndDatabase() {
         let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
-        let firstAdapter = RedisAdapter()
-        let replacementAdapter = RedisAdapter()
         let firstSession = RedisKeyBrowserContext(
             connectionID: connectionID,
             databaseName: "db0",
-            sessionID: ObjectIdentifier(firstAdapter)
+            sessionID: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
         )
         let replacementSession = RedisKeyBrowserContext(
             connectionID: connectionID,
             databaseName: "db0",
-            sessionID: ObjectIdentifier(replacementAdapter)
+            sessionID: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
         )
         var state = RedisKeyBrowserContentState()
 
