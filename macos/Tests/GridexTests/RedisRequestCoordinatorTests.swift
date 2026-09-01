@@ -44,6 +44,70 @@ final class RedisRequestCoordinatorTests: XCTestCase {
         }
     }
 
+    func test_olderSuccessIsSupersededAfterNewerRequestAlreadyCompleted() async {
+        let coordinator = RedisRequestCoordinator()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+
+        let olderRequest = Task { @MainActor in
+            await coordinator.perform(for: context) {
+                await olderGate.enterAndWait()
+                return Optional<Result<String, Error>>.some(.success("obsolete"))
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerCompletion = await coordinator.perform(for: context) {
+            Optional<Result<String, Error>>.some(.success("current"))
+        }
+        guard case .current(.success(let value)) = newerCompletion else {
+            return XCTFail("Expected the newer success to remain current")
+        }
+        XCTAssertEqual(value, "current")
+
+        await olderGate.release()
+        let olderCompletion = await olderRequest.value
+
+        guard case .superseded = olderCompletion else {
+            return XCTFail(
+                "An older success must stay superseded after the newer request completes"
+            )
+        }
+    }
+
+    func test_olderFailureIsSupersededAfterNewerRequestAlreadyCompleted() async {
+        let coordinator = RedisRequestCoordinator()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+
+        let olderRequest = Task { @MainActor in
+            await coordinator.perform(for: context) {
+                await olderGate.enterAndWait()
+                return Optional<Result<String, Error>>.some(
+                    .failure(ExpectedRequestError.failed)
+                )
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerCompletion = await coordinator.perform(for: context) {
+            Optional<Result<String, Error>>.some(.success("current"))
+        }
+        guard case .current(.success(let value)) = newerCompletion else {
+            return XCTFail("Expected the newer success to remain current")
+        }
+        XCTAssertEqual(value, "current")
+
+        await olderGate.release()
+        let olderCompletion = await olderRequest.value
+
+        guard case .superseded = olderCompletion else {
+            return XCTFail(
+                "An older failure must stay superseded after the newer request completes"
+            )
+        }
+    }
+
     func test_currentSuccessIsReturnedAsCurrent() async {
         let coordinator = RedisRequestCoordinator()
 

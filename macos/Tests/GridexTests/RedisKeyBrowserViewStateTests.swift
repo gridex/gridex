@@ -107,6 +107,87 @@ final class RedisKeyBrowserViewStateTests: XCTestCase {
         XCTAssertNil(state.visibleErrorMessage(in: context))
     }
 
+    func test_olderSuccessCompletingLastCannotReplaceNewerFailure() async {
+        let state = RedisKeyBrowserViewState()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+
+        await state.scan(in: context) {
+            Optional<Result<RedisKeyScanResult, Error>>.some(
+                .success(RedisKeyScanResult(
+                    keys: ["retained:key"],
+                    isTruncated: false
+                ))
+            )
+        }
+
+        let olderScan = Task { @MainActor in
+            await state.scan(in: context) {
+                await olderGate.enterAndWait()
+                return Optional<Result<RedisKeyScanResult, Error>>.some(
+                    .success(RedisKeyScanResult(
+                        keys: ["obsolete:key"],
+                        isTruncated: false
+                    ))
+                )
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        await state.scan(in: context) {
+            Optional<Result<RedisKeyScanResult, Error>>.some(
+                .failure(ExpectedBrowserScanError.failed)
+            )
+        }
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.visibleResult(in: context)?.keys, ["retained:key"])
+        XCTAssertEqual(state.visibleErrorMessage(in: context), "scan failed")
+
+        await olderGate.release()
+        await olderScan.value
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.visibleResult(in: context)?.keys, ["retained:key"])
+        XCTAssertEqual(state.visibleErrorMessage(in: context), "scan failed")
+    }
+
+    func test_olderFailureCompletingLastCannotReplaceNewerSuccess() async {
+        let state = RedisKeyBrowserViewState()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+
+        let olderScan = Task { @MainActor in
+            await state.scan(in: context) {
+                await olderGate.enterAndWait()
+                return Optional<Result<RedisKeyScanResult, Error>>.some(
+                    .failure(ExpectedBrowserScanError.obsolete)
+                )
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        await state.scan(in: context) {
+            Optional<Result<RedisKeyScanResult, Error>>.some(
+                .success(RedisKeyScanResult(
+                    keys: ["current:key"],
+                    isTruncated: false
+                ))
+            )
+        }
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.visibleResult(in: context)?.keys, ["current:key"])
+        XCTAssertNil(state.visibleErrorMessage(in: context))
+
+        await olderGate.release()
+        await olderScan.value
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.visibleResult(in: context)?.keys, ["current:key"])
+        XCTAssertNil(state.visibleErrorMessage(in: context))
+    }
+
     func test_currentStaleScanStopsLoadingWithoutPublishingContent() async {
         let state = RedisKeyBrowserViewState()
         let context = redisContext()
@@ -179,8 +260,14 @@ final class RedisKeyBrowserViewStateTests: XCTestCase {
 
 private enum ExpectedBrowserScanError: LocalizedError {
     case failed
+    case obsolete
 
     var errorDescription: String? {
-        "scan failed"
+        switch self {
+        case .failed:
+            "scan failed"
+        case .obsolete:
+            "obsolete scan failed"
+        }
     }
 }
