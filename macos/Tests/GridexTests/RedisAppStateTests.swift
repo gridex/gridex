@@ -1179,6 +1179,28 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.currentDatabaseName, "db1")
     }
 
+    func test_redisCLISequenceCapturesTheDatabaseOwnedByEachStatement() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let context = try XCTUnwrap(state.currentRedisContext)
+
+        let result = await state.performRedisCLIStatements(
+            ["GET before", "SELECT 2", "GET after"],
+            from: context
+        ) { _, statement in
+            self.redisCLIResult(value: statement.uppercased().hasPrefix("SELECT") ? "OK" : "value")
+        }
+        let executions = try XCTUnwrap(result)
+
+        XCTAssertEqual(executions.map(\.databaseName), ["db0", "db2", "db2"])
+        XCTAssertEqual(state.currentDatabaseName, "db2")
+    }
+
     func test_redisOperationalTabsAreScopedToExactDatabaseContext() throws {
         let state = AppState()
         establishRedisContext(
