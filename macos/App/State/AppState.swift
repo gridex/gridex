@@ -874,7 +874,7 @@ final class AppState: ObservableObject {
             statement.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         guard tokens.count == 2,
-              tokens[0].lowercased() == "select",
+              tokens[0].uppercased() == "SELECT",
               !tokens[1].isEmpty,
               tokens[1].unicodeScalars.allSatisfy({
                   $0.value >= 48 && $0.value <= 57
