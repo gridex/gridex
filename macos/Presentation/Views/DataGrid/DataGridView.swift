@@ -162,6 +162,7 @@ private struct DataGridContentView: View {
             if let redisContext {
                 viewModel.bindRedisContext(redisContext)
             }
+            appState.statusRowCount = viewModel.statusRowCount
             // Skip reload if already loaded (cached from previous tab switch)
             guard viewModel.columns.isEmpty else { return }
             await viewModel.load(
