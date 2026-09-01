@@ -358,14 +358,13 @@ final class RedisAppStateTests: XCTestCase {
                 await newerGate.enterAndWait()
             }
         }
-        await newerGate.waitUntilEntered()
-
-        await newerGate.release()
-        await newerTransition.value
-        XCTAssertEqual(state.currentDatabaseName, "db2")
 
         await olderGate.release()
         await olderTransition.value
+
+        await newerGate.waitUntilEntered()
+        await newerGate.release()
+        await newerTransition.value
 
         XCTAssertEqual(state.currentDatabaseName, "db2")
     }
@@ -401,15 +400,15 @@ final class RedisAppStateTests: XCTestCase {
                 await newerGate.enterAndWait()
             }
         }
-        await newerGate.waitUntilEntered()
-
-        await newerGate.release()
-        await newerTransition.value
-        XCTAssertEqual(state.currentDatabaseName, "db2")
 
         await olderGate.release()
         let olderFailedAsExpected = await olderTransition.value
 
+        await newerGate.waitUntilEntered()
+        await newerGate.release()
+        await newerTransition.value
+
+        XCTAssertEqual(state.currentDatabaseName, "db2")
         XCTAssertTrue(olderFailedAsExpected)
         XCTAssertEqual(state.currentDatabaseName, "db2")
     }
@@ -445,12 +444,12 @@ final class RedisAppStateTests: XCTestCase {
                 return false
             }
         }
-        await newerGate.waitUntilEntered()
 
         await olderGate.release()
         await olderTransition.value
         XCTAssertEqual(state.currentDatabaseName, "db1")
 
+        await newerGate.waitUntilEntered()
         await newerGate.release()
         let newerFailedAsExpected = await newerTransition.value
 
@@ -497,18 +496,67 @@ final class RedisAppStateTests: XCTestCase {
                 return false
             }
         }
-        await newerGate.waitUntilEntered()
 
         await olderGate.release()
         let olderFailedAsExpected = await olderTransition.value
         XCTAssertTrue(olderFailedAsExpected)
         XCTAssertEqual(state.currentDatabaseName, "db0")
 
+        await newerGate.waitUntilEntered()
         await newerGate.release()
         let newerFailedAsExpected = await newerTransition.value
 
         XCTAssertTrue(newerFailedAsExpected)
         XCTAssertEqual(state.currentDatabaseName, "db0")
+    }
+
+    func test_overlappingRedisTransitions_serializeActualSelectClosuresInRevisionOrder() async {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let olderGate = AsyncTestGate()
+        let newerGate = AsyncTestGate()
+        let events = AsyncTestEventRecorder()
+
+        let olderTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await events.record("db1:start")
+                await olderGate.enterAndWait()
+                await events.record("db1:end")
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db2") {
+                await events.record("db2:start")
+                await newerGate.enterAndWait()
+                await events.record("db2:end")
+            }
+        }
+        while state.redisDatabaseRevision < 2 {
+            await Task.yield()
+        }
+
+        let newerEnteredBeforeOlderFinished = await newerGate.enteredSnapshot()
+        XCTAssertFalse(newerEnteredBeforeOlderFinished)
+
+        await olderGate.release()
+        await olderTransition.value
+        await newerGate.waitUntilEntered()
+        await newerGate.release()
+        await newerTransition.value
+
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(
+            recordedEvents,
+            ["db1:start", "db1:end", "db2:start", "db2:end"]
+        )
+        XCTAssertEqual(state.currentDatabaseName, "db2")
     }
 
     func test_reacceptingSameRedisAdapterInvalidatesCapturedTabContexts() throws {
@@ -673,6 +721,10 @@ private actor AsyncTestGate {
         }
     }
 
+    func enteredSnapshot() -> Bool {
+        hasEntered
+    }
+
     func enterAndWait() async {
         hasEntered = true
         let waiters = entryWaiters
@@ -689,5 +741,17 @@ private actor AsyncTestGate {
         hasBeenReleased = true
         releaseWaiter?.resume()
         releaseWaiter = nil
+    }
+}
+
+private actor AsyncTestEventRecorder {
+    private var events: [String] = []
+
+    func record(_ event: String) {
+        events.append(event)
+    }
+
+    func snapshot() -> [String] {
+        events
     }
 }
