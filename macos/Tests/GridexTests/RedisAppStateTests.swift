@@ -341,6 +341,253 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertNil(state.activeRedisAdapter(for: detailContext))
     }
 
+    func test_overlappingRedisTransitions_newerSuccessOutranksOlderSuccess() async {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let olderGate = AsyncTestGate()
+        let newerGate = AsyncTestGate()
+
+        let olderTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await olderGate.enterAndWait()
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db2") {
+                await newerGate.enterAndWait()
+            }
+        }
+        await newerGate.waitUntilEntered()
+
+        await newerGate.release()
+        await newerTransition.value
+        XCTAssertEqual(state.currentDatabaseName, "db2")
+
+        await olderGate.release()
+        await olderTransition.value
+
+        XCTAssertEqual(state.currentDatabaseName, "db2")
+    }
+
+    func test_overlappingRedisTransitions_olderFailureCannotRestoreOverNewerSuccess() async {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let olderGate = AsyncTestGate()
+        let newerGate = AsyncTestGate()
+
+        let olderTransition = Task { @MainActor in
+            do {
+                try await state.performRedisDatabaseTransition(to: "db1") {
+                    await olderGate.enterAndWait()
+                    throw ExpectedTransitionError.selectFailed
+                }
+                return false
+            } catch ExpectedTransitionError.selectFailed {
+                return true
+            } catch {
+                return false
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db2") {
+                await newerGate.enterAndWait()
+            }
+        }
+        await newerGate.waitUntilEntered()
+
+        await newerGate.release()
+        await newerTransition.value
+        XCTAssertEqual(state.currentDatabaseName, "db2")
+
+        await olderGate.release()
+        let olderFailedAsExpected = await olderTransition.value
+
+        XCTAssertTrue(olderFailedAsExpected)
+        XCTAssertEqual(state.currentDatabaseName, "db2")
+    }
+
+    func test_overlappingRedisTransitions_newerFailureKeepsOlderSuccessfulDatabase() async {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let olderGate = AsyncTestGate()
+        let newerGate = AsyncTestGate()
+
+        let olderTransition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await olderGate.enterAndWait()
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerTransition = Task { @MainActor in
+            do {
+                try await state.performRedisDatabaseTransition(to: "db2") {
+                    await newerGate.enterAndWait()
+                    throw ExpectedTransitionError.selectFailed
+                }
+                return false
+            } catch ExpectedTransitionError.selectFailed {
+                return true
+            } catch {
+                return false
+            }
+        }
+        await newerGate.waitUntilEntered()
+
+        await olderGate.release()
+        await olderTransition.value
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+
+        await newerGate.release()
+        let newerFailedAsExpected = await newerTransition.value
+
+        XCTAssertTrue(newerFailedAsExpected)
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+    }
+
+    func test_overlappingRedisTransitions_twoFailuresKeepOriginalDatabase() async {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let olderGate = AsyncTestGate()
+        let newerGate = AsyncTestGate()
+
+        let olderTransition = Task { @MainActor in
+            do {
+                try await state.performRedisDatabaseTransition(to: "db1") {
+                    await olderGate.enterAndWait()
+                    throw ExpectedTransitionError.selectFailed
+                }
+                return false
+            } catch ExpectedTransitionError.selectFailed {
+                return true
+            } catch {
+                return false
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerTransition = Task { @MainActor in
+            do {
+                try await state.performRedisDatabaseTransition(to: "db2") {
+                    await newerGate.enterAndWait()
+                    throw ExpectedTransitionError.selectFailed
+                }
+                return false
+            } catch ExpectedTransitionError.selectFailed {
+                return true
+            } catch {
+                return false
+            }
+        }
+        await newerGate.waitUntilEntered()
+
+        await olderGate.release()
+        let olderFailedAsExpected = await olderTransition.value
+        XCTAssertTrue(olderFailedAsExpected)
+        XCTAssertEqual(state.currentDatabaseName, "db0")
+
+        await newerGate.release()
+        let newerFailedAsExpected = await newerTransition.value
+
+        XCTAssertTrue(newerFailedAsExpected)
+        XCTAssertEqual(state.currentDatabaseName, "db0")
+    }
+
+    func test_reacceptingSameRedisAdapterInvalidatesCapturedTabContexts() throws {
+        let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let adapter = RedisAdapter()
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: adapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+        state.openRedisFlatKeyList()
+        let flatTabID = try XCTUnwrap(state.activeTabId)
+        state.openRedisKeyDetail(key: "session:42")
+        let detailTabID = try XCTUnwrap(state.activeTabId)
+        let flatContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == flatTabID })?.redisContext
+        )
+        let detailContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == detailTabID })?.redisContext
+        )
+
+        state.activeAdapter = nil
+        state.activeConnectionId = nil
+        state.currentDatabaseName = nil
+        establishRedisContext(
+            on: state,
+            adapter: adapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+
+        XCTAssertNil(state.activeRedisAdapter(for: flatContext))
+        XCTAssertNil(state.activeRedisAdapter(for: detailContext))
+        XCTAssertFalse(state.isRedisFlatKeyListOpen)
+    }
+
+    func test_redisSessionABA_doesNotReauthorizeFirstAdapterContexts() throws {
+        let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let firstAdapter = RedisAdapter()
+        let interveningAdapter = RedisAdapter()
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: firstAdapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+        state.openRedisKeyDetail(key: "session:42")
+        let firstTabID = try XCTUnwrap(state.activeTabId)
+        let firstContext = try XCTUnwrap(
+            state.tabs.first(where: { $0.id == firstTabID })?.redisContext
+        )
+
+        establishRedisContext(
+            on: state,
+            adapter: interveningAdapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+        XCTAssertNil(state.activeRedisAdapter(for: firstContext))
+
+        establishRedisContext(
+            on: state,
+            adapter: firstAdapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+
+        XCTAssertNil(state.activeRedisAdapter(for: firstContext))
+    }
+
     func test_openRedisTabsRefuseIncompleteContext() {
         let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
 
@@ -412,5 +659,41 @@ final class RedisAppStateTests: XCTestCase {
 
     private func redisConfig() -> ConnectionConfig {
         ConnectionConfig(name: "Redis", databaseType: .redis)
+    }
+}
+
+private enum ExpectedTransitionError: Error {
+    case selectFailed
+}
+
+private actor AsyncTestGate {
+    private var hasEntered = false
+    private var hasBeenReleased = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func waitUntilEntered() async {
+        guard !hasEntered else { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func enterAndWait() async {
+        hasEntered = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+
+        guard !hasBeenReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiter = continuation
+        }
+    }
+
+    func release() {
+        hasBeenReleased = true
+        releaseWaiter?.resume()
+        releaseWaiter = nil
     }
 }
