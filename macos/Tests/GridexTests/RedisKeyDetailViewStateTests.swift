@@ -83,6 +83,45 @@ final class RedisKeyDetailViewStateTests: XCTestCase {
         XCTAssertNil(state.errorMessage)
     }
 
+    func test_olderLoadSuccessCompletingLastCannotReplaceNewerFailure() async {
+        let state = RedisKeyDetailViewState()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+
+        await state.load(in: context) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .success(stringDetail(key: "retained", value: "existing"))
+            )
+        }
+
+        let olderLoad = Task { @MainActor in
+            await state.load(in: context) {
+                await olderGate.enterAndWait()
+                return Optional<Result<RedisKeyDetail, Error>>.some(
+                    .success(stringDetail(key: "obsolete", value: "old"))
+                )
+            }
+        }
+        await olderGate.waitUntilEntered()
+
+        await state.load(in: context) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .failure(ExpectedDetailError.loadFailed)
+            )
+        }
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.detail?.key, "retained")
+        XCTAssertEqual(state.errorMessage, "detail load failed")
+
+        await olderGate.release()
+        await olderLoad.value
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertEqual(state.detail?.key, "retained")
+        XCTAssertEqual(state.errorMessage, "detail load failed")
+    }
+
     func test_currentStaleLoadStopsLoadingWithoutPublishingDetailOrError() async {
         let state = RedisKeyDetailViewState()
 
@@ -114,6 +153,50 @@ final class RedisKeyDetailViewStateTests: XCTestCase {
         }
 
         XCTAssertFalse(state.isLoading)
+        XCTAssertNil(state.detail)
+        XCTAssertEqual(state.errorMessage, "detail load failed")
+    }
+
+    func test_loadRejectsSameDatabaseRevisionABAContext() async {
+        let state = RedisKeyDetailViewState()
+        let oldDB0 = redisContext(databaseName: "db0", databaseRevision: 3)
+        let newDB0 = redisContext(databaseName: "db0", databaseRevision: 5)
+
+        await state.load(in: oldDB0) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .success(stringDetail(key: "old-session:key", value: "old"))
+            )
+        }
+        await state.load(in: newDB0) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .failure(ExpectedDetailError.loadFailed)
+            )
+        }
+
+        XCTAssertNil(state.detail)
+        XCTAssertEqual(state.errorMessage, "detail load failed")
+    }
+
+    func test_loadRejectsSameDatabaseSessionABAContext() async {
+        let state = RedisKeyDetailViewState()
+        let oldSession = redisContext(databaseName: "db0", databaseRevision: 3)
+        let newSession = redisContext(
+            databaseName: "db0",
+            databaseRevision: 3,
+            sessionID: UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
+        )
+
+        await state.load(in: oldSession) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .success(stringDetail(key: "old-session:key", value: "old"))
+            )
+        }
+        await state.load(in: newSession) {
+            Optional<Result<RedisKeyDetail, Error>>.some(
+                .failure(ExpectedDetailError.loadFailed)
+            )
+        }
+
         XCTAssertNil(state.detail)
         XCTAssertEqual(state.errorMessage, "detail load failed")
     }
@@ -226,6 +309,53 @@ final class RedisKeyDetailViewStateTests: XCTestCase {
         XCTAssertEqual(newerSideEffects, 1)
     }
 
+    func test_olderMutationSuccessCompletingLastCannotReplaceNewerSuccess() async {
+        let state = RedisKeyDetailViewState()
+        let context = redisContext()
+        let olderGate = RedisOwnershipTestGate()
+        var olderSideEffects = 0
+        var newerSideEffects = 0
+
+        let olderMutation = Task { @MainActor in
+            await state.mutate(
+                in: context,
+                execute: {
+                    await olderGate.enterAndWait()
+                    return Optional<Result<RedisKeyDetail?, Error>>.some(
+                        .success(stringDetail(key: "obsolete", value: "old"))
+                    )
+                },
+                onCurrentSuccess: { olderSideEffects += 1 }
+            )
+        }
+        await olderGate.waitUntilEntered()
+
+        let newerApplied = await state.mutate(
+            in: context,
+            execute: {
+                Optional<Result<RedisKeyDetail?, Error>>.some(
+                    .success(stringDetail(key: "current", value: "new"))
+                )
+            },
+            onCurrentSuccess: { newerSideEffects += 1 }
+        )
+
+        XCTAssertTrue(newerApplied)
+        XCTAssertEqual(state.detail?.key, "current")
+        XCTAssertEqual(olderSideEffects, 0)
+        XCTAssertEqual(newerSideEffects, 1)
+
+        await olderGate.release()
+        let olderApplied = await olderMutation.value
+
+        XCTAssertFalse(olderApplied)
+        XCTAssertFalse(state.isMutating)
+        XCTAssertEqual(state.detail?.key, "current")
+        XCTAssertNil(state.errorMessage)
+        XCTAssertEqual(olderSideEffects, 0)
+        XCTAssertEqual(newerSideEffects, 1)
+    }
+
     func test_currentStaleMutationStopsMutatingWithoutPublishingOrRunningSideEffect() async {
         let state = RedisKeyDetailViewState()
         var sideEffects = 0
@@ -310,6 +440,55 @@ final class RedisKeyDetailViewStateTests: XCTestCase {
         XCTAssertFalse(state.isLoading)
         XCTAssertFalse(state.isMutating)
         XCTAssertEqual(state.detail?.key, "loaded")
+        XCTAssertEqual(mutationSideEffects, 1)
+    }
+
+    func test_mutationRequestDoesNotSupersedeLoadOwnership() async {
+        let state = RedisKeyDetailViewState()
+        let context = redisContext()
+        let loadGate = RedisOwnershipTestGate()
+        let mutationGate = RedisOwnershipTestGate()
+        var mutationSideEffects = 0
+
+        let load = Task { @MainActor in
+            await state.load(in: context) {
+                await loadGate.enterAndWait()
+                return Optional<Result<RedisKeyDetail, Error>>.some(
+                    .success(stringDetail(key: "loaded", value: "read"))
+                )
+            }
+        }
+        await loadGate.waitUntilEntered()
+
+        let mutation = Task { @MainActor in
+            await state.mutate(
+                in: context,
+                execute: {
+                    await mutationGate.enterAndWait()
+                    return Optional<Result<RedisKeyDetail?, Error>>.some(
+                        .success(stringDetail(key: "mutated", value: "written"))
+                    )
+                },
+                onCurrentSuccess: { mutationSideEffects += 1 }
+            )
+        }
+        await mutationGate.waitUntilEntered()
+
+        await loadGate.release()
+        await load.value
+
+        XCTAssertFalse(state.isLoading)
+        XCTAssertTrue(state.isMutating)
+        XCTAssertEqual(state.detail?.key, "loaded")
+        XCTAssertEqual(mutationSideEffects, 0)
+
+        await mutationGate.release()
+        let mutationApplied = await mutation.value
+
+        XCTAssertTrue(mutationApplied)
+        XCTAssertFalse(state.isLoading)
+        XCTAssertFalse(state.isMutating)
+        XCTAssertEqual(state.detail?.key, "mutated")
         XCTAssertEqual(mutationSideEffects, 1)
     }
 
@@ -420,12 +599,14 @@ final class RedisKeyDetailViewStateTests: XCTestCase {
 
     private func redisContext(
         databaseName: String = "db0",
-        databaseRevision: UInt64 = 3
+        databaseRevision: UInt64 = 3,
+        sessionID: UUID =
+            UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
     ) -> AppState.RedisTabContext {
         AppState.RedisTabContext(
             connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
             databaseName: databaseName,
-            sessionID: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
+            sessionID: sessionID,
             databaseRevision: databaseRevision
         )
     }
