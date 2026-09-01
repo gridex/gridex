@@ -1237,14 +1237,14 @@ struct WorkspaceView: View {
                 )
             }
         case .queryEditor:
-            if let context = tab.redisContext {
-                if appState.activeRedisAdapter(for: context) != nil {
-                    QueryEditorView(tabId: tab.id)
-                } else {
-                    redisContextMismatchView
-                }
-            } else {
+            ZStack {
                 QueryEditorView(tabId: tab.id)
+                if let context = tab.redisContext,
+                   appState.activeRedisAdapter(for: context) == nil {
+                    redisContextMismatchView
+                        .background(Color(nsColor: .windowBackgroundColor))
+                        .contentShape(Rectangle())
+                }
             }
         case .tableStructure:
             if let tableName = tab.tableName {
