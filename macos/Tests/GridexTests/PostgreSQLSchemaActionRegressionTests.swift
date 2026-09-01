@@ -55,11 +55,11 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeConfig = staleConfig
         appState.activeAdapter = staleAdapter
         let staleLoad = Task {
-            await appState.loadSidebarSchemas(config: staleConfig, adapter: staleAdapter)
+            let reload = await appState.loadSidebarSchemas(config: staleConfig, adapter: staleAdapter)
             await appState.loadSidebar(
                 config: staleConfig,
                 adapter: staleAdapter,
-                schema: appState.selectedSidebarSchema
+                using: reload
             )
         }
         await staleSchemaGate.waitUntilBlocked()
@@ -67,11 +67,11 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeConnectionId = activeConfig.id
         appState.activeConfig = activeConfig
         appState.activeAdapter = activeAdapter
-        await appState.loadSidebarSchemas(config: activeConfig, adapter: activeAdapter)
+        let activeReload = await appState.loadSidebarSchemas(config: activeConfig, adapter: activeAdapter)
         await appState.loadSidebar(
             config: activeConfig,
             adapter: activeAdapter,
-            schema: appState.selectedSidebarSchema
+            using: activeReload
         )
 
         await staleSchemaGate.release()
@@ -96,11 +96,11 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeConfig = config
         appState.activeAdapter = adapter
         let staleLoad = Task {
-            await appState.loadSidebarSchemas(config: config, adapter: adapter)
+            let reload = await appState.loadSidebarSchemas(config: config, adapter: adapter)
             await appState.loadSidebar(
                 config: config,
                 adapter: adapter,
-                schema: appState.selectedSidebarSchema
+                using: reload
             )
         }
         await schemaGate.waitUntilBlocked()
@@ -126,21 +126,21 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeConfig = config
         appState.activeAdapter = adapter
 
-        await appState.loadSidebarSchemas(config: config, adapter: adapter)
+        let initialReload = await appState.loadSidebarSchemas(config: config, adapter: adapter)
         await appState.loadSidebar(
             config: config,
             adapter: adapter,
-            schema: appState.selectedSidebarSchema
+            using: initialReload
         )
         XCTAssertEqual(appState.selectedSidebarSchema, "tenant_a")
         XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_a"])
 
         appState.selectedSidebarSchema = "tenant_b"
-        await appState.loadSidebarSchemas(config: config, adapter: adapter)
+        let failingReload = await appState.loadSidebarSchemas(config: config, adapter: adapter)
         await appState.loadSidebar(
             config: config,
             adapter: adapter,
-            schema: appState.selectedSidebarSchema
+            using: failingReload
         )
 
         XCTAssertTrue(
@@ -158,7 +158,7 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeConfig = config
         appState.activeAdapter = adapter
 
-        await appState.loadSidebarSchemas(
+        let reload = await appState.loadSidebarSchemas(
             config: config,
             adapter: adapter,
             preferredSchema: "tenant_a"
@@ -166,7 +166,8 @@ final class SidebarLoadPublicationTests: XCTestCase {
         await appState.loadSidebar(
             config: config,
             adapter: adapter,
-            schema: "tenant_b"
+            schema: "tenant_b",
+            using: reload
         )
 
         XCTAssertEqual(appState.selectedSidebarSchema, "tenant_b")
@@ -183,7 +184,7 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeAdapter = adapter
 
         let olderReload = Task {
-            await appState.loadSidebarSchemas(
+            let reload = await appState.loadSidebarSchemas(
                 config: config,
                 adapter: adapter,
                 preferredSchema: "tenant_a"
@@ -192,12 +193,13 @@ final class SidebarLoadPublicationTests: XCTestCase {
             await appState.loadSidebar(
                 config: config,
                 adapter: adapter,
-                schema: "tenant_a"
+                schema: "tenant_a",
+                using: reload
             )
         }
         await olderItemsGate.waitUntilBlocked()
 
-        await appState.loadSidebarSchemas(
+        let newerReload = await appState.loadSidebarSchemas(
             config: config,
             adapter: adapter,
             preferredSchema: "tenant_b"
@@ -205,7 +207,8 @@ final class SidebarLoadPublicationTests: XCTestCase {
         await appState.loadSidebar(
             config: config,
             adapter: adapter,
-            schema: "tenant_b"
+            schema: "tenant_b",
+            using: newerReload
         )
         XCTAssertEqual(appState.selectedSidebarSchema, "tenant_b")
         XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_b"])

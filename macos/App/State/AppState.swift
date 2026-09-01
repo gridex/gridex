@@ -103,6 +103,10 @@ final class AppState: ObservableObject {
         var schema: String?
     }
 
+    struct SidebarReloadHandle: Hashable, Sendable {
+        fileprivate let generation: Int
+    }
+
     // MARK: - Tab State
 
     @Published var tabs: [ContentTab] = []
@@ -373,12 +377,14 @@ final class AppState: ObservableObject {
         config: ConnectionConfig,
         adapter: any DatabaseAdapter,
         preferredSchema: String? = nil
-    ) async {
-        _ = await prepareSidebarReload(
+    ) async -> SidebarReloadHandle? {
+        guard let reload = await prepareSidebarReload(
             config: config,
             adapter: adapter,
             preferredSchema: preferredSchema
-        )
+        ) else { return nil }
+        pendingSidebarReload = reload
+        return SidebarReloadHandle(generation: reload.generation)
     }
 
     func loadSidebar(
@@ -386,21 +392,34 @@ final class AppState: ObservableObject {
         adapter: any DatabaseAdapter,
         schema: String? = nil
     ) async {
-        let connection = sidebarConnectionContext(config: config, adapter: adapter)
-        if let pendingSidebarReload,
-           pendingSidebarReload.connection == connection,
-           isCurrentSidebarReload(pendingSidebarReload) {
-            await loadSidebarItems(using: pendingSidebarReload, adapter: adapter)
-            return
-        }
-
-        guard var reload = beginSidebarReload(
+        await reloadSidebar(
             config: config,
             adapter: adapter,
             preferredSchema: schema
-        ) else { return }
-        reload.schemas = sidebarSchemas
-        reload.schema = schema
+        )
+    }
+
+    func loadSidebar(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        schema: String? = nil,
+        using handle: SidebarReloadHandle?
+    ) async {
+        let connection = sidebarConnectionContext(config: config, adapter: adapter)
+        guard let handle,
+              var reload = pendingSidebarReload,
+              reload.generation == handle.generation,
+              reload.connection == connection,
+              isCurrentSidebarReload(reload) else { return }
+
+        // Consume the exact prepared operation before any item query suspends.
+        // A duplicate or superseded caller can no longer reuse this token.
+        pendingSidebarReload = nil
+        if let schema,
+           config.databaseType == .postgresql,
+           reload.schemas.contains(schema) {
+            reload.schema = schema
+        }
         await loadSidebarItems(using: reload, adapter: adapter)
     }
 
@@ -443,12 +462,10 @@ final class AppState: ObservableObject {
                 for: config.databaseType,
                 schemas: schemas
             )
-            pendingSidebarReload = reload
             return reload
         } catch {
             guard isCurrentSidebarReload(reload) else { return nil }
             publishSidebarSnapshot(reload.previous, using: reload)
-            pendingSidebarReload = nil
             print("Sidebar schema load error: \(error)")
             return nil
         }
@@ -542,15 +559,9 @@ final class AppState: ObservableObject {
                 ),
                 using: reload
             )
-            if pendingSidebarReload?.generation == reload.generation {
-                pendingSidebarReload = nil
-            }
         } catch {
             guard isCurrentSidebarReload(reload) else { return }
             publishSidebarSnapshot(reload.previous, using: reload)
-            if pendingSidebarReload?.generation == reload.generation {
-                pendingSidebarReload = nil
-            }
             print("Sidebar load error: \(error)")
         }
     }
