@@ -34,6 +34,7 @@ struct GeneralSettingsView: View {
     @AppStorage("general.refreshInterval") private var refreshInterval = 300 // seconds
     @AppStorage("general.showQueryLog") private var showQueryLog = false
     @AppStorage("mcp.hideStatusBarIcon") private var hideStatusBarIcon = false
+    @AppStorage("redis.keyBrowser.delimiter") private var redisKeyBrowserDelimiter = ":"
 
     var body: some View {
         Form {
@@ -59,6 +60,14 @@ struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Redis") {
+                TextField("Key namespace delimiter", text: $redisKeyBrowserDelimiter)
+                    .onSubmit(normalizeRedisKeyBrowserDelimiter)
+                Text("Keys are grouped by this delimiter in the sidebar.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Query") {
                 Toggle("Show query log panel by default", isOn: $showQueryLog)
             }
@@ -74,6 +83,13 @@ struct GeneralSettingsView: View {
                 MCPStatusBarController.shared.refresh()
             }
         }
+        .onDisappear(perform: normalizeRedisKeyBrowserDelimiter)
+    }
+
+    private func normalizeRedisKeyBrowserDelimiter() {
+        redisKeyBrowserDelimiter = RedisKeyBrowserBehavior.effectiveDelimiter(
+            for: redisKeyBrowserDelimiter
+        )
     }
 }
 

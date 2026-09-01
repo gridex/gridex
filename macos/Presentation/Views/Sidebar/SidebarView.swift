@@ -87,19 +87,24 @@ struct SidebarView: View {
 
     // MARK: - Items tab
 
+    @ViewBuilder
     private var itemsTab: some View {
         VStack(spacing: 0) {
-            searchBar
-            Divider()
+            if appState.activeConfig?.databaseType == .redis {
+                RedisKeyBrowserView()
+            } else {
+                searchBar
+                Divider()
 
-            List {
-                ForEach(filteredItems, id: \.id) { item in
-                    SidebarItemRow(item: item, searchText: searchText)
+                List {
+                    ForEach(filteredItems, id: \.id) { item in
+                        SidebarItemRow(item: item, searchText: searchText)
+                    }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color(NSColor.windowBackgroundColor))
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Color(NSColor.windowBackgroundColor))
 
             Divider()
             bottomBar

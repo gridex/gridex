@@ -102,6 +102,11 @@ final class AppState: ObservableObject {
     @Published var redisDBSize: Int?
     @Published var showFlushDBConfirm = false
     @Published var showRedisAddKey = false
+    @Published private(set) var redisKeyBrowserRefreshNonce = 0
+
+    func requestRedisKeyBrowserRefresh() {
+        redisKeyBrowserRefreshNonce &+= 1
+    }
 
     // MARK: - Query Log (global, shared across all tables)
     @Published var queryLog: [QueryLogEntry] = []
@@ -334,6 +339,12 @@ final class AppState: ObservableObject {
     }
 
     func loadSidebar(config: ConnectionConfig, adapter: any DatabaseAdapter) async {
+        if config.databaseType == .redis {
+            sidebarItems = []
+            requestRedisKeyBrowserRefresh()
+            return
+        }
+
         do {
             // Run all queries in parallel instead of sequential
             async let tablesTask = adapter.listTables(schema: nil)
@@ -497,6 +508,12 @@ final class AppState: ObservableObject {
     }
 
     // MARK: - Redis Tabs
+
+    func openRedisFlatKeyList() {
+        openTable(name: "Keys", schema: nil)
+        guard let tabID = activeTabId else { return }
+        cachedDataGridState(for: tabID).showFilterBar = true
+    }
 
     func openRedisKeyDetail(key: String) {
         if let existing = tabs.first(where: { $0.type == .redisKeyDetail && $0.tableName == key }) {
@@ -723,6 +740,10 @@ final class AppState: ObservableObject {
 
     func refreshSidebar() {
         guard let adapter = activeAdapter, let config = activeConfig else { return }
+        if config.databaseType == .redis {
+            requestRedisKeyBrowserRefresh()
+            return
+        }
         Task { await loadSidebar(config: config, adapter: adapter) }
     }
 

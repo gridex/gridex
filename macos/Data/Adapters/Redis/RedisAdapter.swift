@@ -368,6 +368,42 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
 
     // MARK: - Pagination (SCAN-based)
 
+    func scanKeyNames(
+        matching pattern: String = "*",
+        maximumCount: Int = 10_000
+    ) async throws -> RedisKeyScanResult {
+        var cursor = 0
+        var accumulator = RedisKeyScanAccumulator(maximumCount: maximumCount)
+
+        repeat {
+            guard connection?.isConnected == true else {
+                throw GridexError.queryExecutionFailed("Connection lost during SCAN")
+            }
+
+            let response: RESPValue
+            do {
+                response = try await sendCommand(
+                    "SCAN",
+                    args: [String(cursor), "MATCH", pattern, "COUNT", "500"]
+                )
+            } catch {
+                guard connection?.isConnected == true else {
+                    throw GridexError.queryExecutionFailed("Connection lost during SCAN")
+                }
+                throw error
+            }
+
+            guard case .array(let parts) = response, parts.count == 2 else { break }
+            cursor = Int(respToRowValue(parts[0]).stringValue ?? "0") ?? 0
+
+            if case .array(let keys) = parts[1] {
+                accumulator.append(keys.compactMap { respToRowValue($0).stringValue })
+            }
+        } while cursor != 0 && !accumulator.isFull
+
+        return accumulator.result(hasMoreCursor: cursor != 0)
+    }
+
     func fetchRows(
         table: String,
         schema: String?,
