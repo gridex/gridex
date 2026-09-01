@@ -611,6 +611,83 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.currentDatabaseName, "db1")
     }
 
+    func test_nestedRedisOperationInSameTask_completesWithoutSelfDeadlock() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let context = try XCTUnwrap(state.currentRedisContext)
+        let completed = expectation(description: "nested Redis operation completed")
+        var nestedOperationSucceeded = false
+
+        let operation = Task { @MainActor in
+            let outerResult = await state.performRedisOperation(for: context) { _ in
+                await state.performRedisOperation(for: context) { _ in
+                    "nested-value"
+                }
+            }
+            if case .success(let innerResult)? = outerResult,
+               case .success("nested-value")? = innerResult {
+                nestedOperationSucceeded = true
+            }
+            completed.fulfill()
+        }
+        defer { operation.cancel() }
+
+        await fulfillment(of: [completed], timeout: 1.0)
+
+        XCTAssertTrue(nestedOperationSucceeded)
+    }
+
+    func test_cancelledQueuedRedisTransition_completesAndRestoresContextBeforeLeaseRelease() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let context = try XCTUnwrap(state.currentRedisContext)
+        let holderGate = AsyncTestGate()
+        let holder = Task { @MainActor in
+            await state.performRedisOperation(for: context) { _ in
+                await holderGate.enterAndWait()
+            }
+        }
+        await holderGate.waitUntilEntered()
+
+        let transitionCompleted = expectation(description: "cancelled queued transition completed")
+        var didCompleteTransition = false
+        var didInvokeSelect = false
+        let transition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                didInvokeSelect = true
+            }
+            didCompleteTransition = true
+            transitionCompleted.fulfill()
+        }
+        while state.redisDatabaseRevision < 1 {
+            await Task.yield()
+        }
+
+        transition.cancel()
+        await fulfillment(of: [transitionCompleted], timeout: 1.0)
+        let databaseNameBeforeHolderRelease = state.currentDatabaseName
+        let completedBeforeHolderRelease = didCompleteTransition
+
+        await holderGate.release()
+        _ = await holder.value
+        _ = await transition.value
+
+        XCTAssertTrue(completedBeforeHolderRelease)
+        XCTAssertEqual(databaseNameBeforeHolderRelease, "db0")
+        XCTAssertFalse(didInvokeSelect)
+        XCTAssertEqual(state.currentDatabaseName, "db0")
+    }
+
     func test_redisConnectionMetadataLoad_serializesWithTransitionAndDiscardsStaleRevision() async throws {
         let state = AppState()
         establishRedisContext(
