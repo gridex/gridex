@@ -135,9 +135,23 @@ final class AppState: ObservableObject {
         var outcomes: [UInt64: RedisDatabaseTransitionOutcome]
     }
 
+    private struct RedisOperationLeaseWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private enum RedisOperationLeaseRun<Output> {
+        case completed(Output)
+        case cancelled
+    }
+
     private var redisDatabaseTransitionBatch: RedisDatabaseTransitionBatch?
+    private let redisOperationLeaseID = UUID()
     private var redisOperationLeaseIsHeld = false
-    private var redisOperationLeaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var redisOperationLeaseWaiters: [RedisOperationLeaseWaiter] = []
+    // Child tasks inherit this marker, so leased callbacks must await nested leased work
+    // before returning; otherwise that work could outlive the outer lease.
+    @TaskLocal private static var heldRedisOperationLeaseIDs: Set<UUID> = []
 
     func requestRedisKeyBrowserRefresh() {
         redisKeyBrowserRefreshNonce &+= 1
@@ -671,26 +685,34 @@ final class AppState: ObservableObject {
               contextIsCurrent(),
               !Task.isCancelled else { return nil }
 
-        await acquireRedisOperationLease()
-        defer { releaseRedisOperationLease() }
-
-        guard isCurrentRedisSessionRevision(token),
-              contextIsCurrent(),
-              !Task.isCancelled,
-              let adapter = activeAdapter as? RedisAdapter else { return nil }
-
-        do {
-            let value = try await operation(adapter)
+        let leaseRun = await withRedisOperationLease {
             guard isCurrentRedisSessionRevision(token),
                   contextIsCurrent(),
-                  !Task.isCancelled else { return nil }
-            publish(value)
-            return .success(value)
-        } catch {
-            guard isCurrentRedisSessionRevision(token),
-                  contextIsCurrent(),
-                  !Task.isCancelled else { return nil }
-            return .failure(error)
+                  !Task.isCancelled,
+                  let adapter = activeAdapter as? RedisAdapter else {
+                return Optional<Result<Value, Error>>.none
+            }
+
+            do {
+                let value = try await operation(adapter)
+                guard isCurrentRedisSessionRevision(token),
+                      contextIsCurrent(),
+                      !Task.isCancelled else { return nil }
+                publish(value)
+                return .success(value)
+            } catch {
+                guard isCurrentRedisSessionRevision(token),
+                      contextIsCurrent(),
+                      !Task.isCancelled else { return nil }
+                return .failure(error)
+            }
+        }
+
+        switch leaseRun {
+        case .completed(let result):
+            return result
+        case .cancelled:
+            return nil
         }
     }
 
@@ -713,39 +735,90 @@ final class AppState: ObservableObject {
             return false
         }
 
-        await acquireRedisOperationLease()
-        defer { releaseRedisOperationLease() }
+        let leaseRun = try await withRedisOperationLease {
+            guard isPendingRedisDatabaseTransition(token) else {
+                discardRedisDatabaseTransition(token)
+                return false
+            }
 
-        guard isPendingRedisDatabaseTransition(token) else {
-            discardRedisDatabaseTransition(token)
-            return false
+            guard !Task.isCancelled else {
+                _ = finishRedisDatabaseTransition(token, outcome: .failure)
+                return false
+            }
+
+            do {
+                try await performSelect()
+                return finishRedisDatabaseTransition(
+                    token,
+                    outcome: .success(databaseName: databaseName)
+                )
+            } catch {
+                _ = finishRedisDatabaseTransition(token, outcome: .failure)
+                throw error
+            }
         }
 
-        guard !Task.isCancelled else {
+        switch leaseRun {
+        case .completed(let ownsPostTransitionPublication):
+            return ownsPostTransitionPublication
+        case .cancelled:
             _ = finishRedisDatabaseTransition(token, outcome: .failure)
             return false
         }
+    }
+
+    private func withRedisOperationLease<Output>(
+        _ operation: () async throws -> Output
+    ) async rethrows -> RedisOperationLeaseRun<Output> {
+        if Self.heldRedisOperationLeaseIDs.contains(redisOperationLeaseID) {
+            return .completed(try await operation())
+        }
+
+        guard await acquireRedisOperationLease() else {
+            return .cancelled
+        }
+
+        var heldLeaseIDs = Self.heldRedisOperationLeaseIDs
+        heldLeaseIDs.insert(redisOperationLeaseID)
 
         do {
-            try await performSelect()
-            return finishRedisDatabaseTransition(
-                token,
-                outcome: .success(databaseName: databaseName)
-            )
+            let output = try await Self.$heldRedisOperationLeaseIDs.withValue(heldLeaseIDs) {
+                try await operation()
+            }
+            releaseRedisOperationLease()
+            return .completed(output)
         } catch {
-            _ = finishRedisDatabaseTransition(token, outcome: .failure)
+            releaseRedisOperationLease()
             throw error
         }
     }
 
-    private func acquireRedisOperationLease() async {
+    private func acquireRedisOperationLease() async -> Bool {
+        guard !Task.isCancelled else { return false }
+
         guard redisOperationLeaseIsHeld else {
             redisOperationLeaseIsHeld = true
-            return
+            return true
         }
 
-        await withCheckedContinuation { continuation in
-            redisOperationLeaseWaiters.append(continuation)
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                redisOperationLeaseWaiters.append(
+                    RedisOperationLeaseWaiter(
+                        id: waiterID,
+                        continuation: continuation
+                    )
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelRedisOperationLeaseWaiter(waiterID)
+            }
         }
     }
 
@@ -755,7 +828,15 @@ final class AppState: ObservableObject {
             return
         }
 
-        redisOperationLeaseWaiters.removeFirst().resume()
+        redisOperationLeaseWaiters.removeFirst().continuation.resume(returning: true)
+    }
+
+    private func cancelRedisOperationLeaseWaiter(_ waiterID: UUID) {
+        guard let index = redisOperationLeaseWaiters.firstIndex(where: { $0.id == waiterID }) else {
+            return
+        }
+        let waiter = redisOperationLeaseWaiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
     }
 
     private func rotateRedisSession(for adapter: (any DatabaseAdapter)?) {
