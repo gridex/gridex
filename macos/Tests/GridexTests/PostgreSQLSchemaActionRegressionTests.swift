@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import Gridex
+@testable import PostgresNIO
 
 @MainActor
 final class SidebarLoadPublicationTests: XCTestCase {
@@ -109,6 +110,69 @@ final class PostgreSQLSQLDumpScopeTests: XCTestCase {
             ]
         )
     }
+
+    func test_failedDumpRollsBackWithoutCommitting() async {
+        let failingStatement = "INSERT INTO orders VALUES (1)"
+        let adapter = RecordingDatabaseAdapter(failingStatement: failingStatement)
+        let statements = [
+            failingStatement,
+            "INSERT INTO orders VALUES (2)",
+        ]
+
+        let result = await SQLDumpExecutor.execute(
+            statements: statements,
+            schema: "tenant_a",
+            using: adapter
+        )
+
+        XCTAssertEqual(result.success, 0)
+        XCTAssertEqual(result.total, 2)
+        XCTAssertEqual(result.firstError, RecordingDatabaseAdapter.Failure.statement.localizedDescription)
+        XCTAssertEqual(
+            adapter.transactionEvents,
+            [
+                .begin,
+                .statement("SET LOCAL search_path TO \"tenant_a\""),
+                .statement(failingStatement),
+                .rollback,
+            ]
+        )
+        XCTAssertFalse(adapter.transactionEvents.contains(.commit))
+    }
+}
+
+final class PostgreSQLTransactionErrorFormattingTests: XCTestCase {
+    func test_transactionWrapperPreservesNestedServerMessageAndRollbackContext() {
+        let serverError = PSQLError.server(
+            .init(fields: [
+                .localizedSeverity: "ERROR",
+                .severity: "ERROR",
+                .sqlState: "23505",
+                .message: "duplicate key value violates unique constraint \"orders_pkey\"",
+                .detail: "Key (id)=(1) already exists.",
+            ])
+        )
+        let transactionError = PostgresTransactionError(
+            file: #fileID,
+            line: #line,
+            closureError: serverError,
+            rollbackError: TransactionRollbackFailure()
+        )
+
+        let message = PostgreSQLAdapter.formatPostgresError(transactionError)
+
+        XCTAssertTrue(
+            message.contains("duplicate key value violates unique constraint \"orders_pkey\""),
+            message
+        )
+        XCTAssertTrue(message.contains("Detail: Key (id)=(1) already exists."), message)
+        XCTAssertTrue(message.contains("SQLSTATE: 23505"), message)
+        XCTAssertTrue(message.contains("Rollback failed: connection closed during rollback"), message)
+    }
+}
+
+private struct TransactionRollbackFailure: LocalizedError {
+    var errorDescription: String? { "connection closed during rollback" }
 }
 
 private func makePostgreSQLConfig() -> ConnectionConfig {
@@ -161,10 +225,16 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
 
     private let blockedSchema: String?
     private let gate: SidebarLoadGate?
+    private let failingStatement: String?
 
-    init(blockedSchema: String? = nil, gate: SidebarLoadGate? = nil) {
+    init(
+        blockedSchema: String? = nil,
+        gate: SidebarLoadGate? = nil,
+        failingStatement: String? = nil
+    ) {
         self.blockedSchema = blockedSchema
         self.gate = gate
+        self.failingStatement = failingStatement
     }
 
     func connect(config: ConnectionConfig, password: String?) async throws {
@@ -186,6 +256,9 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
     func executeRaw(sql: String) async throws -> QueryResult {
         rawExecutions.append(sql)
         transactionEvents.append(.statement(sql))
+        if sql == failingStatement {
+            throw Failure.statement
+        }
         return emptyResult
     }
 
@@ -288,5 +361,11 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
             executionTime: 0,
             queryType: .select
         )
+    }
+
+    enum Failure: LocalizedError {
+        case statement
+
+        var errorDescription: String? { "statement failed" }
     }
 }
