@@ -242,6 +242,30 @@ struct RedisKeyBrowserView: View {
 
                 Spacer()
 
+                Menu {
+                    Button("Add Key…") {
+                        appState.presentRedisAddKey()
+                    }
+                    Divider()
+                    Button("Server Info") {
+                        appState.openRedisServerInfo()
+                    }
+                    Button("Slow Log") {
+                        appState.openRedisSlowLog()
+                    }
+                    Divider()
+                    Button("Flush Database…", role: .destructive) {
+                        appState.presentRedisFlushConfirmation()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 11))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Redis actions")
+                .help("Redis actions")
+
                 Button {
                     appState.requestRedisKeyBrowserRefresh()
                 } label: {

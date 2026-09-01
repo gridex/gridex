@@ -530,13 +530,13 @@ struct SidebarItemRow: View {
                     appState.openTable(name: "Keys", schema: nil)
                 }
                 Button("Add Key…") {
-                    appState.showRedisAddKey = true
+                    appState.presentRedisAddKey()
                 }
                 Divider()
                 Button("Server Info") { appState.openRedisServerInfo() }
                 Button("Slow Log") { appState.openRedisSlowLog() }
                 Divider()
-                Button("Flush Database…") { appState.showFlushDBConfirm = true }
+                Button("Flush Database…") { appState.presentRedisFlushConfirmation() }
                 Divider()
                 Button("Refresh") { appState.refreshSidebar() }
             } else {

@@ -104,6 +104,8 @@ final class AppState: ObservableObject {
     @Published var redisDBSize: Int?
     @Published var showFlushDBConfirm = false
     @Published var showRedisAddKey = false
+    @Published private(set) var redisFlushContext: RedisTabContext?
+    @Published private(set) var redisAddKeyContext: RedisTabContext?
     @Published private(set) var redisKeyBrowserRefreshNonce = 0
 
     struct RedisSessionRevisionToken: Hashable, Sendable {
@@ -155,6 +157,28 @@ final class AppState: ObservableObject {
 
     func requestRedisKeyBrowserRefresh() {
         redisKeyBrowserRefreshNonce &+= 1
+    }
+
+    func presentRedisAddKey() {
+        guard let context = currentRedisContext else { return }
+        redisAddKeyContext = context
+        showRedisAddKey = true
+    }
+
+    func dismissRedisAddKey() {
+        showRedisAddKey = false
+        redisAddKeyContext = nil
+    }
+
+    func presentRedisFlushConfirmation() {
+        guard let context = currentRedisContext else { return }
+        redisFlushContext = context
+        showFlushDBConfirm = true
+    }
+
+    func dismissRedisFlushConfirmation() {
+        showFlushDBConfirm = false
+        redisFlushContext = nil
     }
 
     // MARK: - Query Log (global, shared across all tables)
@@ -1068,25 +1092,47 @@ final class AppState: ObservableObject {
     }
 
     func openRedisServerInfo() {
-        if let existing = tabs.first(where: { $0.type == .redisServerInfo }) {
+        guard let context = currentRedisContext else { return }
+        if let existing = tabs.first(where: {
+            $0.type == .redisServerInfo && $0.redisContext == context
+        }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisServerInfo, title: "Server Info", tableName: nil, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisServerInfo,
+            title: "Server Info",
+            tableName: nil,
+            schema: nil,
+            databaseName: context.databaseName,
+            redisContext: context
+        )
         tabs.append(tab)
         activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+        ensureTabGroup(for: context.databaseName)
     }
 
     func openRedisSlowLog() {
-        if let existing = tabs.first(where: { $0.type == .redisSlowLog }) {
+        guard let context = currentRedisContext else { return }
+        if let existing = tabs.first(where: {
+            $0.type == .redisSlowLog && $0.redisContext == context
+        }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisSlowLog, title: "Slow Log", tableName: nil, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisSlowLog,
+            title: "Slow Log",
+            tableName: nil,
+            schema: nil,
+            databaseName: context.databaseName,
+            redisContext: context
+        )
         tabs.append(tab)
         activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+        ensureTabGroup(for: context.databaseName)
     }
 
     func openNewQueryTab() {

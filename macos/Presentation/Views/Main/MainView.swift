@@ -1191,19 +1191,32 @@ struct WorkspaceView: View {
             }
         }
         .alert("Flush Database", isPresented: $appState.showFlushDBConfirm) {
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {
+                appState.dismissRedisFlushConfirmation()
+            }
             Button("Flush", role: .destructive) {
+                let context = appState.redisFlushContext
+                appState.dismissRedisFlushConfirmation()
                 Task {
-                    if let redis = appState.activeAdapter as? RedisAdapter {
-                        try? await redis.flushDB()
+                    guard let context else { return }
+                    let result = await appState.performRedisOperation(for: context) { redis in
+                        try await redis.flushDB()
+                    }
+                    if case .success? = result {
                         appState.redisDBSize = 0
+                        appState.requestRedisKeyBrowserRefresh()
                         NotificationCenter.default.post(name: .reloadData, object: nil)
                     }
                 }
             }
         } message: { Text("This will permanently delete ALL keys in the current database. This cannot be undone.") }
-        .sheet(isPresented: $appState.showRedisAddKey) {
-            RedisAddKeySheet()
+        .sheet(
+            isPresented: $appState.showRedisAddKey,
+            onDismiss: { appState.dismissRedisAddKey() }
+        ) {
+            if let context = appState.redisAddKeyContext {
+                RedisAddKeySheet(redisContext: context)
+            }
         }
     }
 
@@ -1258,9 +1271,19 @@ struct WorkspaceView: View {
                 )
             }
         case .redisServerInfo:
-            RedisServerInfoView()
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) != nil {
+                RedisServerInfoView(redisContext: context)
+            } else {
+                redisContextMismatchView
+            }
         case .redisSlowLog:
-            RedisSlowLogView()
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) != nil {
+                RedisSlowLogView(redisContext: context)
+            } else {
+                redisContextMismatchView
+            }
         }
     }
 
