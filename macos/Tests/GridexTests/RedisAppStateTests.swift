@@ -1065,6 +1065,51 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertNotEqual(db0Tab.redisContext, db1Tab.redisContext)
     }
 
+    func test_openRedisQueryTabRefusesAContextWhileDatabaseSelectionIsPending() {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        state.currentDatabaseName = nil
+
+        state.openNewQueryTab()
+
+        XCTAssertTrue(state.tabs.isEmpty)
+    }
+
+    func test_rebindRedisQueryTabAdoptsTheLatestRevisionAfterSelectFailure() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        state.openNewQueryTab()
+        let tabID = try XCTUnwrap(state.tabs.last?.id)
+        let oldContext = try XCTUnwrap(state.tabs.last?.redisContext)
+
+        _ = await state.performRedisCLIStatement("SELECT 999") { _, _ in
+            QueryResult(
+                columns: [ColumnHeader(name: "error", dataType: "string")],
+                rows: [[.string("ERR DB index is out of range")]],
+                rowsAffected: 0,
+                executionTime: 0.01,
+                queryType: .select
+            )
+        }
+        let currentContext = try XCTUnwrap(state.currentRedisContext)
+
+        state.rebindRedisQueryTab(id: tabID, to: currentContext)
+
+        XCTAssertNotEqual(currentContext.databaseRevision, oldContext.databaseRevision)
+        XCTAssertEqual(state.tabs.last?.redisContext, currentContext)
+        XCTAssertEqual(state.tabs.last?.databaseName, "db0")
+    }
+
     func test_redisCLINonSelectingSequenceKeepsOneLeaseUntilAllCommandsFinish() async throws {
         let state = AppState()
         establishRedisContext(
