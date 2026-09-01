@@ -1044,6 +1044,96 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "GET SELECT 1"))
     }
 
+    func test_redisQueryTabsCaptureTheirExactDatabaseContext() throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+
+        state.openNewQueryTab()
+        let db0Tab = try XCTUnwrap(state.tabs.last)
+
+        state.currentDatabaseName = "db1"
+        state.openNewQueryTab()
+        let db1Tab = try XCTUnwrap(state.tabs.last)
+
+        XCTAssertEqual(db0Tab.redisContext?.databaseName, "db0")
+        XCTAssertEqual(db1Tab.redisContext?.databaseName, "db1")
+        XCTAssertNotEqual(db0Tab.redisContext, db1Tab.redisContext)
+    }
+
+    func test_redisCLINonSelectingSequenceKeepsOneLeaseUntilAllCommandsFinish() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let context = try XCTUnwrap(state.currentRedisContext)
+        let firstCommandGate = AsyncTestGate()
+        let secondCommandGate = AsyncTestGate()
+        let selectGate = AsyncTestGate()
+        let events = AsyncTestEventRecorder()
+
+        let sequence = Task { @MainActor in
+            await state.performRedisCLIStatements(
+                ["GET first", "GET second"],
+                from: context
+            ) { _, statement in
+                await events.record("\(statement):start")
+                if statement == "GET first" {
+                    await firstCommandGate.enterAndWait()
+                } else {
+                    await secondCommandGate.enterAndWait()
+                }
+                await events.record("\(statement):end")
+                return self.redisCLIResult(value: statement)
+            }
+        }
+        await firstCommandGate.waitUntilEntered()
+
+        let transition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await events.record("select:start")
+                await selectGate.enterAndWait()
+                await events.record("select:end")
+            }
+        }
+        while state.redisDatabaseRevision < 1 {
+            await Task.yield()
+        }
+
+        await firstCommandGate.release()
+        await secondCommandGate.waitUntilEntered()
+        let selectEnteredBeforeSequenceFinished = await selectGate.enteredSnapshot()
+        XCTAssertFalse(selectEnteredBeforeSequenceFinished)
+        await secondCommandGate.release()
+
+        let sequenceResult = await sequence.value
+        XCTAssertNil(sequenceResult)
+        await selectGate.waitUntilEntered()
+        await selectGate.release()
+        await transition.value
+
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(
+            recordedEvents,
+            [
+                "GET first:start",
+                "GET first:end",
+                "GET second:start",
+                "GET second:end",
+                "select:start",
+                "select:end",
+            ]
+        )
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+    }
+
     func test_redisOperationalTabsAreScopedToExactDatabaseContext() throws {
         let state = AppState()
         establishRedisContext(
