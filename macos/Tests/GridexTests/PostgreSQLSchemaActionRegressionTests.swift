@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import Gridex
 @testable import PostgresNIO
@@ -29,6 +31,120 @@ final class SidebarLoadPublicationTests: XCTestCase {
             .map(\.title)
 
         XCTAssertEqual(visibleTableNames, ["orders_tenant_b"])
+    }
+
+    func test_connectionThatFinishesSchemaDiscoveryLateCannotReplaceActiveSidebar() async {
+        let staleSchemaGate = SidebarLoadGate()
+        let staleAdapter = RecordingDatabaseAdapter(
+            schemas: ["legacy_a", "public"],
+            tableName: "orders_from_a",
+            schemaGate: staleSchemaGate
+        )
+        let activeAdapter = RecordingDatabaseAdapter(
+            schemas: ["public", "tenant_b"],
+            tableName: "orders_from_b"
+        )
+        let staleConfig = makePostgreSQLConfig(name: "Connection A", database: "database_a")
+        let activeConfig = makePostgreSQLConfig(name: "Connection B", database: "database_b")
+        let appState = AppState()
+
+        appState.activeConnectionId = staleConfig.id
+        appState.activeConfig = staleConfig
+        appState.activeAdapter = staleAdapter
+        let staleLoad = Task {
+            await appState.loadSidebarSchemas(config: staleConfig, adapter: staleAdapter)
+            await appState.loadSidebar(
+                config: staleConfig,
+                adapter: staleAdapter,
+                schema: appState.selectedSidebarSchema
+            )
+        }
+        await staleSchemaGate.waitUntilBlocked()
+
+        appState.activeConnectionId = activeConfig.id
+        appState.activeConfig = activeConfig
+        appState.activeAdapter = activeAdapter
+        await appState.loadSidebarSchemas(config: activeConfig, adapter: activeAdapter)
+        await appState.loadSidebar(
+            config: activeConfig,
+            adapter: activeAdapter,
+            schema: appState.selectedSidebarSchema
+        )
+
+        await staleSchemaGate.release()
+        await staleLoad.value
+
+        XCTAssertEqual(appState.activeConnectionId, activeConfig.id)
+        XCTAssertEqual(appState.sidebarSchemas, ["public", "tenant_b"])
+        XCTAssertEqual(visibleTableNames(in: appState), ["orders_from_b"])
+    }
+
+    func test_disconnectInvalidatesRefreshBlockedInSchemaDiscovery() async {
+        let schemaGate = SidebarLoadGate()
+        let adapter = RecordingDatabaseAdapter(
+            schemas: ["public", "tenant_a"],
+            tableName: "orders_from_disconnected_database",
+            schemaGate: schemaGate
+        )
+        let config = makePostgreSQLConfig(name: "Connection A", database: "database_a")
+        let appState = AppState()
+
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.activeAdapter = adapter
+        let staleLoad = Task {
+            await appState.loadSidebarSchemas(config: config, adapter: adapter)
+            await appState.loadSidebar(
+                config: config,
+                adapter: adapter,
+                schema: appState.selectedSidebarSchema
+            )
+        }
+        await schemaGate.waitUntilBlocked()
+
+        appState.disconnect()
+        await schemaGate.release()
+        await staleLoad.value
+
+        XCTAssertNil(appState.activeConnectionId)
+        XCTAssertTrue(appState.sidebarSchemas.isEmpty)
+        XCTAssertNil(appState.selectedSidebarSchema)
+        XCTAssertTrue(appState.sidebarItems.isEmpty)
+    }
+
+    func test_failedSchemaItemLoadDoesNotPairNewSelectionWithPreviousTree() async {
+        let adapter = RecordingDatabaseAdapter(
+            schemas: ["tenant_a", "tenant_b"],
+            failingSidebarSchema: "tenant_b"
+        )
+        let config = makePostgreSQLConfig()
+        let appState = AppState()
+        appState.activeConnectionId = config.id
+        appState.activeConfig = config
+        appState.activeAdapter = adapter
+
+        await appState.loadSidebarSchemas(config: config, adapter: adapter)
+        await appState.loadSidebar(
+            config: config,
+            adapter: adapter,
+            schema: appState.selectedSidebarSchema
+        )
+        XCTAssertEqual(appState.selectedSidebarSchema, "tenant_a")
+        XCTAssertEqual(visibleTableNames(in: appState), ["orders_tenant_a"])
+
+        appState.selectedSidebarSchema = "tenant_b"
+        await appState.loadSidebarSchemas(config: config, adapter: adapter)
+        await appState.loadSidebar(
+            config: config,
+            adapter: adapter,
+            schema: appState.selectedSidebarSchema
+        )
+
+        XCTAssertTrue(
+            appState.sidebarItems.isEmpty
+                || sidebarItems(appState.sidebarItems, allMatch: appState.selectedSidebarSchema),
+            "The selected schema and every visible sidebar item must describe one coherent schema"
+        )
     }
 }
 
@@ -171,19 +287,117 @@ final class PostgreSQLTransactionErrorFormattingTests: XCTestCase {
     }
 }
 
+final class PostgreSQLParameterizedQueryErrorTests: XCTestCase {
+    func test_boundQueryErrorBoundaryPreservesServerDiagnostics() async {
+        let serverError = PSQLError.server(
+            .init(fields: [
+                .localizedSeverity: "ERROR",
+                .severity: "ERROR",
+                .sqlState: "42501",
+                .message: "permission denied for relation orders",
+                .detail: "Role reporting_reader cannot read tenant_b.orders.",
+            ])
+        )
+        let failingBoundQuery: () async throws -> Gridex.QueryResult = {
+            throw serverError
+        }
+
+        do {
+            _ = try await PostgreSQLAdapter.withFormattedQueryErrors(failingBoundQuery)
+            XCTFail("Expected the bound PostgreSQL query to fail")
+        } catch GridexError.queryExecutionFailed(let message) {
+            XCTAssertTrue(message.contains("permission denied for relation orders"), message)
+            XCTAssertTrue(
+                message.contains("Detail: Role reporting_reader cannot read tenant_b.orders."),
+                message
+            )
+            XCTAssertTrue(message.contains("SQLSTATE: 42501"), message)
+        } catch {
+            XCTFail("Expected GridexError.queryExecutionFailed, got \(error)")
+        }
+    }
+}
+
+@MainActor
+final class SidebarActiveHighlightTests: XCTestCase {
+    func test_sameNameTableInAnotherSchemaIsNotRenderedAsActive() throws {
+        let displayedItem = SidebarItem(
+            title: "orders",
+            type: .table("orders"),
+            schema: "tenant_b"
+        )
+
+        let sameSchemaState = AppState()
+        sameSchemaState.openTable(name: "orders", schema: "tenant_b")
+        sameSchemaState.selectedSidebarSchema = "tenant_b"
+
+        let otherSchemaState = AppState()
+        otherSchemaState.openTable(name: "orders", schema: "tenant_a")
+        let tenantATab = try XCTUnwrap(otherSchemaState.activeTabId)
+        otherSchemaState.openTable(name: "orders", schema: "tenant_b")
+        otherSchemaState.selectedSidebarSchema = "tenant_b"
+        otherSchemaState.activeTabId = tenantATab
+
+        let inactiveState = AppState()
+        inactiveState.openTable(name: "customers", schema: "tenant_a")
+        inactiveState.selectedSidebarSchema = "tenant_b"
+
+        let activeColor = try renderedSidebarRowBackground(
+            item: displayedItem,
+            appState: sameSchemaState
+        )
+        let otherSchemaColor = try renderedSidebarRowBackground(
+            item: displayedItem,
+            appState: otherSchemaState
+        )
+        let inactiveColor = try renderedSidebarRowBackground(
+            item: displayedItem,
+            appState: inactiveState
+        )
+
+        XCTAssertGreaterThan(
+            colorDistance(activeColor, inactiveColor),
+            0.2,
+            "Render control must distinguish an active row from an inactive row"
+        )
+        XCTAssertLessThan(
+            colorDistance(otherSchemaColor, inactiveColor),
+            0.02,
+            "tenant_b.orders must look inactive while the active tab is tenant_a.orders"
+        )
+    }
+}
+
 private struct TransactionRollbackFailure: LocalizedError {
     var errorDescription: String? { "connection closed during rollback" }
 }
 
-private func makePostgreSQLConfig() -> ConnectionConfig {
+private func makePostgreSQLConfig(
+    name: String = "PostgreSQL test",
+    database: String = "postgres"
+) -> ConnectionConfig {
     ConnectionConfig(
-        name: "PostgreSQL test",
+        name: name,
         databaseType: .postgresql,
         host: "127.0.0.1",
         port: 5432,
-        database: "postgres",
+        database: database,
         username: "postgres"
     )
+}
+
+@MainActor
+private func visibleTableNames(in appState: AppState) -> [String]? {
+    appState.sidebarItems
+        .first(where: { $0.title == "Tables" })?
+        .children
+        .map(\.title)
+}
+
+private func sidebarItems(_ items: [SidebarItem], allMatch schema: String?) -> Bool {
+    items.allSatisfy { item in
+        item.schema == schema && sidebarItems(item.children, allMatch: schema)
+    }
 }
 
 private actor SidebarLoadGate {
@@ -209,6 +423,41 @@ private actor SidebarLoadGate {
     }
 }
 
+@MainActor
+private func renderedSidebarRowBackground(
+    item: SidebarItem,
+    appState: AppState
+) throws -> NSColor {
+    let rootView = ZStack {
+        Color.white
+        SidebarItemRow(item: item, searchText: "")
+            .environmentObject(appState)
+    }
+    .frame(width: 240, height: 28)
+
+    let hostingView = NSHostingView(rootView: rootView)
+    hostingView.appearance = NSAppearance(named: .aqua)
+    hostingView.frame = NSRect(x: 0, y: 0, width: 240, height: 28)
+    hostingView.layoutSubtreeIfNeeded()
+
+    let bitmap = try XCTUnwrap(hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds))
+    hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
+    let sample = try XCTUnwrap(
+        bitmap.colorAt(
+            x: max(0, bitmap.pixelsWide - 8),
+            y: bitmap.pixelsHigh / 2
+        )
+    )
+    return try XCTUnwrap(sample.usingColorSpace(.deviceRGB))
+}
+
+private func colorDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
+    abs(lhs.redComponent - rhs.redComponent)
+        + abs(lhs.greenComponent - rhs.greenComponent)
+        + abs(lhs.blueComponent - rhs.blueComponent)
+        + abs(lhs.alphaComponent - rhs.alphaComponent)
+}
+
 private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendable {
     enum TransactionEvent: Equatable {
         case begin
@@ -226,15 +475,27 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
     private let blockedSchema: String?
     private let gate: SidebarLoadGate?
     private let failingStatement: String?
+    private let schemas: [String]
+    private let tableName: String?
+    private let schemaGate: SidebarLoadGate?
+    private let failingSidebarSchema: String?
 
     init(
         blockedSchema: String? = nil,
         gate: SidebarLoadGate? = nil,
-        failingStatement: String? = nil
+        failingStatement: String? = nil,
+        schemas: [String] = [],
+        tableName: String? = nil,
+        schemaGate: SidebarLoadGate? = nil,
+        failingSidebarSchema: String? = nil
     ) {
         self.blockedSchema = blockedSchema
         self.gate = gate
         self.failingStatement = failingStatement
+        self.schemas = schemas
+        self.tableName = tableName
+        self.schemaGate = schemaGate
+        self.failingSidebarSchema = failingSidebarSchema
     }
 
     func connect(config: ConnectionConfig, password: String?) async throws {
@@ -269,15 +530,23 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
 
     func listDatabases() async throws -> [String] { [] }
 
-    func listSchemas(database: String?) async throws -> [String] { [] }
+    func listSchemas(database: String?) async throws -> [String] {
+        if let schemaGate {
+            await schemaGate.block()
+        }
+        return schemas
+    }
 
     func listTables(schema: String?) async throws -> [TableInfo] {
+        if schema == failingSidebarSchema {
+            throw Failure.sidebarItems(schema ?? "default")
+        }
         if schema == blockedSchema, let gate {
             await gate.block()
         }
         return [
             TableInfo(
-                name: "orders_\(schema ?? "none")",
+                name: tableName ?? "orders_\(schema ?? "none")",
                 schema: schema,
                 type: .table,
                 estimatedRowCount: nil
@@ -365,7 +634,15 @@ private final class RecordingDatabaseAdapter: DatabaseAdapter, @unchecked Sendab
 
     enum Failure: LocalizedError {
         case statement
+        case sidebarItems(String)
 
-        var errorDescription: String? { "statement failed" }
+        var errorDescription: String? {
+            switch self {
+            case .statement:
+                return "statement failed"
+            case .sidebarItems(let schema):
+                return "failed to load sidebar items for \(schema)"
+            }
+        }
     }
 }
