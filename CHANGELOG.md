@@ -2,6 +2,11 @@
 
 All notable changes to Gridex are documented in this file. Gridex ships native apps for **macOS** (Swift/AppKit) and **Windows** (C++/WinUI 3). Unless noted otherwise, changes apply to both platforms.
 
+## [Unreleased]
+
+### Fixed
+- **macOS MySQL passwordless accounts** — Blank passwords now authenticate correctly for non-TLS caching_sha2_password accounts.
+
 ## [0.23.0] - 2026-04-12
 
 ### Added

@@ -14,7 +14,10 @@ let package = Package(
         // PostgreSQL driver
         .package(url: "https://github.com/vapor/postgres-nio.git", from: "1.21.0"),
         // MySQL driver
-        .package(url: "https://github.com/vapor/mysql-nio.git", from: "1.7.0"),
+        .package(
+            url: "https://github.com/gridex/mysql-nio.git",
+            revision: "422b3be5e362a3e160a46c7db947c976f75547ad"
+        ),
         // TLS for Redis and other NIO connections
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
         // SSH tunneling
