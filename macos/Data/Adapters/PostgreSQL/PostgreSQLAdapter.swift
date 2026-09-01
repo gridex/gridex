@@ -155,6 +155,26 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
 
     /// Extract a human-readable message from a PSQLError (which doesn't implement LocalizedError well).
     static func formatPostgresError(_ error: Error) -> String {
+        if let transactionError = error as? PostgresTransactionError {
+            let primaryError = transactionError.beginError
+                ?? transactionError.closureError
+                ?? transactionError.commitError
+
+            var message: String
+            if let primaryError {
+                message = formatPostgresError(primaryError)
+            } else if let rollbackError = transactionError.rollbackError {
+                return "Rollback failed: \(formatPostgresError(rollbackError))"
+            } else {
+                return error.localizedDescription
+            }
+
+            if let rollbackError = transactionError.rollbackError {
+                message += "\nRollback failed: \(formatPostgresError(rollbackError))"
+            }
+            return message
+        }
+
         if let pgError = error as? PSQLError {
             var parts: [String] = []
             if let msg = pgError.serverInfo?[.message] {
