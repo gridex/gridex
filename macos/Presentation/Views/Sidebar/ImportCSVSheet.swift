@@ -9,6 +9,7 @@ import AppKit
 
 struct ImportCSVSheet: View {
     let tableName: String
+    let schema: String?
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
@@ -245,7 +246,7 @@ struct ImportCSVSheet: View {
 
     private func loadTableColumns() async {
         guard let adapter = appState.activeAdapter else { return }
-        if let desc = try? await adapter.describeTable(name: tableName, schema: nil) {
+        if let desc = try? await adapter.describeTable(name: tableName, schema: schema) {
             tableColumns = desc.columns.map(\.name)
         }
     }
@@ -289,7 +290,8 @@ struct ImportCSVSheet: View {
                     return "'\(raw.replacingOccurrences(of: "'", with: "''"))'"
                 }.joined(separator: ", ")
 
-                let sql = "INSERT INTO \(d.quoteIdentifier(tableName)) (\(colList)) VALUES (\(values))"
+                let table = d.qualifiedIdentifier(tableName, schema: schema)
+                let sql = "INSERT INTO \(table) (\(colList)) VALUES (\(values))"
                 _ = try await adapter.executeRaw(sql: sql)
                 importedCount += 1
             }

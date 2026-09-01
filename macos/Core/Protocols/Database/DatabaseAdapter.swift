@@ -54,6 +54,10 @@ protocol DatabaseAdapter: AnyObject, Sendable {
     func commitTransaction() async throws
     func rollbackTransaction() async throws
 
+    /// Execute raw statements without rewriting them in a transaction whose
+    /// PostgreSQL search path is scoped to `schema` for the transaction only.
+    func executeStatements(_ statements: [String], inSchemaTransaction schema: String) async throws
+
     // Pagination
     func fetchRows(
         table: String,
@@ -75,6 +79,21 @@ protocol DatabaseAdapter: AnyObject, Sendable {
 }
 
 extension DatabaseAdapter {
+    func executeStatements(_ statements: [String], inSchemaTransaction schema: String) async throws {
+        try await beginTransaction()
+        do {
+            let quotedSchema = databaseType.sqlDialect.quoteIdentifier(schema)
+            _ = try await executeRaw(sql: "SET LOCAL search_path TO \(quotedSchema)")
+            for statement in statements {
+                _ = try await executeRaw(sql: statement)
+            }
+            try await commitTransaction()
+        } catch {
+            try? await rollbackTransaction()
+            throw error
+        }
+    }
+
     func createDatabase(name: String) async throws {
         let quoted = databaseType.sqlDialect.quoteIdentifier(name)
         _ = try await executeRaw(sql: "CREATE DATABASE \(quoted)")
