@@ -968,6 +968,7 @@ final class AppState: ObservableObject {
         gridState.appState = self
         gridState.bindRedisContext(context)
         gridState.showFilterBar = true
+        statusRowCount = nil
         activeTabId = tabID
     }
 
