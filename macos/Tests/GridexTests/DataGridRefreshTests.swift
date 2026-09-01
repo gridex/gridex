@@ -252,6 +252,49 @@ final class DataGridRefreshTests: XCTestCase {
         try await adapter.disconnect()
     }
 
+    func test_structureRefreshReplaysLateFilterAfterImplicitPrimaryKeyRename() async throws {
+        DataGridViewState.clearMetadataCache()
+        let adapter = CountingSQLiteAdapter()
+        let config = ConnectionConfig(
+            name: "structure-refresh-implicit-primary-key-race",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        try await adapter.connect(config: config, password: nil)
+        _ = try await adapter.executeRaw(sql: "CREATE TABLE text_scores (id TEXT PRIMARY KEY, score INTEGER NOT NULL)")
+        _ = try await adapter.executeRaw(sql: "INSERT INTO text_scores (id, score) VALUES ('c', 30), ('a', 10), ('b', 20)")
+
+        let grid = DataGridViewState()
+        await grid.load(tableName: "text_scores", schema: nil, adapter: adapter)
+        XCTAssertNil(grid.sortColumn)
+        XCTAssertEqual(grid.primaryKeyColumns, ["id"])
+        await grid.loadPage(0)
+        XCTAssertEqual(grid.rows.compactMap { $0[0].stringValue }, ["a", "b", "c"])
+
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE text_scores RENAME COLUMN id TO record_id")
+        let descriptionGate = adapter.holdNextDescribeTable()
+        let structureReload = Task { @MainActor in
+            await grid.reloadAfterStructureChange()
+        }
+        await adapter.waitForHeldDescribeTable()
+
+        grid.activeFilter = FilterExpression(
+            conditions: [FilterCondition(column: "score", op: .greaterOrEqual, value: .integer(20))],
+            combinator: .and
+        )
+        await grid.applyFilter()
+
+        descriptionGate.open()
+        await structureReload.value
+
+        XCTAssertNil(grid.sortColumn)
+        XCTAssertEqual(grid.primaryKeyColumns, ["record_id"])
+        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "score"])
+        XCTAssertEqual(grid.rows.compactMap { $0[0].stringValue }, ["b", "c"])
+        XCTAssertEqual(grid.rows.compactMap { $0[1].intValue }, [20, 30])
+        try await adapter.disconnect()
+    }
+
     func test_reloadAfterStructureChange_discardsOlderLoadResultsAndMetadataCache() async throws {
         let (grid, adapter) = try await makeCountingGrid()
         DataGridViewState.clearMetadataCache()
