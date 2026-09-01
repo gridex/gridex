@@ -390,18 +390,6 @@ final class AppState: ObservableObject {
     func loadSidebar(
         config: ConnectionConfig,
         adapter: any DatabaseAdapter,
-        schema: String? = nil
-    ) async {
-        await reloadSidebar(
-            config: config,
-            adapter: adapter,
-            preferredSchema: schema
-        )
-    }
-
-    func loadSidebar(
-        config: ConnectionConfig,
-        adapter: any DatabaseAdapter,
         schema: String? = nil,
         using handle: SidebarReloadHandle?
     ) async {

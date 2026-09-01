@@ -18,12 +18,32 @@ final class SidebarLoadPublicationTests: XCTestCase {
         appState.activeAdapter = adapter
         appState.selectedSidebarSchema = "tenant_a"
         let staleLoad = Task {
-            await appState.loadSidebar(config: config, adapter: adapter, schema: "tenant_a")
+            let reload = await appState.loadSidebarSchemas(
+                config: config,
+                adapter: adapter,
+                preferredSchema: "tenant_a"
+            )
+            await appState.loadSidebar(
+                config: config,
+                adapter: adapter,
+                schema: "tenant_a",
+                using: reload
+            )
         }
         await gate.waitUntilBlocked()
 
         appState.selectedSidebarSchema = "tenant_b"
-        await appState.loadSidebar(config: config, adapter: adapter, schema: "tenant_b")
+        let latestReload = await appState.loadSidebarSchemas(
+            config: config,
+            adapter: adapter,
+            preferredSchema: "tenant_b"
+        )
+        await appState.loadSidebar(
+            config: config,
+            adapter: adapter,
+            schema: "tenant_b",
+            using: latestReload
+        )
 
         await gate.release()
         await staleLoad.value
