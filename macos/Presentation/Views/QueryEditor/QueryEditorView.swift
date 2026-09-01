@@ -281,7 +281,16 @@ struct QueryEditorView: View {
             for stmt in toRun {
                 let start = Date()
                 do {
-                    let result = try await adapter.executeRaw(sql: stmt)
+                    let result: QueryResult
+                    if adapter.databaseType == .redis {
+                        guard let ownedResult = await appState.performRedisCLIStatement(stmt) else {
+                            isExecuting = false
+                            return
+                        }
+                        result = try ownedResult.get()
+                    } else {
+                        result = try await adapter.executeRaw(sql: stmt)
+                    }
                     let duration = Date().timeIntervalSince(start)
                     appState.logQuery(sql: stmt, duration: duration)
                     appState.recordQueryHistory(sql: stmt, duration: duration, rowCount: result.rowCount)

@@ -656,6 +656,76 @@ final class AppState: ObservableObject {
         )
     }
 
+    func performRedisCLIStatement(
+        _ statement: String
+    ) async -> Result<QueryResult, Error>? {
+        await performRedisCLIStatement(statement) { adapter, command in
+            try await adapter.executeRaw(sql: command)
+        }
+    }
+
+    func performRedisCLIStatement(
+        _ statement: String,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> Result<QueryResult, Error>? {
+        let command = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return nil }
+
+        guard let databaseName = Self.redisDatabaseNameSelected(by: command) else {
+            guard let context = currentRedisContext else { return nil }
+            return await performRedisOperation(for: context) { adapter in
+                try await execute(adapter, command)
+            }
+        }
+
+        guard let token = beginRedisDatabaseTransition() else { return nil }
+        let leaseRun = await withRedisOperationLease {
+            guard isPendingRedisDatabaseTransition(token),
+                  !Task.isCancelled,
+                  let adapter = activeAdapter as? RedisAdapter else {
+                discardRedisDatabaseTransition(token)
+                return Optional<Result<QueryResult, Error>>.none
+            }
+
+            do {
+                let result = try await execute(adapter, command)
+                let ownsPublication = finishRedisDatabaseTransition(
+                    token,
+                    outcome: .success(databaseName: databaseName)
+                )
+                guard ownsPublication, !Task.isCancelled else { return nil }
+                return Result<QueryResult, Error>.success(result)
+            } catch {
+                let ownsPublication = finishRedisDatabaseTransition(
+                    token,
+                    outcome: .failure
+                )
+                guard ownsPublication, !Task.isCancelled else { return nil }
+                return Result<QueryResult, Error>.failure(error)
+            }
+        }
+
+        switch leaseRun {
+        case .completed(let result):
+            return result
+        case .cancelled:
+            _ = finishRedisDatabaseTransition(token, outcome: .failure)
+            return nil
+        }
+    }
+
+    static func redisDatabaseNameSelected(by statement: String) -> String? {
+        let components = statement.split(whereSeparator: { $0.isWhitespace })
+        guard components.count == 2,
+              components[0].lowercased() == "select",
+              !components[1].isEmpty,
+              components[1].unicodeScalars.allSatisfy({
+                  $0.value >= 48 && $0.value <= 57
+              }),
+              let index = Int(components[1]) else { return nil }
+        return "db\(index)"
+    }
+
     @discardableResult
     func loadRedisConnectionMetadata(
         for token: RedisSessionRevisionToken,
