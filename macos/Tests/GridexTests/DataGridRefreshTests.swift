@@ -49,17 +49,19 @@ final class DataGridRefreshTests: XCTestCase {
     }
 
     func test_reloadAfterStructureChange_usesRenamedPrimaryKeyWhenNoHeaderSortIsSelected() async throws {
-        let (grid, adapter) = try await makeGrid()
+        let (grid, adapter) = try await makeTextPrimaryKeyGrid()
         XCTAssertNil(grid.sortColumn)
         XCTAssertEqual(grid.primaryKeyColumns, ["id"])
+        await grid.loadPage(0)
+        XCTAssertEqual(grid.rows.compactMap { $0[0].stringValue }, ["a", "b", "c"])
 
-        _ = try await adapter.executeRaw(sql: "ALTER TABLE scores RENAME COLUMN id TO record_id")
+        _ = try await adapter.executeRaw(sql: "ALTER TABLE text_scores RENAME COLUMN id TO record_id")
         await grid.reloadAfterStructureChange()
 
         XCTAssertNil(grid.sortColumn)
         XCTAssertEqual(grid.primaryKeyColumns, ["record_id"])
-        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "rank"])
-        XCTAssertEqual(grid.rows.compactMap { $0[0].intValue }, [1, 2, 3])
+        XCTAssertEqual(grid.columns.map(\.name), ["record_id", "score"])
+        XCTAssertEqual(grid.rows.compactMap { $0[0].stringValue }, ["a", "b", "c"])
         try await adapter.disconnect()
     }
 
@@ -76,6 +78,22 @@ final class DataGridRefreshTests: XCTestCase {
         _ = try await adapter.executeRaw(sql: "INSERT INTO scores (id, rank) VALUES (1, 30), (2, 10), (3, 20)")
         let grid = DataGridViewState()
         await grid.load(tableName: "scores", schema: nil, adapter: adapter)
+        return (grid, adapter)
+    }
+
+    private func makeTextPrimaryKeyGrid() async throws -> (DataGridViewState, SQLiteAdapter) {
+        DataGridViewState.clearMetadataCache()
+        let adapter = SQLiteAdapter()
+        let config = ConnectionConfig(
+            name: "refresh-text-primary-key-test",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        try await adapter.connect(config: config, password: nil)
+        _ = try await adapter.executeRaw(sql: "CREATE TABLE text_scores (id TEXT PRIMARY KEY, score INTEGER NOT NULL)")
+        _ = try await adapter.executeRaw(sql: "INSERT INTO text_scores (id, score) VALUES ('c', 30), ('a', 10), ('b', 20)")
+        let grid = DataGridViewState()
+        await grid.load(tableName: "text_scores", schema: nil, adapter: adapter)
         return (grid, adapter)
     }
 }
