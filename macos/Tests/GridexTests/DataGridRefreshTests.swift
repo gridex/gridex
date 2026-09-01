@@ -77,9 +77,9 @@ final class DataGridRefreshTests: XCTestCase {
         let observerLoad = expectation(description: "mounted sort observer reloads page")
         let sortObserver = grid.$sortColumn
             .dropFirst()
-            .sink { _ in
+            .sink { sortColumn in
                 Task { @MainActor in
-                    await grid.loadPage(0)
+                    await grid.handleSortColumnChange(sortColumn)
                     observerLoad.fulfill()
                 }
             }
