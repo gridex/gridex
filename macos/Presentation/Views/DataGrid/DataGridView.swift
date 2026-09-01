@@ -364,7 +364,14 @@ final class DataGridViewState: ObservableObject {
     @Published var currentPage: Int = 0
     @Published var isLoading = false
     @Published var executionTime: TimeInterval = 0
-    @Published var sortColumn: String?
+    @Published var sortColumn: String? {
+        didSet {
+            guard let pendingProgrammaticSortClear else { return }
+            if oldValue != pendingProgrammaticSortClear.clearedColumn || sortColumn != nil {
+                self.pendingProgrammaticSortClear = nil
+            }
+        }
+    }
     @Published var sortAscending = true
     @Published var showFilterBar = false
     @Published var activeFilter: FilterExpression?
@@ -440,7 +447,6 @@ final class DataGridViewState: ObservableObject {
     }
 
     private struct ProgrammaticSortClear {
-        let generation: Int
         let clearedColumn: String
     }
 
@@ -451,6 +457,7 @@ final class DataGridViewState: ObservableObject {
 
     private static var metadataCache: [MetadataCacheKey: TableMetadataCache] = [:]
     private static var metadataCacheGenerations: [MetadataCacheKey: Int] = [:]
+    private static var metadataPublicationEpochs: [MetadataCacheKey: Int] = [:]
     private let metadataCacheFallbackScopeID = UUID()
 
     private func metadataCacheKey(
@@ -474,6 +481,7 @@ final class DataGridViewState: ObservableObject {
     static func clearMetadataCache() {
         metadataCache.removeAll()
         metadataCacheGenerations.removeAll()
+        metadataPublicationEpochs.removeAll()
     }
 
     struct CellID: Equatable {
@@ -521,6 +529,15 @@ final class DataGridViewState: ObservableObject {
             && Self.metadataCacheGenerations[cacheKey, default: 0] == cacheGeneration
     }
 
+    private func isCurrentMetadataPublication(
+        cacheKey: MetadataCacheKey,
+        cacheGeneration: Int,
+        publicationEpoch: Int
+    ) -> Bool {
+        isCurrentMetadataScope(cacheKey: cacheKey, cacheGeneration: cacheGeneration)
+            && Self.metadataPublicationEpochs[cacheKey, default: 0] == publicationEpoch
+    }
+
     private func isCurrentRowRequest(_ generation: Int, cacheKey: MetadataCacheKey, cacheGeneration: Int) -> Bool {
         generation == loadGeneration
             && isCurrentMetadataScope(cacheKey: cacheKey, cacheGeneration: cacheGeneration)
@@ -548,13 +565,19 @@ final class DataGridViewState: ObservableObject {
         return metadataCacheGenerations[key, default: 0]
     }
 
+    private static func nextMetadataPublicationEpoch(for key: MetadataCacheKey) -> Int {
+        metadataPublicationEpochs[key, default: 0] &+= 1
+        return metadataPublicationEpochs[key, default: 0]
+    }
+
     func load(
         tableName: String,
         schema: String?,
         adapter: (any DatabaseAdapter)?,
         prefetchedDescription: TableDescription? = nil,
         generation: Int? = nil,
-        cacheGeneration: Int? = nil
+        cacheGeneration: Int? = nil,
+        metadataPublicationEpoch: Int? = nil
     ) async {
         guard let adapter else { return }
         let requestGeneration: Int
@@ -569,7 +592,13 @@ final class DataGridViewState: ObservableObject {
         }
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = cacheGeneration ?? Self.metadataCacheGenerations[requestCacheKey, default: 0]
-        guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+        let requestMetadataPublicationEpoch = metadataPublicationEpoch
+            ?? Self.nextMetadataPublicationEpoch(for: requestCacheKey)
+        guard isCurrentMetadataPublication(
+            cacheKey: requestCacheKey,
+            cacheGeneration: requestCacheGeneration,
+            publicationEpoch: requestMetadataPublicationEpoch
+        ) else {
             finishLoading(for: requestGeneration)
             return
         }
@@ -621,7 +650,11 @@ final class DataGridViewState: ObservableObject {
                     computeColumnWidths(columns: result.columns, rows: result.rows)
                 } else {
                     finishLoading(for: requestGeneration)
-                    guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard isCurrentMetadataPublication(
+                        cacheKey: requestCacheKey,
+                        cacheGeneration: requestCacheGeneration,
+                        publicationEpoch: requestMetadataPublicationEpoch
+                    ) else { return }
                 }
             } catch {
                 if isCurrentRowRequest(requestGeneration, cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) {
@@ -630,7 +663,11 @@ final class DataGridViewState: ObservableObject {
                     return
                 }
                 finishLoading(for: requestGeneration)
-                guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                guard isCurrentMetadataPublication(
+                    cacheKey: requestCacheKey,
+                    cacheGeneration: requestCacheGeneration,
+                    publicationEpoch: requestMetadataPublicationEpoch
+                ) else { return }
             }
             finishLoading(for: requestGeneration)
         }
@@ -639,7 +676,11 @@ final class DataGridViewState: ObservableObject {
         if hasCachedMeta {
             Task {
                 if let desc = try? await adapter.describeTable(name: tableName, schema: schema) {
-                    guard self.isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+                    guard self.isCurrentMetadataPublication(
+                        cacheKey: requestCacheKey,
+                        cacheGeneration: requestCacheGeneration,
+                        publicationEpoch: requestMetadataPublicationEpoch
+                    ) else { return }
                     self.tableDescription = desc
                     Self.metadataCache[requestCacheKey]?.tableDescription = desc
                     self.objectWillChange.send()
@@ -678,22 +719,30 @@ final class DataGridViewState: ObservableObject {
 
         var metadataEstimatedRowCount: Int?
         if let desc = await descTask {
-            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+            guard isCurrentMetadataPublication(
+                cacheKey: requestCacheKey,
+                cacheGeneration: requestCacheGeneration,
+                publicationEpoch: requestMetadataPublicationEpoch
+            ) else { return }
             let dur = Date().timeIntervalSince(start)
-            self.primaryKeyColumns = desc.columns.filter { $0.isPrimaryKey }.map { $0.name }
-            for col in desc.columns {
-                if let def = col.defaultValue, !col.isAutoIncrement {
-                    self.columnDefaults[col.name] = def
-                }
-            }
+            let refreshedColumnDefaults = Dictionary(uniqueKeysWithValues: desc.columns.compactMap { column -> (String, String)? in
+                guard let defaultValue = column.defaultValue, !column.isAutoIncrement else { return nil }
+                return (column.name, defaultValue)
+            })
+            var refreshedForeignKeyColumns: [String: String] = [:]
+            var refreshedForeignKeyRefColumns: [String: String] = [:]
             for fk in desc.foreignKeys {
                 for (i, col) in fk.columns.enumerated() {
-                    self.foreignKeyColumns[col] = fk.referencedTable
+                    refreshedForeignKeyColumns[col] = fk.referencedTable
                     if i < fk.referencedColumns.count {
-                        self.foreignKeyRefColumns[col] = fk.referencedColumns[i]
+                        refreshedForeignKeyRefColumns[col] = fk.referencedColumns[i]
                     }
                 }
             }
+            self.primaryKeyColumns = desc.columns.filter { $0.isPrimaryKey }.map { $0.name }
+            self.columnDefaults = refreshedColumnDefaults
+            self.foreignKeyColumns = refreshedForeignKeyColumns
+            self.foreignKeyRefColumns = refreshedForeignKeyRefColumns
             metadataEstimatedRowCount = desc.estimatedRowCount
             if activeFilter == nil,
                let count = metadataEstimatedRowCount,
@@ -705,7 +754,11 @@ final class DataGridViewState: ObservableObject {
         }
 
         let enumValues = await enumTask
-        guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else { return }
+        guard isCurrentMetadataPublication(
+            cacheKey: requestCacheKey,
+            cacheGeneration: requestCacheGeneration,
+            publicationEpoch: requestMetadataPublicationEpoch
+        ) else { return }
         self.columnEnumValues = enumValues
 
         // Save to cache
@@ -723,8 +776,17 @@ final class DataGridViewState: ObservableObject {
 
     func reloadStructure() async {
         guard let adapter else { return }
+        let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
+        let requestCacheGeneration = Self.metadataCacheGenerations[requestCacheKey, default: 0]
+        let requestMetadataPublicationEpoch = Self.nextMetadataPublicationEpoch(for: requestCacheKey)
         do {
-            tableDescription = try await adapter.describeTable(name: tableName, schema: schema)
+            let description = try await adapter.describeTable(name: tableName, schema: schema)
+            guard isCurrentMetadataPublication(
+                cacheKey: requestCacheKey,
+                cacheGeneration: requestCacheGeneration,
+                publicationEpoch: requestMetadataPublicationEpoch
+            ) else { return }
+            tableDescription = description
         } catch {
             // Structure reload error — silently ignore
         }
@@ -740,13 +802,18 @@ final class DataGridViewState: ObservableObject {
         latestPageRequest = nil
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: requestTableName, schema: requestSchema)
         let requestCacheGeneration = Self.invalidateMetadataCache(for: requestCacheKey)
+        let requestMetadataPublicationEpoch = Self.nextMetadataPublicationEpoch(for: requestCacheKey)
         beginLoading(for: requestGeneration)
 
         let description: TableDescription
         var rowReplayRequest: PageRequest?
         do {
             description = try await adapter.describeTable(name: requestTableName, schema: requestSchema)
-            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+            guard isCurrentMetadataPublication(
+                cacheKey: requestCacheKey,
+                cacheGeneration: requestCacheGeneration,
+                publicationEpoch: requestMetadataPublicationEpoch
+            ) else {
                 finishLoading(for: requestGeneration)
                 return
             }
@@ -767,13 +834,16 @@ final class DataGridViewState: ObservableObject {
             self.tableDescription = description
             if let sortColumn, hasInvalidExplicitSort {
                 pendingProgrammaticSortClear = ProgrammaticSortClear(
-                    generation: requestGeneration,
                     clearedColumn: sortColumn
                 )
                 self.sortColumn = nil
             }
         } catch {
-            guard isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) else {
+            guard isCurrentMetadataPublication(
+                cacheKey: requestCacheKey,
+                cacheGeneration: requestCacheGeneration,
+                publicationEpoch: requestMetadataPublicationEpoch
+            ) else {
                 finishLoading(for: requestGeneration)
                 return
             }
@@ -788,25 +858,29 @@ final class DataGridViewState: ObservableObject {
             adapter: adapter,
             prefetchedDescription: description,
             generation: requestGeneration,
-            cacheGeneration: requestCacheGeneration
+            cacheGeneration: requestCacheGeneration,
+            metadataPublicationEpoch: requestMetadataPublicationEpoch
         )
 
         if let rowReplayRequest,
            rowReplayRequest.generation == loadGeneration,
-           isCurrentMetadataScope(cacheKey: requestCacheKey, cacheGeneration: requestCacheGeneration) {
+           isCurrentMetadataPublication(
+               cacheKey: requestCacheKey,
+               cacheGeneration: requestCacheGeneration,
+               publicationEpoch: requestMetadataPublicationEpoch
+           ) {
             await loadPage(rowReplayRequest.page)
         }
     }
 
     func handleSortColumnChange(from previousSortColumn: String?, to sortColumn: String?) async {
-        if let pendingProgrammaticSortClear,
-           pendingProgrammaticSortClear.generation == loadGeneration,
-           previousSortColumn == pendingProgrammaticSortClear.clearedColumn,
-           sortColumn == nil {
+        if let pendingProgrammaticSortClear {
             self.pendingProgrammaticSortClear = nil
-            return
+            if previousSortColumn == pendingProgrammaticSortClear.clearedColumn,
+               sortColumn == nil {
+                return
+            }
         }
-        pendingProgrammaticSortClear = nil
         await loadPage(0)
     }
 
