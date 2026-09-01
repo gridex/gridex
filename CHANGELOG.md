@@ -5,7 +5,7 @@ All notable changes to Gridex are documented in this file. Gridex ships native a
 ## [Unreleased]
 
 ### Fixed
-- **macOS PostgreSQL schemas** — The sidebar now lists and operates on the selected accessible schema instead of always using public.
+- **macOS MySQL passwordless accounts** — Blank passwords now authenticate correctly for non-TLS caching_sha2_password accounts.
 
 ## [0.23.0] - 2026-04-12
 

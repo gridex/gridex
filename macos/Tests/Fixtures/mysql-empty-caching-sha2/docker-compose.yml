@@ -1,0 +1,14 @@
+services:
+  mysql:
+    image: mysql:8.4.6
+    environment:
+      MYSQL_ROOT_PASSWORD: gridex-fixture-root
+    ports:
+      - "13307:3306"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pgridex-fixture-root"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
