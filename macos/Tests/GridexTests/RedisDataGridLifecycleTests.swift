@@ -32,6 +32,22 @@ final class RedisDataGridLifecycleTests: XCTestCase {
         XCTAssertNil(appState.statusRowCount)
     }
 
+    func test_rebindingSameRedisContextClearsStaleDetailEditorState() {
+        let appState = AppState()
+        let state = DataGridViewState()
+        let context = redisContext(databaseName: "db0", revision: 1)
+        state.appState = appState
+        state.bindRedisContext(context)
+
+        appState.selectedRowDetails = [(column: "name", value: "obsolete")]
+        appState.onDetailFieldEdit = { _, _ in }
+
+        state.bindRedisContext(context)
+
+        XCTAssertNil(appState.selectedRowDetails)
+        XCTAssertNil(appState.onDetailFieldEdit)
+    }
+
     func test_redisContextMakesGridReadOnlyAndAllMutationEntryPointsNoOp() async {
         let state = DataGridViewState()
         state.bindRedisContext(redisContext(databaseName: "db0", revision: 1))
