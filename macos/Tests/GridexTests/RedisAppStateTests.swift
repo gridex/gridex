@@ -559,6 +559,167 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.currentDatabaseName, "db2")
     }
 
+    func test_redisOperation_serializesWithTransitionAndDiscardsStaleResult() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let context = try XCTUnwrap(state.currentRedisContext)
+        let operationGate = AsyncTestGate()
+        let selectGate = AsyncTestGate()
+        let events = AsyncTestEventRecorder()
+
+        let operation = Task { @MainActor in
+            await state.performRedisOperation(for: context) { _ in
+                await events.record("operation:start")
+                await operationGate.enterAndWait()
+                await events.record("operation:end")
+                return "db0-value"
+            }
+        }
+        await operationGate.waitUntilEntered()
+
+        let transition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await events.record("select:start")
+                await selectGate.enterAndWait()
+                await events.record("select:end")
+            }
+        }
+        while state.redisDatabaseRevision < 1 {
+            await Task.yield()
+        }
+
+        let selectEnteredBeforeOperationFinished = await selectGate.enteredSnapshot()
+        XCTAssertFalse(selectEnteredBeforeOperationFinished)
+
+        await operationGate.release()
+        let result = await operation.value
+        await selectGate.waitUntilEntered()
+        await selectGate.release()
+        await transition.value
+
+        XCTAssertNil(result)
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(
+            recordedEvents,
+            ["operation:start", "operation:end", "select:start", "select:end"]
+        )
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+    }
+
+    func test_redisConnectionMetadataLoad_serializesWithTransitionAndDiscardsStaleRevision() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        state.availableDatabases = ["sentinel"]
+        state.redisDBSize = 7
+        let token = try XCTUnwrap(state.currentRedisSessionRevisionToken)
+        let metadataGate = AsyncTestGate()
+        let selectGate = AsyncTestGate()
+        let events = AsyncTestEventRecorder()
+
+        let metadataLoad = Task { @MainActor in
+            await state.loadRedisConnectionMetadata(for: token) { _ in
+                await events.record("metadata:start")
+                await metadataGate.enterAndWait()
+                await events.record("metadata:end")
+                return AppState.RedisConnectionMetadataSnapshot(
+                    databaseName: "db0",
+                    availableDatabases: ["stale"],
+                    databaseSize: 999
+                )
+            }
+        }
+        await metadataGate.waitUntilEntered()
+
+        let transition = Task { @MainActor in
+            await state.performRedisDatabaseTransition(to: "db1") {
+                await events.record("select:start")
+                await selectGate.enterAndWait()
+                await events.record("select:end")
+            }
+        }
+        while state.redisDatabaseRevision < 1 {
+            await Task.yield()
+        }
+
+        let selectEnteredBeforeMetadataFinished = await selectGate.enteredSnapshot()
+        XCTAssertFalse(selectEnteredBeforeMetadataFinished)
+
+        await metadataGate.release()
+        let published = await metadataLoad.value
+        await selectGate.waitUntilEntered()
+        await selectGate.release()
+        await transition.value
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(state.currentDatabaseName, "db1")
+        XCTAssertNotEqual(state.availableDatabases, ["stale"])
+        XCTAssertNotEqual(state.redisDBSize, 999)
+        let recordedEvents = await events.snapshot()
+        XCTAssertEqual(
+            recordedEvents,
+            ["metadata:start", "metadata:end", "select:start", "select:end"]
+        )
+    }
+
+    func test_redisConnectionMetadataLoad_rejectsSameAdapterSessionABA() async throws {
+        let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let firstAdapter = RedisAdapter()
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: firstAdapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+        state.availableDatabases = ["sentinel"]
+        state.redisDBSize = 7
+        let token = try XCTUnwrap(state.currentRedisSessionRevisionToken)
+        let metadataGate = AsyncTestGate()
+
+        let metadataLoad = Task { @MainActor in
+            await state.loadRedisConnectionMetadata(for: token) { _ in
+                await metadataGate.enterAndWait()
+                return AppState.RedisConnectionMetadataSnapshot(
+                    databaseName: "db0",
+                    availableDatabases: ["stale"],
+                    databaseSize: 999
+                )
+            }
+        }
+        await metadataGate.waitUntilEntered()
+
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+        establishRedisContext(
+            on: state,
+            adapter: firstAdapter,
+            connectionID: connectionID,
+            databaseName: "db0"
+        )
+
+        await metadataGate.release()
+        let published = await metadataLoad.value
+
+        XCTAssertFalse(published)
+        XCTAssertEqual(state.currentDatabaseName, "db0")
+        XCTAssertEqual(state.availableDatabases, ["sentinel"])
+        XCTAssertEqual(state.redisDBSize, 7)
+    }
+
     func test_reacceptingSameRedisAdapterInvalidatesCapturedTabContexts() throws {
         let connectionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         let adapter = RedisAdapter()
