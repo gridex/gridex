@@ -9,7 +9,11 @@ import XCTest
 final class SidebarLoadPublicationTests: XCTestCase {
     func test_staleSchemaLoadCannotReplaceNewerSidebarContents() async {
         let gate = SidebarLoadGate()
-        let adapter = RecordingDatabaseAdapter(blockedSchema: "tenant_a", gate: gate)
+        let adapter = RecordingDatabaseAdapter(
+            schemas: ["tenant_a", "tenant_b"],
+            blockedSchema: "tenant_a",
+            gate: gate
+        )
         let appState = AppState()
         let config = makePostgreSQLConfig()
 
