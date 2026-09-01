@@ -43,6 +43,11 @@ struct RedisKeyScanResult: Sendable, Equatable {
     let isTruncated: Bool
 }
 
+struct RedisKeyScanPage: Sendable, Equatable {
+    let cursor: String?
+    let keys: [String]?
+}
+
 struct RedisKeyScanAccumulator {
     private(set) var uniqueKeys: Set<String> = []
     private let maximumCount: Int
@@ -70,5 +75,59 @@ struct RedisKeyScanAccumulator {
             keys: uniqueKeys.sorted(),
             isTruncated: hasMoreCursor || discardedUniqueKey
         )
+    }
+}
+
+enum RedisKeyScanLoop {
+    static func run(
+        maximumCount: Int,
+        pageBudget: Int,
+        fetchPage: @Sendable (String) async throws -> RedisKeyScanPage?
+    ) async throws -> RedisKeyScanResult {
+        precondition(pageBudget > 0)
+
+        var cursor = "0"
+        var scannedPageCount = 0
+        var accumulator = RedisKeyScanAccumulator(maximumCount: maximumCount)
+
+        while true {
+            try Task.checkCancellation()
+            let page = try await fetchPage(cursor)
+            try Task.checkCancellation()
+
+            guard let page,
+                  let nextCursor = page.cursor,
+                  let cursorValue = UInt64(nextCursor),
+                  let keys = page.keys else {
+                throw GridexError.queryExecutionFailed("Malformed SCAN response")
+            }
+
+            accumulator.append(keys)
+            scannedPageCount += 1
+
+            let hasMoreCursor = cursorValue != 0
+            if !hasMoreCursor || accumulator.isFull || scannedPageCount >= pageBudget {
+                return accumulator.result(hasMoreCursor: hasMoreCursor)
+            }
+
+            cursor = nextCursor
+        }
+    }
+}
+
+struct RedisDatabaseSelectionState: Sendable, Equatable {
+    private(set) var currentDatabase: Int
+
+    init(initialDatabase: Int) {
+        currentDatabase = initialDatabase
+    }
+
+    mutating func recordSuccessfulSelect(arguments: [String]) {
+        guard arguments.count == 1,
+              let selectedDatabase = Int(arguments[0]),
+              selectedDatabase >= 0 else {
+            return
+        }
+        currentDatabase = selectedDatabase
     }
 }
