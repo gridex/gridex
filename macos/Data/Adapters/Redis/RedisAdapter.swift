@@ -101,7 +101,7 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
     }
 
     /// Parse a space-separated Redis command string (respecting quoted strings).
-    private func parseCommand(_ raw: String) -> [String] {
+    static func tokenizeCommand(_ raw: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inQuote: Character?
@@ -129,7 +129,7 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
 
     func executeRaw(sql: String) async throws -> QueryResult {
         let start = CFAbsoluteTimeGetCurrent()
-        let tokens = parseCommand(sql.trimmingCharacters(in: .whitespacesAndNewlines))
+        let tokens = Self.tokenizeCommand(sql.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let keyword = tokens.first?.uppercased() else {
             throw GridexError.queryExecutionFailed("Empty command")
         }

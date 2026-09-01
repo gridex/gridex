@@ -870,14 +870,16 @@ final class AppState: ObservableObject {
     }
 
     static func redisDatabaseNameSelected(by statement: String) -> String? {
-        let components = statement.split(whereSeparator: { $0.isWhitespace })
-        guard components.count == 2,
-              components[0].lowercased() == "select",
-              !components[1].isEmpty,
-              components[1].unicodeScalars.allSatisfy({
+        let tokens = RedisAdapter.tokenizeCommand(
+            statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard tokens.count == 2,
+              tokens[0].lowercased() == "select",
+              !tokens[1].isEmpty,
+              tokens[1].unicodeScalars.allSatisfy({
                   $0.value >= 48 && $0.value <= 57
               }),
-              let index = Int(components[1]) else { return nil }
+              let index = Int(tokens[1]) else { return nil }
         return "db\(index)"
     }
 
