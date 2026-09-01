@@ -182,9 +182,11 @@ struct QueryEditorView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .executeQuery)) { _ in
+            guard appState.activeTabId == tabId else { return }
             executeQuery()
         }
         .onReceive(NotificationCenter.default.publisher(for: .explainQuery)) { _ in
+            guard appState.activeTabId == tabId else { return }
             explainQuery()
         }
         .onAppear {
@@ -232,7 +234,20 @@ struct QueryEditorView: View {
     }
 
     private func executeQuery() {
-        guard let adapter = appState.activeAdapter else { return }
+        guard appState.activeTabId == tabId,
+              !isExecuting,
+              let adapter = appState.activeAdapter,
+              let tab = appState.tabs.first(where: { $0.id == tabId }) else { return }
+        let redisContext = tab.redisContext
+        if redisContext == nil, adapter.databaseType == .redis {
+            errorMessage = "Open a Redis query from the current database before running commands."
+            return
+        }
+        if let redisContext, appState.activeRedisAdapter(for: redisContext) == nil {
+            errorMessage = "This Redis query belongs to another connection or database."
+            return
+        }
+        let databaseType: DatabaseType = redisContext == nil ? adapter.databaseType : .redis
 
         // A regular Run wipes any previous EXPLAIN output so the data grid
         // can take over the results pane again.
@@ -244,7 +259,7 @@ struct QueryEditorView: View {
         let fullText = sqlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fullText.isEmpty else { return }
 
-        let batches = splitIntoBatches(fullText, databaseType: adapter.databaseType)
+        let batches = splitIntoBatches(fullText, databaseType: databaseType)
 
         // If only one statement, use the cursor-aware behavior (backwards compat)
         let toRun: [String]
@@ -260,13 +275,7 @@ struct QueryEditorView: View {
         errorMessage = nil
         statusMessage = nil
 
-        if adapter.databaseType == .redis {
-            guard let redisContext = appState.tabs.first(where: { $0.id == tabId })?.redisContext,
-                  appState.activeRedisAdapter(for: redisContext) != nil else {
-                errorMessage = "This Redis query belongs to another connection or database."
-                isExecuting = false
-                return
-            }
+        if let redisContext {
             Task {
                 await executeRedisStatements(toRun, from: redisContext)
             }
@@ -489,7 +498,11 @@ struct QueryEditorView: View {
     }
 
     private func explainQuery() {
-        guard let adapter = appState.activeAdapter else { return }
+        guard appState.activeTabId == tabId,
+              !isExecuting,
+              let adapter = appState.activeAdapter,
+              appState.tabs.first(where: { $0.id == tabId })?.redisContext == nil,
+              adapter.databaseType != .redis else { return }
         let sql = statementToRun()
         guard !sql.isEmpty else { return }
 

@@ -705,12 +705,25 @@ final class AppState: ObservableObject {
         _ statement: String,
         execute: (RedisAdapter, String) async throws -> QueryResult
     ) async -> Result<QueryResult, Error>? {
+        guard let expectedContext = currentRedisContext else { return nil }
+        return await performRedisCLIStatement(
+            statement,
+            expectedContext: expectedContext,
+            execute: execute
+        )
+    }
+
+    private func performRedisCLIStatement(
+        _ statement: String,
+        expectedContext: RedisTabContext,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> Result<QueryResult, Error>? {
         let command = statement.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return nil }
+        guard currentRedisContext == expectedContext else { return nil }
 
         guard let databaseName = Self.redisDatabaseNameSelected(by: command) else {
-            guard let context = currentRedisContext else { return nil }
-            return await performRedisOperation(for: context) { adapter in
+            return await performRedisOperation(for: expectedContext) { adapter in
                 try await execute(adapter, command)
             }
         }
@@ -791,11 +804,21 @@ final class AppState: ObservableObject {
                 return Optional<[RedisCLIStatementExecution]>.none
             }
 
+            var expectedContext = context
             var executions: [RedisCLIStatementExecution] = []
             for command in commands {
+                guard currentRedisContext == expectedContext else { return nil }
                 let start = Date()
-                guard let result = await performRedisCLIStatement(command, execute: execute) else {
+                guard let result = await performRedisCLIStatement(
+                    command,
+                    expectedContext: expectedContext,
+                    execute: execute
+                ) else {
                     return nil
+                }
+                if Self.redisDatabaseNameSelected(by: command) != nil {
+                    guard let nextContext = currentRedisContext else { return nil }
+                    expectedContext = nextContext
                 }
                 executions.append(
                     RedisCLIStatementExecution(
