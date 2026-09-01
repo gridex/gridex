@@ -120,6 +120,12 @@ final class AppState: ObservableObject {
         let databaseSize: Int?
     }
 
+    struct RedisCLIStatementExecution {
+        let statement: String
+        let result: Result<QueryResult, Error>
+        let duration: TimeInterval
+    }
+
     private(set) var redisSessionID: UUID?
     private(set) var redisDatabaseRevision: UInt64 = 0
 
@@ -713,9 +719,12 @@ final class AppState: ObservableObject {
 
             do {
                 let result = try await execute(adapter, command)
+                let outcome: RedisDatabaseTransitionOutcome = Self.redisSelectSucceeded(in: result)
+                    ? .success(databaseName: databaseName)
+                    : .failure
                 let ownsPublication = finishRedisDatabaseTransition(
                     token,
-                    outcome: .success(databaseName: databaseName)
+                    outcome: outcome
                 )
                 guard ownsPublication, !Task.isCancelled else { return nil }
                 return Result<QueryResult, Error>.success(result)
@@ -738,6 +747,94 @@ final class AppState: ObservableObject {
         }
     }
 
+    func performRedisCLIStatements(
+        _ statements: [String],
+        from context: RedisTabContext
+    ) async -> [RedisCLIStatementExecution]? {
+        await performRedisCLIStatements(statements, from: context) { adapter, command in
+            try await adapter.executeRaw(sql: command)
+        }
+    }
+
+    func performRedisCLIStatements(
+        _ statements: [String],
+        from context: RedisTabContext,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> [RedisCLIStatementExecution]? {
+        let commands = statements
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !commands.isEmpty else { return [] }
+
+        if !commands.contains(where: { Self.redisDatabaseNameSelected(by: $0) != nil }) {
+            let ownedResult = await performRedisOperation(for: context) { adapter in
+                await Self.executeRedisCLICommands(
+                    commands,
+                    using: adapter,
+                    execute: execute
+                )
+            }
+            guard case .success(let executions)? = ownedResult else { return nil }
+            return executions
+        }
+
+        let leaseRun = await withRedisOperationLease {
+            guard currentRedisContext == context, !Task.isCancelled else {
+                return Optional<[RedisCLIStatementExecution]>.none
+            }
+
+            var executions: [RedisCLIStatementExecution] = []
+            for command in commands {
+                let start = Date()
+                guard let result = await performRedisCLIStatement(command, execute: execute) else {
+                    return nil
+                }
+                executions.append(
+                    RedisCLIStatementExecution(
+                        statement: command,
+                        result: result,
+                        duration: Date().timeIntervalSince(start)
+                    )
+                )
+                if case .failure = result { break }
+            }
+            return executions
+        }
+
+        switch leaseRun {
+        case .completed(let executions):
+            return executions
+        case .cancelled:
+            return nil
+        }
+    }
+
+    private static func executeRedisCLICommands(
+        _ commands: [String],
+        using adapter: RedisAdapter,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> [RedisCLIStatementExecution] {
+        var executions: [RedisCLIStatementExecution] = []
+        for command in commands {
+            let start = Date()
+            let result: Result<QueryResult, Error>
+            do {
+                result = .success(try await execute(adapter, command))
+            } catch {
+                result = .failure(error)
+            }
+            executions.append(
+                RedisCLIStatementExecution(
+                    statement: command,
+                    result: result,
+                    duration: Date().timeIntervalSince(start)
+                )
+            )
+            if case .failure = result { break }
+        }
+        return executions
+    }
+
     static func redisDatabaseNameSelected(by statement: String) -> String? {
         let components = statement.split(whereSeparator: { $0.isWhitespace })
         guard components.count == 2,
@@ -748,6 +845,15 @@ final class AppState: ObservableObject {
               }),
               let index = Int(components[1]) else { return nil }
         return "db\(index)"
+    }
+
+    private static func redisSelectSucceeded(in result: QueryResult) -> Bool {
+        guard result.columns.count == 1,
+              result.columns[0].name.caseInsensitiveCompare("result") == .orderedSame,
+              result.rows.count == 1,
+              result.rows[0].count == 1,
+              case .string(let value) = result.rows[0][0] else { return false }
+        return value.caseInsensitiveCompare("OK") == .orderedSame
     }
 
     @discardableResult
@@ -1136,11 +1242,30 @@ final class AppState: ObservableObject {
     }
 
     func openNewQueryTab() {
+        if activeAdapter is RedisAdapter, currentRedisContext == nil { return }
+
         let number = tabs.filter { $0.type == .queryEditor }.count + 1
-        let tab = ContentTab(id: UUID(), type: .queryEditor, title: "Query \(number)", tableName: nil, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .queryEditor,
+            title: "Query \(number)",
+            tableName: nil,
+            schema: nil,
+            databaseName: currentDatabaseName,
+            redisContext: currentRedisContext
+        )
         tabs.append(tab)
         activeTabId = tab.id
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
+    }
+
+    func rebindRedisQueryTab(id: UUID, to context: RedisTabContext) {
+        guard let index = tabs.firstIndex(where: {
+            $0.id == id && $0.type == .queryEditor && $0.redisContext != nil
+        }) else { return }
+        tabs[index].databaseName = context.databaseName
+        tabs[index].redisContext = context
+        ensureTabGroup(for: context.databaseName)
     }
 
     func closeTab(id: UUID) {

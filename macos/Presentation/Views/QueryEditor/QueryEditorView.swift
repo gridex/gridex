@@ -260,6 +260,19 @@ struct QueryEditorView: View {
         errorMessage = nil
         statusMessage = nil
 
+        if adapter.databaseType == .redis {
+            guard let redisContext = appState.tabs.first(where: { $0.id == tabId })?.redisContext,
+                  appState.activeRedisAdapter(for: redisContext) != nil else {
+                errorMessage = "This Redis query belongs to another connection or database."
+                isExecuting = false
+                return
+            }
+            Task {
+                await executeRedisStatements(toRun, from: redisContext)
+            }
+            return
+        }
+
         // For MSSQL multi-batch scripts, use a dedicated connection so that
         // USE statements persist across batches.
         let isMultiBatchMSSQL = adapter.databaseType == .mssql && toRun.count > 1
@@ -281,16 +294,7 @@ struct QueryEditorView: View {
             for stmt in toRun {
                 let start = Date()
                 do {
-                    let result: QueryResult
-                    if adapter.databaseType == .redis {
-                        guard let ownedResult = await appState.performRedisCLIStatement(stmt) else {
-                            isExecuting = false
-                            return
-                        }
-                        result = try ownedResult.get()
-                    } else {
-                        result = try await adapter.executeRaw(sql: stmt)
-                    }
+                    let result = try await adapter.executeRaw(sql: stmt)
                     let duration = Date().timeIntervalSince(start)
                     appState.logQuery(sql: stmt, duration: duration)
                     appState.recordQueryHistory(sql: stmt, duration: duration, rowCount: result.rowCount)
@@ -346,6 +350,68 @@ struct QueryEditorView: View {
             appState.refreshSidebar()
             isExecuting = false
         }
+    }
+
+    private func executeRedisStatements(
+        _ statements: [String],
+        from context: AppState.RedisTabContext
+    ) async {
+        let overallStart = Date()
+        guard let executions = await appState.performRedisCLIStatements(
+            statements,
+            from: context
+        ) else {
+            isExecuting = false
+            return
+        }
+
+        let containsDatabaseSelection = statements.contains {
+            AppState.redisDatabaseNameSelected(by: $0) != nil
+        }
+        if containsDatabaseSelection, let currentContext = appState.currentRedisContext {
+            appState.rebindRedisQueryTab(id: tabId, to: currentContext)
+        }
+
+        var lastResult: QueryResult?
+        var totalRowsAffected = 0
+        for execution in executions {
+            switch execution.result {
+            case .success(let result):
+                appState.logQuery(sql: execution.statement, duration: execution.duration)
+                appState.recordQueryHistory(
+                    sql: execution.statement,
+                    duration: execution.duration,
+                    rowCount: result.rowCount
+                )
+                if !result.columns.isEmpty {
+                    lastResult = result
+                }
+                totalRowsAffected += result.rowsAffected
+            case .failure(let error):
+                appState.logQuery(sql: execution.statement, duration: execution.duration)
+                appState.recordQueryHistory(
+                    sql: execution.statement,
+                    duration: execution.duration,
+                    error: error.localizedDescription
+                )
+                errorMessage = error.localizedDescription
+                appState.refreshSidebar()
+                isExecuting = false
+                return
+            }
+        }
+
+        if let result = lastResult {
+            applyResult(result)
+            appState.statusRowCount = result.rowCount
+            appState.statusQueryTime = result.executionTime
+        } else if statements.count > 1 {
+            let totalDuration = Date().timeIntervalSince(overallStart)
+            statusMessage = "\(statements.count) statement(s) executed · \(totalRowsAffected) row(s) affected · \(String(format: "%.2fs", totalDuration))"
+        }
+
+        appState.refreshSidebar()
+        isExecuting = false
     }
 
     /// Split a SQL script into individual statements/batches. SQL Server uses

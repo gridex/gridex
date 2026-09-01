@@ -1237,7 +1237,15 @@ struct WorkspaceView: View {
                 )
             }
         case .queryEditor:
-            QueryEditorView(tabId: tab.id)
+            if let context = tab.redisContext {
+                if appState.activeRedisAdapter(for: context) != nil {
+                    QueryEditorView(tabId: tab.id)
+                } else {
+                    redisContextMismatchView
+                }
+            } else {
+                QueryEditorView(tabId: tab.id)
+            }
         case .tableStructure:
             if let tableName = tab.tableName {
                 TableStructureView(tableName: tableName, schema: tab.schema)
