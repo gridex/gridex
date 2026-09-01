@@ -1017,6 +1017,62 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "GET SELECT 1"))
     }
 
+    func test_redisOperationalTabsAreScopedToExactDatabaseContext() throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+
+        state.openRedisServerInfo()
+        let db0Info = try XCTUnwrap(state.tabs.last)
+        state.openRedisSlowLog()
+        let db0SlowLog = try XCTUnwrap(state.tabs.last)
+
+        state.currentDatabaseName = "db1"
+        state.openRedisServerInfo()
+        let db1Info = try XCTUnwrap(state.tabs.last)
+        state.openRedisSlowLog()
+        let db1SlowLog = try XCTUnwrap(state.tabs.last)
+
+        XCTAssertEqual(db0Info.redisContext?.databaseName, "db0")
+        XCTAssertEqual(db0SlowLog.redisContext?.databaseName, "db0")
+        XCTAssertEqual(db1Info.redisContext?.databaseName, "db1")
+        XCTAssertEqual(db1SlowLog.redisContext?.databaseName, "db1")
+        XCTAssertNotEqual(db0Info.id, db1Info.id)
+        XCTAssertNotEqual(db0SlowLog.id, db1SlowLog.id)
+        XCTAssertEqual(state.tabs.count, 4)
+    }
+
+    func test_redisMutationPromptsCaptureAndClearExactContext() throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db3"
+        )
+        let expected = try XCTUnwrap(state.currentRedisContext)
+
+        state.presentRedisAddKey()
+        state.presentRedisFlushConfirmation()
+
+        XCTAssertTrue(state.showRedisAddKey)
+        XCTAssertTrue(state.showFlushDBConfirm)
+        XCTAssertEqual(state.redisAddKeyContext, expected)
+        XCTAssertEqual(state.redisFlushContext, expected)
+
+        state.dismissRedisAddKey()
+        state.dismissRedisFlushConfirmation()
+
+        XCTAssertFalse(state.showRedisAddKey)
+        XCTAssertFalse(state.showFlushDBConfirm)
+        XCTAssertNil(state.redisAddKeyContext)
+        XCTAssertNil(state.redisFlushContext)
+    }
+
     private func establishRedisContext(
         on state: AppState,
         adapter: RedisAdapter,
