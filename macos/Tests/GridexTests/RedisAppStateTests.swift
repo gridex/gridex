@@ -983,6 +983,30 @@ final class RedisAppStateTests: XCTestCase {
         XCTAssertEqual(state.currentRedisContext?.databaseName, "db0")
     }
 
+    func test_redisCLIQuotedSelectPublishesTheAdapterTokenizedDatabase() async throws {
+        let state = AppState()
+        establishRedisContext(
+            on: state,
+            adapter: RedisAdapter(),
+            connectionID: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            databaseName: "db0"
+        )
+        let oldRevision = try XCTUnwrap(state.currentRedisContext).databaseRevision
+        var receivedStatement: String?
+
+        let result = await state.performRedisCLIStatement("SELECT \"4\"") { _, statement in
+            receivedStatement = statement
+            return self.redisCLIResult(value: "OK")
+        }
+
+        guard case .success? = result else {
+            return XCTFail("Expected quoted SELECT to complete as an owned transition")
+        }
+        XCTAssertEqual(receivedStatement, "SELECT \"4\"")
+        XCTAssertEqual(state.currentDatabaseName, "db4")
+        XCTAssertEqual(state.redisDatabaseRevision, oldRevision + 1)
+    }
+
     func test_redisCLINonSelectSerializesWithTransitionAndDiscardsStaleResult() async throws {
         let state = AppState()
         establishRedisContext(
@@ -1037,11 +1061,16 @@ final class RedisAppStateTests: XCTestCase {
     func test_redisCLISelectParserAcceptsOnlyOneNonnegativeDatabaseIndex() {
         XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SELECT 5"), "db5")
         XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "  select 005  "), "db5")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SELECT \"6\""), "db6")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "'SELECT' 7"), "db7")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SEL\"ECT\" 8"), "db8")
+        XCTAssertEqual(AppState.redisDatabaseNameSelected(by: "SELECT '9"), "db9")
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT -1"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT five"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT 1 extra"))
         XCTAssertNil(AppState.redisDatabaseNameSelected(by: "GET SELECT 1"))
+        XCTAssertNil(AppState.redisDatabaseNameSelected(by: "SELECT\t1"))
     }
 
     func test_redisQueryTabsCaptureTheirExactDatabaseContext() throws {
