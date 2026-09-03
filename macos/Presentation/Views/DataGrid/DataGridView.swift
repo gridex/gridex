@@ -16,6 +16,7 @@ struct DataGridView: View {
     let tableName: String
     let schema: String?
     let tabId: UUID
+    let redisContext: AppState.RedisTabContext?
     var initialViewMode: String?
 
     @EnvironmentObject private var appState: AppState
@@ -27,6 +28,7 @@ struct DataGridView: View {
         DataGridContentView(
             tableName: tableName,
             schema: schema,
+            redisContext: redisContext,
             viewModel: viewModel,
             showDiscardWarning: $showDiscardWarning,
             viewMode: $viewMode
@@ -47,6 +49,7 @@ struct DataGridView: View {
 private struct DataGridContentView: View {
     let tableName: String
     let schema: String?
+    let redisContext: AppState.RedisTabContext?
     @ObservedObject var viewModel: DataGridViewState
     @Binding var showDiscardWarning: Bool
     @Binding var viewMode: DataGridViewMode
@@ -61,7 +64,7 @@ private struct DataGridContentView: View {
 
                 // Filter bar — Redis uses pattern-based filter, SQL uses column filter
                 if viewModel.showFilterBar {
-                    if appState.activeConfig?.databaseType == .redis {
+                    if viewModel.redisContext != nil {
                         RedisFilterBar(
                             initialFilter: viewModel.activeFilter,
                             onApply: { filter in
@@ -156,6 +159,10 @@ private struct DataGridContentView: View {
         }
         .task {
             viewModel.appState = appState
+            if let redisContext {
+                viewModel.bindRedisContext(redisContext)
+            }
+            appState.statusRowCount = viewModel.statusRowCount
             // Skip reload if already loaded (cached from previous tab switch)
             guard viewModel.columns.isEmpty else { return }
             await viewModel.load(
@@ -195,18 +202,19 @@ private struct DataGridContentView: View {
         }
         // Cmd+S: commit changes
         .onReceive(NotificationCenter.default.publisher(for: .commitChanges)) { _ in
-            if viewModel.hasPendingChanges {
+            if viewModel.allowsMutations && viewModel.hasPendingChanges {
                 viewModel.prepareCommit()
             }
         }
         // Delete selected rows
         .onReceive(NotificationCenter.default.publisher(for: .deleteSelectedRows)) { _ in
+            guard viewModel.allowsMutations else { return }
             viewModel.deleteSelectedRows()
         }
         // Cmd+R: reload (with warning if pending changes). Re-introspects the
         // schema so external column changes (ADD/DROP COLUMN) take effect.
         .onReceive(NotificationCenter.default.publisher(for: .reloadData)) { _ in
-            if viewModel.hasPendingChanges {
+            if viewModel.allowsMutations && viewModel.hasPendingChanges {
                 showDiscardWarning = true
             } else {
                 Task { await viewModel.reloadAfterStructureChange() }
@@ -231,8 +239,12 @@ private struct DataGridContentView: View {
             let value = idx < row.count ? row[idx].displayString : ""
             return (column: col.name, value: value)
         }
+        guard viewModel.allowsMutations else {
+            appState.onDetailFieldEdit = nil
+            return
+        }
         appState.onDetailFieldEdit = { [weak viewModel] colIdx, newValue in
-            guard let viewModel else { return }
+            guard let viewModel, viewModel.allowsMutations else { return }
             viewModel.commitCellEdit(rowIndex: rowIndex, colIdx: colIdx, newText: newValue)
             // Update the details panel to reflect the edit
             if colIdx < viewModel.columns.count {
@@ -358,6 +370,21 @@ struct QueryLogEntry: Identifiable {
 
 @MainActor
 final class DataGridViewState: ObservableObject {
+    struct RowFetchRequest {
+        let table: String
+        let schema: String?
+        let columns: [String]?
+        let filter: FilterExpression?
+        let orderBy: [QuerySortDescriptor]?
+        let limit: Int
+        let offset: Int
+    }
+
+    typealias RedisRowFetcher = (
+        RedisAdapter,
+        RowFetchRequest
+    ) async throws -> QueryResult
+
     @Published var columns: [ColumnHeader] = []
     @Published var rows: [[RowValue]] = []
     @Published var totalRows: Int = 0
@@ -399,6 +426,24 @@ final class DataGridViewState: ObservableObject {
     let changeTracker = DefaultChangeTracker()
     let pageSize = 300
 
+    private let redisRowFetcher: RedisRowFetcher
+    private let redisRequestCoordinator = RedisRequestCoordinator()
+    private(set) var redisContext: AppState.RedisTabContext?
+
+    init(redisRowFetcher: @escaping RedisRowFetcher = { adapter, request in
+        try await adapter.fetchRows(
+            table: request.table,
+            schema: request.schema,
+            columns: request.columns,
+            where: request.filter,
+            orderBy: request.orderBy,
+            limit: request.limit,
+            offset: request.offset
+        )
+    }) {
+        self.redisRowFetcher = redisRowFetcher
+    }
+
     /// Pre-computed display strings for the current page — avoids repeated
     /// `displayString` computation during cell rendering and scrolling.
     var displayCache: [[String]] = []
@@ -414,7 +459,12 @@ final class DataGridViewState: ObservableObject {
         displayCache[row][col] = rows[row][col].displayString
     }
 
-    var statusRowCount: Int? { totalRows > 0 ? totalRows : nil }
+    var statusRowCount: Int? {
+        guard redisContext == nil else { return nil }
+        return totalRows > 0 ? totalRows : nil
+    }
+
+    var allowsMutations: Bool { redisContext == nil }
 
     private(set) var adapter: (any DatabaseAdapter)?
     private(set) var tableName: String = ""
@@ -482,6 +532,81 @@ final class DataGridViewState: ObservableObject {
         metadataCache.removeAll()
         metadataCacheGenerations.removeAll()
         metadataPublicationEpochs.removeAll()
+    }
+
+    func bindRedisContext(_ context: AppState.RedisTabContext) {
+        // Redis's flat key grid never owns an editable Details callback. Clear
+        // any SQL grid selection even when this cached grid is rebound to the
+        // same context (for example when reopening its existing tab).
+        appState?.selectedRowDetails = nil
+        appState?.onDetailFieldEdit = nil
+
+        guard redisContext != context else { return }
+
+        redisRequestCoordinator.invalidate()
+        redisContext = context
+        adapter = nil
+        columns = []
+        rows = []
+        totalRows = 0
+        currentPage = 0
+        isLoading = false
+        executionTime = 0
+        errorMessage = nil
+        tableDescription = nil
+        primaryKeyColumns = []
+        foreignKeyColumns = [:]
+        foreignKeyRefColumns = [:]
+        columnDefaults = [:]
+        columnEnumValues = [:]
+        selectedRows = []
+        editingCell = nil
+        insertedRowIndices = []
+        columnWidths = [:]
+        displayCache = []
+        changeTracker.discardAll()
+        commitSQL = []
+        commitError = nil
+        showCommitPreview = false
+        isCommitting = false
+    }
+
+    func performRedisLoad(
+        in context: AppState.RedisTabContext,
+        page: Int = 0,
+        execute: () async -> Result<QueryResult, Error>?
+    ) async {
+        guard redisContext == context else { return }
+
+        isLoading = true
+        totalRows = 0
+        errorMessage = nil
+
+        switch await redisRequestCoordinator.perform(for: context, execute: execute) {
+        case .current(.success(let result)):
+            guard redisContext == context else { return }
+            columns = result.columns
+            rows = result.rows
+            rebuildDisplayCache()
+            totalRows = 0
+            currentPage = page
+            executionTime = result.executionTime
+            errorMessage = nil
+            computeColumnWidths(columns: result.columns, rows: result.rows)
+            isLoading = false
+        case .current(.failure(let error)):
+            guard redisContext == context else { return }
+            totalRows = 0
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            isLoading = false
+        case .stale:
+            guard redisContext == context else { return }
+            totalRows = 0
+            isLoading = false
+        case .superseded:
+            break
+        }
     }
 
     struct CellID: Equatable {
@@ -580,6 +705,33 @@ final class DataGridViewState: ObservableObject {
         metadataPublicationEpoch: Int? = nil
     ) async {
         guard let adapter else { return }
+
+        if redisContext != nil || adapter.databaseType == .redis {
+            self.adapter = adapter
+            self.tableName = tableName
+            self.schema = schema
+            guard let redisContext, let appState else {
+                totalRows = 0
+                isLoading = false
+                return
+            }
+            let request = RowFetchRequest(
+                table: tableName,
+                schema: schema,
+                columns: nil,
+                filter: activeFilter,
+                orderBy: nil,
+                limit: pageSize,
+                offset: 0
+            )
+            await performRedisLoad(in: redisContext, page: 0) {
+                await appState.performRedisOperation(for: redisContext) { redis in
+                    try await self.redisRowFetcher(redis, request)
+                }
+            }
+            return
+        }
+
         let requestGeneration: Int
         if let generation {
             requestGeneration = generation
@@ -775,6 +927,7 @@ final class DataGridViewState: ObservableObject {
     }
 
     func reloadStructure() async {
+        guard redisContext == nil else { return }
         guard let adapter else { return }
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
         let requestCacheGeneration = Self.metadataCacheGenerations[requestCacheKey, default: 0]
@@ -795,6 +948,10 @@ final class DataGridViewState: ObservableObject {
     /// Invalidate cache and reload everything (after structure changes like ADD COLUMN)
     func reloadAfterStructureChange() async {
         guard let adapter else { return }
+        if redisContext != nil || adapter.databaseType == .redis {
+            await loadPage(0)
+            return
+        }
         let requestTableName = tableName
         let requestSchema = schema
         let previousPrimaryKeyColumns = primaryKeyColumns
@@ -890,6 +1047,39 @@ final class DataGridViewState: ObservableObject {
 
     func loadPage(_ page: Int) async {
         guard let adapter else { return }
+
+        if redisContext != nil || adapter.databaseType == .redis {
+            guard let redisContext, let appState else {
+                totalRows = 0
+                isLoading = false
+                return
+            }
+            let offset = page * pageSize
+            let sort: [QuerySortDescriptor]? = if let col = sortColumn {
+                [QuerySortDescriptor(
+                    column: col,
+                    direction: sortAscending ? .ascending : .descending
+                )]
+            } else {
+                nil
+            }
+            let request = RowFetchRequest(
+                table: tableName,
+                schema: schema,
+                columns: nil,
+                filter: activeFilter,
+                orderBy: sort,
+                limit: pageSize,
+                offset: offset
+            )
+            await performRedisLoad(in: redisContext, page: page) {
+                await appState.performRedisOperation(for: redisContext) { redis in
+                    try await self.redisRowFetcher(redis, request)
+                }
+            }
+            return
+        }
+
         let requestGeneration = nextLoadGeneration()
         latestPageRequest = PageRequest(generation: requestGeneration, page: page)
         let requestCacheKey = metadataCacheKey(adapter: adapter, tableName: tableName, schema: schema)
@@ -1056,6 +1246,7 @@ final class DataGridViewState: ObservableObject {
     // MARK: - Inline Editing
 
     func commitCellEdit(rowIndex: Int, colIdx: Int, newText: String) {
+        guard allowsMutations else { return }
         guard colIdx < columns.count, rowIndex < rows.count else { return }
         let col = columns[colIdx]
         let oldValue = rows[rowIndex][colIdx]
@@ -1074,6 +1265,7 @@ final class DataGridViewState: ObservableObject {
     }
 
     func commitDateEdit(rowIndex: Int, colIdx: Int, newValue: RowValue) {
+        guard allowsMutations else { return }
         guard colIdx < columns.count, rowIndex < rows.count else { return }
         let col = columns[colIdx]
         let oldValue = rows[rowIndex][colIdx]
@@ -1198,10 +1390,11 @@ final class DataGridViewState: ObservableObject {
     }
 
     var hasPendingChanges: Bool {
-        changeTracker.hasChanges || !insertedRowIndices.isEmpty
+        allowsMutations && (changeTracker.hasChanges || !insertedRowIndices.isEmpty)
     }
 
     func discardAllChanges() {
+        guard allowsMutations else { return }
         // Remove inserted rows from end (reverse order to preserve indices)
         for rowIndex in insertedRowIndices.sorted().reversed() {
             if rowIndex < rows.count {
@@ -1219,6 +1412,7 @@ final class DataGridViewState: ObservableObject {
     // MARK: - Add New Row
 
     func addNewRow() {
+        guard allowsMutations else { return }
         let newRow: [RowValue] = columns.map { col in
             if let def = defaultValueFor(column: col) {
                 return def
@@ -1239,6 +1433,7 @@ final class DataGridViewState: ObservableObject {
     }
 
     func commitNewRowEdit(rowIndex: Int, colIdx: Int, newText: String) {
+        guard allowsMutations else { return }
         guard colIdx < columns.count, rowIndex < rows.count else { return }
         // Always use column dataType for inserted rows to ensure correct binding types
         let newValue = parseRowValue(from: newText, columnType: columns[colIdx].dataType)
@@ -1261,6 +1456,7 @@ final class DataGridViewState: ObservableObject {
     // MARK: - Delete Rows
 
     func deleteSelectedRows() {
+        guard allowsMutations else { return }
         guard !selectedRows.isEmpty else { return }
         for rowIndex in selectedRows.sorted().reversed() {
             guard rowIndex < rows.count else { continue }
@@ -1273,6 +1469,7 @@ final class DataGridViewState: ObservableObject {
     }
 
     func undoDeleteRow(_ rowIndex: Int) {
+        guard allowsMutations else { return }
         let changes = changeTracker.pendingChanges
         if let idx = changes.firstIndex(where: { $0.row == rowIndex && $0.editType == .delete }) {
             changeTracker.discardChange(at: idx)
@@ -1283,6 +1480,7 @@ final class DataGridViewState: ObservableObject {
     // MARK: - Commit Flow
 
     func prepareCommit() {
+        guard allowsMutations else { return }
         guard let adapter else { return }
 
         // MongoDB: skip SQL generation and preview, commit directly
@@ -1311,6 +1509,7 @@ final class DataGridViewState: ObservableObject {
     }
 
     func executeCommit() async {
+        guard allowsMutations else { return }
         guard let adapter else { return }
         isCommitting = true
         commitError = nil
@@ -1352,6 +1551,7 @@ final class DataGridViewState: ObservableObject {
     /// MongoDB-specific commit: applies pending changes via insertRow/updateRow/deleteRow
     /// instead of generating SQL.
     private func executeCommitMongo(adapter: any DatabaseAdapter) async {
+        guard allowsMutations else { return }
         do {
             // Inserts (new rows)
             for rowIndex in insertedRowIndices.sorted() {
@@ -1639,7 +1839,7 @@ struct DataGridToolbar: View {
     var body: some View {
         HStack(spacing: 12) {
             // MongoDB: Insert document button
-            if isMongoDB {
+            if isMongoDB && viewModel.allowsMutations {
                 Button {
                     showInsertDocSheet = true
                 } label: {
@@ -1659,7 +1859,7 @@ struct DataGridToolbar: View {
             }
 
             // Pending changes indicator
-            if viewModel.hasPendingChanges {
+            if viewModel.allowsMutations && viewModel.hasPendingChanges {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(.orange)
@@ -1754,7 +1954,7 @@ struct BottomTabBar: View {
             // Left: Data / Structure tabs (Structure hidden for Redis)
             HStack(spacing: 0) {
                 tabButton("Data", mode: .data)
-                if appState.activeConfig?.databaseType != .redis {
+                if viewModel.redisContext == nil {
                     tabButton("Structure", mode: .structure)
                 }
             }
@@ -1765,27 +1965,8 @@ struct BottomTabBar: View {
             Spacer().frame(width: 8)
 
             if viewMode == .data {
-                // + Row / + Key button
-                if appState.activeConfig?.databaseType == .redis {
-                    Button {
-                        appState.showRedisAddKey = true
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 10, weight: .medium))
-                            Text("Key")
-                                .font(.system(size: 12))
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
-                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5))
-                    }
-                    .buttonStyle(.plain)
-                    .pointerCursor()
-                    .help("Add new Redis key")
-                } else {
+                // Redis's flat key grid is intentionally read-only.
+                if viewModel.allowsMutations {
                     Button {
                         viewModel.addNewRow()
                     } label: {
@@ -1805,7 +1986,7 @@ struct BottomTabBar: View {
                     .pointerCursor()
                     .help("Add new row")
                 }
-            } else if viewMode == .structure {
+            } else if viewMode == .structure && viewModel.allowsMutations {
                 // + Column / + Index buttons
                 Button { onAddColumn?() } label: {
                     HStack(spacing: 3) {
@@ -1854,7 +2035,7 @@ struct BottomTabBar: View {
             if viewMode == .data {
                 HStack(spacing: 8) {
                     // Pending changes
-                    if viewModel.hasPendingChanges {
+                    if viewModel.allowsMutations && viewModel.hasPendingChanges {
                         Text("\(viewModel.changeTracker.pendingChanges.count + viewModel.insertedRowIndices.count) pending")
                             .font(.system(size: 12))
                             .foregroundStyle(.orange)
@@ -1974,6 +2155,10 @@ struct BottomTabBar: View {
     private var pageText: String {
         guard !viewModel.rows.isEmpty else { return "No rows" }
         let start = viewModel.currentPage * viewModel.pageSize + 1
+        if viewModel.redisContext != nil {
+            let end = start + viewModel.rows.count - 1
+            return "\(start)–\(end) rows"
+        }
         let end = min(start + viewModel.rows.count - 1, viewModel.totalRows)
         return "\(start)–\(end) of \(viewModel.totalRows) rows"
     }
@@ -3960,11 +4145,12 @@ struct CommitPreviewSheet: View {
                     .keyboardShortcut(.cancelAction)
 
                 Button("Execute") {
+                    guard viewModel.allowsMutations else { return }
                     Task { await viewModel.executeCommit() }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(viewModel.isCommitting)
+                .disabled(viewModel.isCommitting || !viewModel.allowsMutations)
             }
             .padding()
         }

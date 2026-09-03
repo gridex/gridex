@@ -1,0 +1,503 @@
+// RedisKeyBrowserView.swift
+// Gridex
+//
+// Redis-specific sidebar browser backed by a names-only SCAN.
+
+import SwiftUI
+
+enum RedisKeyBrowserBehavior {
+    static func effectiveDelimiter(for delimiter: String) -> String {
+        delimiter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? ":"
+            : delimiter
+    }
+
+    static func shouldPublish(
+        capturedNonce: Int,
+        currentNonce: Int,
+        isCancelled: Bool
+    ) -> Bool {
+        !isCancelled && capturedNonce == currentNonce
+    }
+
+    static func openKeyAccessibilityLabel(for key: String) -> String {
+        "Open key \(key)"
+    }
+}
+
+typealias RedisKeyBrowserContext = AppState.RedisTabContext
+
+@MainActor
+final class RedisRequestCoordinator {
+    enum Completion<Value> {
+        case current(Result<Value, Error>)
+        case stale
+        case superseded
+    }
+
+    private var generation: UInt64 = 0
+
+    func perform<Value>(
+        for context: RedisKeyBrowserContext,
+        execute: () async -> Result<Value, Error>?
+    ) async -> Completion<Value> {
+        _ = context
+        generation &+= 1
+        let requestGeneration = generation
+        let result = await execute()
+
+        guard requestGeneration == generation else {
+            return .superseded
+        }
+        guard let result else {
+            return .stale
+        }
+        return .current(result)
+    }
+
+    func invalidate() {
+        generation &+= 1
+    }
+}
+
+struct RedisKeyBrowserContentState {
+    private var context: RedisKeyBrowserContext?
+    private var lastSuccessfulResult: RedisKeyScanResult?
+    private var errorMessage: String?
+
+    init() {}
+
+    mutating func beginLoading(in context: RedisKeyBrowserContext) {
+        if self.context != context {
+            lastSuccessfulResult = nil
+        }
+        self.context = context
+        errorMessage = nil
+    }
+
+    mutating func publishSuccess(
+        _ result: RedisKeyScanResult,
+        in context: RedisKeyBrowserContext
+    ) {
+        guard self.context == context else { return }
+        lastSuccessfulResult = result
+        errorMessage = nil
+    }
+
+    mutating func publishFailure(
+        _ message: String,
+        in context: RedisKeyBrowserContext
+    ) {
+        guard self.context == context else { return }
+        errorMessage = message
+    }
+
+    func visibleResult(in context: RedisKeyBrowserContext) -> RedisKeyScanResult? {
+        self.context == context ? lastSuccessfulResult : nil
+    }
+
+    func visibleErrorMessage(in context: RedisKeyBrowserContext) -> String? {
+        self.context == context ? errorMessage : nil
+    }
+}
+
+@MainActor
+final class RedisKeyBrowserViewState: ObservableObject {
+    @Published private(set) var isLoading = false
+
+    private var contentState = RedisKeyBrowserContentState()
+    private let coordinator = RedisRequestCoordinator()
+
+    func scan(
+        in context: RedisKeyBrowserContext,
+        isCurrent: () -> Bool = { true },
+        execute: () async -> Result<RedisKeyScanResult, Error>?
+    ) async {
+        contentState.beginLoading(in: context)
+        isLoading = true
+
+        let completion = await coordinator.perform(for: context) {
+            let result = await execute()
+            return isCurrent() ? result : nil
+        }
+
+        switch completion {
+        case .current(.success(let result)):
+            contentState.publishSuccess(result, in: context)
+            isLoading = false
+        case .current(.failure(let error)):
+            contentState.publishFailure(error.localizedDescription, in: context)
+            isLoading = false
+        case .stale:
+            isLoading = false
+        case .superseded:
+            break
+        }
+    }
+
+    func deactivate() {
+        coordinator.invalidate()
+        isLoading = false
+    }
+
+    func visibleResult(in context: RedisKeyBrowserContext) -> RedisKeyScanResult? {
+        contentState.visibleResult(in: context)
+    }
+
+    func visibleErrorMessage(in context: RedisKeyBrowserContext) -> String? {
+        contentState.visibleErrorMessage(in: context)
+    }
+}
+
+enum RedisKeyBrowserMode: String, CaseIterable, Identifiable {
+    case tree, flat
+
+    var id: String { rawValue }
+}
+
+struct RedisKeyBrowserView: View {
+    @EnvironmentObject private var appState: AppState
+    @AppStorage("redis.keyBrowser.delimiter") private var delimiter = ":"
+    @State private var mode: RedisKeyBrowserMode = .tree
+    @StateObject private var viewState = RedisKeyBrowserViewState()
+
+    private struct LoadRequest: Hashable {
+        let context: RedisKeyBrowserContext?
+        let refreshNonce: Int
+    }
+
+    private var activeContext: RedisKeyBrowserContext? {
+        appState.currentRedisContext
+    }
+
+    private var visibleResult: RedisKeyScanResult? {
+        guard let activeContext else { return nil }
+        return viewState.visibleResult(in: activeContext)
+    }
+
+    private var visibleErrorMessage: String? {
+        guard let activeContext else { return nil }
+        return viewState.visibleErrorMessage(in: activeContext)
+    }
+
+    private var effectiveDelimiter: String {
+        RedisKeyBrowserBehavior.effectiveDelimiter(for: delimiter)
+    }
+
+    private var namespaceNodes: [RedisKeyNamespaceNode] {
+        RedisKeyNamespaceTree.build(
+            keys: visibleResult?.keys ?? [],
+            delimiter: effectiveDelimiter
+        )
+    }
+
+    var body: some View {
+        let loadRequest = LoadRequest(
+            context: activeContext,
+            refreshNonce: appState.redisKeyBrowserRefreshNonce
+        )
+
+        return VStack(spacing: 0) {
+            toolbar
+            Divider()
+
+            if mode == .flat {
+                flatContent
+            } else {
+                treeContent
+            }
+        }
+        .onChange(of: mode) { _, newMode in
+            if newMode == .flat {
+                appState.openRedisFlatKeyList()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reloadData)) { _ in
+            appState.requestRedisKeyBrowserRefresh()
+        }
+        .task(id: loadRequest) {
+            guard let context = loadRequest.context else {
+                viewState.deactivate()
+                return
+            }
+            await scanKeys(
+                capturedNonce: loadRequest.refreshNonce,
+                context: context
+            )
+        }
+        .onDisappear { viewState.deactivate() }
+    }
+
+    private var toolbar: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Picker("Mode", selection: $mode) {
+                    ForEach(RedisKeyBrowserMode.allCases) { mode in
+                        Text(mode.rawValue.capitalized).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 118)
+
+                Spacer()
+
+                Menu {
+                    Button("Add Key…") {
+                        appState.presentRedisAddKey()
+                    }
+                    Divider()
+                    Button("Server Info") {
+                        appState.openRedisServerInfo()
+                    }
+                    Button("Slow Log") {
+                        appState.openRedisSlowLog()
+                    }
+                    Divider()
+                    Button("Flush Database…", role: .destructive) {
+                        appState.presentRedisFlushConfirmation()
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 11))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("Redis actions")
+                .help("Redis actions")
+
+                Button {
+                    appState.requestRedisKeyBrowserRefresh()
+                } label: {
+                    HStack(spacing: 4) {
+                        if viewState.isLoading {
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 12, height: 12)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 10))
+                                .frame(width: 12, height: 12)
+                        }
+                        Text("Refresh")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Refresh Redis keys")
+            }
+
+            Text("Delimiter: \(effectiveDelimiter)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var treeContent: some View {
+        if let result = visibleResult {
+            VStack(spacing: 0) {
+                if let errorMessage = visibleErrorMessage {
+                    errorBanner(errorMessage)
+                    Divider()
+                }
+
+                if result.keys.isEmpty {
+                    Text("No keys found")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 1) {
+                            ForEach(namespaceNodes) { node in
+                                RedisKeyNamespaceNodeView(node: node) { key in
+                                    appState.openRedisKeyDetail(key: key)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                    }
+                }
+
+                if result.isTruncated {
+                    Divider()
+                    Text("Showing the first 10,000 keys. Use Flat mode to filter with SCAN.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(8)
+                }
+            }
+        } else if let errorMessage = visibleErrorMessage {
+            errorView(errorMessage)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var flatContent: some View {
+        VStack(spacing: 8) {
+            Spacer()
+            Image(systemName: "list.bullet.rectangle")
+                .font(.system(size: 24))
+                .foregroundStyle(.secondary)
+            Text(appState.isRedisFlatKeyListOpen
+                 ? "The existing Keys tab is open."
+                 : "The Keys tab is closed.")
+                .font(.system(size: 12, weight: .medium))
+            Text(appState.isRedisFlatKeyListOpen
+                 ? "Use its SCAN filter to narrow the flat key list."
+                 : "Open it to use the SCAN filter for the flat key list.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(appState.isRedisFlatKeyListOpen ? "Show Keys Tab" : "Open Keys Tab") {
+                appState.openRedisFlatKeyList()
+            }
+            .controlSize(.small)
+            Button("Show Tree") { mode = .tree }
+                .controlSize(.small)
+            Spacer()
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func errorView(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+            Button("Retry") { appState.requestRedisKeyBrowserRefresh() }
+                .controlSize(.small)
+        }
+        .padding()
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer()
+            Button("Retry") { appState.requestRedisKeyBrowserRefresh() }
+                .controlSize(.mini)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+    }
+
+    @MainActor
+    private func scanKeys(
+        capturedNonce: Int,
+        context: RedisKeyBrowserContext
+    ) async {
+        await viewState.scan(
+            in: context,
+            isCurrent: {
+                RedisKeyBrowserBehavior.shouldPublish(
+                    capturedNonce: capturedNonce,
+                    currentNonce: appState.redisKeyBrowserRefreshNonce,
+                    isCancelled: Task.isCancelled
+                ) && activeContext == context
+            }
+        ) {
+            await appState.performRedisOperation(for: context) { redis in
+                try await redis.scanKeyNames()
+            }
+        }
+    }
+}
+
+private struct RedisKeyNamespaceNodeView: View {
+    let node: RedisKeyNamespaceNode
+    let openKey: (String) -> Void
+
+    var body: some View {
+        if node.children.isEmpty {
+            leafRow
+        } else {
+            DisclosureGroup {
+                ForEach(node.children) { child in
+                    RedisKeyNamespaceNodeView(node: child, openKey: openKey)
+                }
+            } label: {
+                namespaceRow
+            }
+        }
+    }
+
+    private var namespaceRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "folder")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text(RedisKeyNamespaceTree.displayLabel(for: node.segment))
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text("\(node.descendantKeyCount)")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            if let concreteKey = node.concreteKey {
+                Button {
+                    openKey(concreteKey)
+                } label: {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 9))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(
+                    RedisKeyBrowserBehavior.openKeyAccessibilityLabel(for: concreteKey)
+                ))
+                .help("Open key \(concreteKey)")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var leafRow: some View {
+        if let concreteKey = node.concreteKey {
+            Button {
+                openKey(concreteKey)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "key")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(RedisKeyNamespaceTree.displayLabel(for: node.segment))
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(
+                RedisKeyBrowserBehavior.openKeyAccessibilityLabel(for: concreteKey)
+            ))
+            .help("Open key \(concreteKey)")
+        } else {
+            Text(RedisKeyNamespaceTree.displayLabel(for: node.segment))
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.vertical, 3)
+        }
+    }
+}

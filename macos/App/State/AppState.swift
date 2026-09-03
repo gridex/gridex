@@ -64,7 +64,9 @@ final class AppState: ObservableObject {
     // MARK: - Connection State
 
     @Published var activeConnectionId: UUID?
-    @Published var activeAdapter: (any DatabaseAdapter)?
+    @Published var activeAdapter: (any DatabaseAdapter)? {
+        didSet { rotateRedisSession(for: activeAdapter) }
+    }
     @Published var activeConfig: ConnectionConfig?
     @Published var sidebarItems: [SidebarItem] = []
     @Published private(set) var sidebarSchemas: [String] = []
@@ -141,6 +143,89 @@ final class AppState: ObservableObject {
     @Published var redisDBSize: Int?
     @Published var showFlushDBConfirm = false
     @Published var showRedisAddKey = false
+    @Published private(set) var redisFlushContext: RedisTabContext?
+    @Published private(set) var redisAddKeyContext: RedisTabContext?
+    @Published private(set) var redisKeyBrowserRefreshNonce = 0
+
+    struct RedisSessionRevisionToken: Hashable, Sendable {
+        let connectionID: UUID
+        let sessionID: UUID
+        let databaseRevision: UInt64
+    }
+
+    struct RedisConnectionMetadataSnapshot: Sendable {
+        let databaseName: String
+        let availableDatabases: [String]
+        let databaseSize: Int?
+    }
+
+    struct RedisCLIStatementExecution {
+        let statement: String
+        let result: Result<QueryResult, Error>
+        let duration: TimeInterval
+        let databaseName: String
+    }
+
+    private(set) var redisSessionID: UUID?
+    private(set) var redisDatabaseRevision: UInt64 = 0
+
+    private enum RedisDatabaseTransitionOutcome {
+        case success(databaseName: String)
+        case failure
+    }
+
+    private struct RedisDatabaseTransitionBatch {
+        let connectionID: UUID
+        let sessionID: UUID
+        let baseDatabaseName: String?
+        var latestRevision: UInt64
+        var pendingRevisions: Set<UInt64>
+        var outcomes: [UInt64: RedisDatabaseTransitionOutcome]
+    }
+
+    private struct RedisOperationLeaseWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private enum RedisOperationLeaseRun<Output> {
+        case completed(Output)
+        case cancelled
+    }
+
+    private var redisDatabaseTransitionBatch: RedisDatabaseTransitionBatch?
+    private let redisOperationLeaseID = UUID()
+    private var redisOperationLeaseIsHeld = false
+    private var redisOperationLeaseWaiters: [RedisOperationLeaseWaiter] = []
+    // Child tasks inherit this marker, so leased callbacks must await nested leased work
+    // before returning; otherwise that work could outlive the outer lease.
+    @TaskLocal private static var heldRedisOperationLeaseIDs: Set<UUID> = []
+
+    func requestRedisKeyBrowserRefresh() {
+        redisKeyBrowserRefreshNonce &+= 1
+    }
+
+    func presentRedisAddKey() {
+        guard let context = currentRedisContext else { return }
+        redisAddKeyContext = context
+        showRedisAddKey = true
+    }
+
+    func dismissRedisAddKey() {
+        showRedisAddKey = false
+        redisAddKeyContext = nil
+    }
+
+    func presentRedisFlushConfirmation() {
+        guard let context = currentRedisContext else { return }
+        redisFlushContext = context
+        showFlushDBConfirm = true
+    }
+
+    func dismissRedisFlushConfirmation() {
+        showFlushDBConfirm = false
+        redisFlushContext = nil
+    }
 
     // MARK: - Query Log (global, shared across all tables)
     @Published var queryLog: [QueryLogEntry] = []
@@ -160,13 +245,19 @@ final class AppState: ObservableObject {
     /// Persist a user-executed SQL query to the sidebar History (SwiftData).
     /// Called ONLY from the SQL query editor — not from data grid loads,
     /// structure inspections, or internal DML. Survives app restarts.
-    func recordQueryHistory(sql: String, duration: TimeInterval?, rowCount: Int? = nil, error: String? = nil) {
+    func recordQueryHistory(
+        sql: String,
+        duration: TimeInterval?,
+        rowCount: Int? = nil,
+        error: String? = nil,
+        database: String? = nil
+    ) {
         guard let connectionId = activeConnectionId else { return }
-        let database = currentDatabaseName ?? ""
+        let historyDatabase = database ?? currentDatabaseName ?? ""
         let historyEntry = QueryHistoryEntry(
             id: UUID(),
             connectionId: connectionId,
-            database: database,
+            database: historyDatabase,
             sql: sql,
             executedAt: Date(),
             duration: duration ?? 0,
@@ -192,6 +283,25 @@ final class AppState: ObservableObject {
 
     // MARK: - Tab Types
 
+    struct RedisTabContext: Hashable {
+        let connectionID: UUID
+        let databaseName: String
+        let sessionID: UUID
+        let databaseRevision: UInt64
+
+        init(
+            connectionID: UUID,
+            databaseName: String,
+            sessionID: UUID,
+            databaseRevision: UInt64 = 0
+        ) {
+            self.connectionID = connectionID
+            self.databaseName = databaseName
+            self.sessionID = sessionID
+            self.databaseRevision = databaseRevision
+        }
+    }
+
     struct ContentTab: Identifiable {
         let id: UUID
         let type: TabState.TabType
@@ -200,6 +310,7 @@ final class AppState: ObservableObject {
         let schema: String?
         var databaseName: String?
         var initialViewMode: String? // "data" or "structure"
+        var redisContext: RedisTabContext? = nil
         var sidebarItemType: SidebarItemType? = nil
     }
 
@@ -302,12 +413,20 @@ final class AppState: ObservableObject {
                 group.cancelAll()
                 return result
             }
+            if config.databaseType == .redis {
+                currentDatabaseName = nil
+                availableDatabases.removeAll()
+                redisDBSize = nil
+            }
             activeConnectionId = config.id
             activeAdapter = connection.adapter
             activeConfig = config
             connectionTitle = "Gridex — \(config.name)"
             statusConnection = config.displayHost
             isConnecting = false
+            let redisMetadataToken = config.databaseType == .redis
+                ? currentRedisSessionRevisionToken
+                : nil
 
             // Load sidebar immediately (most important for user)
             await reloadSidebar(config: config, adapter: connection.adapter)
@@ -347,21 +466,41 @@ final class AppState: ObservableObject {
                         }
                     }
 
-                    // Current database + available databases
-                    group.addTask {
-                        let dbName = try? await adapter.currentDatabase()
-                        let databases = (try? await adapter.listDatabases()) ?? []
-                        await MainActor.run {
-                            self.currentDatabaseName = dbName ?? config.database ?? config.name
-                            self.availableDatabases = databases
+                    if config.databaseType == .redis {
+                        if let redisMetadataToken {
+                            group.addTask {
+                                _ = await self.loadRedisConnectionMetadata(
+                                    for: redisMetadataToken
+                                ) { redis in
+                                    async let databaseNameTask: String? = try? await redis.currentDatabase()
+                                    async let databasesTask: [String] = (try? await redis.listDatabases()) ?? []
+                                    async let databaseSizeTask: Int? = try? await redis.dbSize()
+                                    let (databaseName, databases, databaseSize) = await (
+                                        databaseNameTask,
+                                        databasesTask,
+                                        databaseSizeTask
+                                    )
+                                    return RedisConnectionMetadataSnapshot(
+                                        databaseName: databaseName ?? config.database ?? config.name,
+                                        availableDatabases: databases,
+                                        databaseSize: databaseSize
+                                    )
+                                }
+                            }
                         }
-                    }
-
-                    // Redis DBSIZE
-                    if config.databaseType == .redis, let redis = adapter as? RedisAdapter {
+                    } else {
+                        // Current database + available databases
                         group.addTask {
-                            let size = try? await redis.dbSize()
-                            await MainActor.run { self.redisDBSize = size }
+                            let dbName = try? await adapter.currentDatabase()
+                            let databases = (try? await adapter.listDatabases()) ?? []
+                            await MainActor.run {
+                                guard self.activeConnectionId == config.id,
+                                      let activeAdapter = self.activeAdapter,
+                                      ObjectIdentifier(activeAdapter) == ObjectIdentifier(adapter)
+                                else { return }
+                                self.currentDatabaseName = dbName ?? config.database ?? config.name
+                                self.availableDatabases = databases
+                            }
                         }
                     }
                 }
@@ -371,6 +510,29 @@ final class AppState: ObservableObject {
             connectionError = error.localizedDescription
             print("Connection failed: \(error)")
         }
+    }
+
+    func loadSidebar(config: ConnectionConfig, adapter: any DatabaseAdapter) async {
+        if config.databaseType == .redis {
+            if refreshRedisSidebar(config: config, adapter: adapter) {
+                return
+            }
+            guard activeConnectionId == nil,
+                  activeConfig == nil,
+                  activeAdapter == nil else { return }
+            sidebarLoadGeneration &+= 1
+            pendingSidebarReload = nil
+            publishedSidebarContext = nil
+            publishedSidebarSnapshot = nil
+            selectedSidebarItem = nil
+            selectedSidebarItemSchema = nil
+            sidebarSchemas = []
+            selectedSidebarSchema = nil
+            sidebarItems = []
+            requestRedisKeyBrowserRefresh()
+            return
+        }
+        await reloadSidebar(config: config, adapter: adapter)
     }
 
     func loadSidebarSchemas(
@@ -429,6 +591,11 @@ final class AppState: ObservableObject {
         adapter: any DatabaseAdapter,
         preferredSchema: String?
     ) async -> SidebarReload? {
+        if config.databaseType == .redis {
+            refreshRedisSidebar(config: config, adapter: adapter)
+            return nil
+        }
+
         guard var reload = beginSidebarReload(
             config: config,
             adapter: adapter,
@@ -457,6 +624,27 @@ final class AppState: ObservableObject {
             print("Sidebar schema load error: \(error)")
             return nil
         }
+    }
+
+    @discardableResult
+    private func refreshRedisSidebar(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter
+    ) -> Bool {
+        let connection = sidebarConnectionContext(config: config, adapter: adapter)
+        guard isActiveSidebarConnection(connection) else { return false }
+
+        sidebarLoadGeneration &+= 1
+        pendingSidebarReload = nil
+        selectedSidebarItem = nil
+        selectedSidebarItemSchema = nil
+        sidebarSchemas = []
+        selectedSidebarSchema = nil
+        sidebarItems = []
+        publishedSidebarContext = connection
+        publishedSidebarSnapshot = .empty
+        requestRedisKeyBrowserRefresh()
+        return true
     }
 
     private func beginSidebarReload(
@@ -732,45 +920,665 @@ final class AppState: ObservableObject {
 
     // MARK: - Redis Tabs
 
+    var currentRedisContext: RedisTabContext? {
+        guard activeAdapter is RedisAdapter,
+              let connectionID = activeConnectionId,
+              let databaseName = currentDatabaseName,
+              let sessionID = redisSessionID else { return nil }
+        return RedisTabContext(
+            connectionID: connectionID,
+            databaseName: databaseName,
+            sessionID: sessionID,
+            databaseRevision: redisDatabaseRevision
+        )
+    }
+
+    var currentRedisSessionRevisionToken: RedisSessionRevisionToken? {
+        guard activeAdapter is RedisAdapter,
+              let connectionID = activeConnectionId,
+              let sessionID = redisSessionID else { return nil }
+        return RedisSessionRevisionToken(
+            connectionID: connectionID,
+            sessionID: sessionID,
+            databaseRevision: redisDatabaseRevision
+        )
+    }
+
+    func isCurrentRedisSessionRevision(_ token: RedisSessionRevisionToken) -> Bool {
+        currentRedisSessionRevisionToken == token
+    }
+
+    func activeRedisAdapter(for context: RedisTabContext) -> RedisAdapter? {
+        guard let adapter = activeAdapter as? RedisAdapter,
+              currentRedisContext == context else { return nil }
+        return adapter
+    }
+
+    func performRedisOperation<Value>(
+        for context: RedisTabContext,
+        operation: (RedisAdapter) async throws -> Value
+    ) async -> Result<Value, Error>? {
+        let token = RedisSessionRevisionToken(
+            connectionID: context.connectionID,
+            sessionID: context.sessionID,
+            databaseRevision: context.databaseRevision
+        )
+        return await performOwnedRedisOperation(
+            for: token,
+            contextIsCurrent: { self.currentRedisContext == context },
+            operation: operation
+        )
+    }
+
+    func performRedisCLIStatement(
+        _ statement: String
+    ) async -> Result<QueryResult, Error>? {
+        await performRedisCLIStatement(statement) { adapter, command in
+            try await adapter.executeRaw(sql: command)
+        }
+    }
+
+    func performRedisCLIStatement(
+        _ statement: String,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> Result<QueryResult, Error>? {
+        guard let expectedContext = currentRedisContext else { return nil }
+        return await performRedisCLIStatement(
+            statement,
+            expectedContext: expectedContext,
+            execute: execute
+        )
+    }
+
+    private func performRedisCLIStatement(
+        _ statement: String,
+        expectedContext: RedisTabContext,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> Result<QueryResult, Error>? {
+        let command = statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else { return nil }
+        guard currentRedisContext == expectedContext else { return nil }
+
+        guard let databaseName = Self.redisDatabaseNameSelected(by: command) else {
+            return await performRedisOperation(for: expectedContext) { adapter in
+                try await execute(adapter, command)
+            }
+        }
+
+        guard let token = beginRedisDatabaseTransition() else { return nil }
+        let leaseRun = await withRedisOperationLease {
+            guard isPendingRedisDatabaseTransition(token),
+                  !Task.isCancelled,
+                  let adapter = activeAdapter as? RedisAdapter else {
+                discardRedisDatabaseTransition(token)
+                return Optional<Result<QueryResult, Error>>.none
+            }
+
+            do {
+                let result = try await execute(adapter, command)
+                let outcome: RedisDatabaseTransitionOutcome = Self.redisSelectSucceeded(in: result)
+                    ? .success(databaseName: databaseName)
+                    : .failure
+                let ownsPublication = finishRedisDatabaseTransition(
+                    token,
+                    outcome: outcome
+                )
+                guard ownsPublication, !Task.isCancelled else { return nil }
+                return Result<QueryResult, Error>.success(result)
+            } catch {
+                let ownsPublication = finishRedisDatabaseTransition(
+                    token,
+                    outcome: .failure
+                )
+                guard ownsPublication, !Task.isCancelled else { return nil }
+                return Result<QueryResult, Error>.failure(error)
+            }
+        }
+
+        switch leaseRun {
+        case .completed(let result):
+            return result
+        case .cancelled:
+            _ = finishRedisDatabaseTransition(token, outcome: .failure)
+            return nil
+        }
+    }
+
+    func performRedisCLIStatements(
+        _ statements: [String],
+        from context: RedisTabContext
+    ) async -> [RedisCLIStatementExecution]? {
+        await performRedisCLIStatements(statements, from: context) { adapter, command in
+            try await adapter.executeRaw(sql: command)
+        }
+    }
+
+    func performRedisCLIStatements(
+        _ statements: [String],
+        from context: RedisTabContext,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> [RedisCLIStatementExecution]? {
+        let commands = statements
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !commands.isEmpty else { return [] }
+
+        if !commands.contains(where: { Self.redisDatabaseNameSelected(by: $0) != nil }) {
+            let ownedResult = await performRedisOperation(for: context) { adapter in
+                await Self.executeRedisCLICommands(
+                    commands,
+                    using: adapter,
+                    databaseName: context.databaseName,
+                    execute: execute
+                )
+            }
+            guard case .success(let executions)? = ownedResult else { return nil }
+            return executions
+        }
+
+        let leaseRun = await withRedisOperationLease {
+            guard currentRedisContext == context, !Task.isCancelled else {
+                return Optional<[RedisCLIStatementExecution]>.none
+            }
+
+            var expectedContext = context
+            var executions: [RedisCLIStatementExecution] = []
+            for command in commands {
+                guard currentRedisContext == expectedContext else { return nil }
+                let start = Date()
+                guard let result = await performRedisCLIStatement(
+                    command,
+                    expectedContext: expectedContext,
+                    execute: execute
+                ) else {
+                    return nil
+                }
+                if Self.redisDatabaseNameSelected(by: command) != nil {
+                    guard let nextContext = currentRedisContext else { return nil }
+                    expectedContext = nextContext
+                }
+                executions.append(
+                    RedisCLIStatementExecution(
+                        statement: command,
+                        result: result,
+                        duration: Date().timeIntervalSince(start),
+                        databaseName: currentDatabaseName ?? context.databaseName
+                    )
+                )
+                if case .failure = result { break }
+            }
+            return executions
+        }
+
+        switch leaseRun {
+        case .completed(let executions):
+            return executions
+        case .cancelled:
+            return nil
+        }
+    }
+
+    private static func executeRedisCLICommands(
+        _ commands: [String],
+        using adapter: RedisAdapter,
+        databaseName: String,
+        execute: (RedisAdapter, String) async throws -> QueryResult
+    ) async -> [RedisCLIStatementExecution] {
+        var executions: [RedisCLIStatementExecution] = []
+        for command in commands {
+            let start = Date()
+            let result: Result<QueryResult, Error>
+            do {
+                result = .success(try await execute(adapter, command))
+            } catch {
+                result = .failure(error)
+            }
+            executions.append(
+                RedisCLIStatementExecution(
+                    statement: command,
+                    result: result,
+                    duration: Date().timeIntervalSince(start),
+                    databaseName: databaseName
+                )
+            )
+            if case .failure = result { break }
+        }
+        return executions
+    }
+
+    static func redisDatabaseNameSelected(by statement: String) -> String? {
+        let tokens = RedisAdapter.tokenizeCommand(
+            statement.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard tokens.count == 2,
+              tokens[0].uppercased() == "SELECT",
+              !tokens[1].isEmpty,
+              tokens[1].unicodeScalars.allSatisfy({
+                  $0.value >= 48 && $0.value <= 57
+              }),
+              let index = Int(tokens[1]) else { return nil }
+        return "db\(index)"
+    }
+
+    private static func redisSelectSucceeded(in result: QueryResult) -> Bool {
+        guard result.columns.count == 1,
+              result.columns[0].name.caseInsensitiveCompare("result") == .orderedSame,
+              result.rows.count == 1,
+              result.rows[0].count == 1,
+              case .string(let value) = result.rows[0][0] else { return false }
+        return value.caseInsensitiveCompare("OK") == .orderedSame
+    }
+
+    @discardableResult
+    func loadRedisConnectionMetadata(
+        for token: RedisSessionRevisionToken,
+        load: (RedisAdapter) async throws -> RedisConnectionMetadataSnapshot
+    ) async -> Bool {
+        let result = await performOwnedRedisOperation(
+            for: token,
+            contextIsCurrent: { true },
+            operation: load,
+            publish: { snapshot in
+                self.currentDatabaseName = snapshot.databaseName
+                self.availableDatabases = snapshot.availableDatabases
+                self.redisDBSize = snapshot.databaseSize
+            }
+        )
+        guard case .success? = result else { return false }
+        return true
+    }
+
+    private func performOwnedRedisOperation<Value>(
+        for token: RedisSessionRevisionToken,
+        contextIsCurrent: () -> Bool,
+        operation: (RedisAdapter) async throws -> Value,
+        publish: (Value) -> Void = { _ in }
+    ) async -> Result<Value, Error>? {
+        guard isCurrentRedisSessionRevision(token),
+              contextIsCurrent(),
+              !Task.isCancelled else { return nil }
+
+        let leaseRun = await withRedisOperationLease {
+            guard isCurrentRedisSessionRevision(token),
+                  contextIsCurrent(),
+                  !Task.isCancelled,
+                  let adapter = activeAdapter as? RedisAdapter else {
+                return Optional<Result<Value, Error>>.none
+            }
+
+            do {
+                let value = try await operation(adapter)
+                guard isCurrentRedisSessionRevision(token),
+                      contextIsCurrent(),
+                      !Task.isCancelled else { return nil }
+                publish(value)
+                return .success(value)
+            } catch {
+                guard isCurrentRedisSessionRevision(token),
+                      contextIsCurrent(),
+                      !Task.isCancelled else { return nil }
+                return .failure(error)
+            }
+        }
+
+        switch leaseRun {
+        case .completed(let result):
+            return result
+        case .cancelled:
+            return nil
+        }
+    }
+
+    func performRedisDatabaseTransition(
+        to databaseName: String,
+        performSelect: () async throws -> Void
+    ) async rethrows {
+        _ = try await performRedisDatabaseTransitionWithOwnership(
+            to: databaseName,
+            performSelect: performSelect
+        )
+    }
+
+    private func performRedisDatabaseTransitionWithOwnership(
+        to databaseName: String,
+        performSelect: () async throws -> Void
+    ) async rethrows -> Bool {
+        guard let token = beginRedisDatabaseTransition() else {
+            try await performSelect()
+            return false
+        }
+
+        let leaseRun = try await withRedisOperationLease {
+            guard isPendingRedisDatabaseTransition(token) else {
+                discardRedisDatabaseTransition(token)
+                return false
+            }
+
+            guard !Task.isCancelled else {
+                _ = finishRedisDatabaseTransition(token, outcome: .failure)
+                return false
+            }
+
+            do {
+                try await performSelect()
+                return finishRedisDatabaseTransition(
+                    token,
+                    outcome: .success(databaseName: databaseName)
+                )
+            } catch {
+                _ = finishRedisDatabaseTransition(token, outcome: .failure)
+                throw error
+            }
+        }
+
+        switch leaseRun {
+        case .completed(let ownsPostTransitionPublication):
+            return ownsPostTransitionPublication
+        case .cancelled:
+            _ = finishRedisDatabaseTransition(token, outcome: .failure)
+            return false
+        }
+    }
+
+    private func withRedisOperationLease<Output>(
+        _ operation: () async throws -> Output
+    ) async rethrows -> RedisOperationLeaseRun<Output> {
+        if Self.heldRedisOperationLeaseIDs.contains(redisOperationLeaseID) {
+            return .completed(try await operation())
+        }
+
+        guard await acquireRedisOperationLease() else {
+            return .cancelled
+        }
+
+        var heldLeaseIDs = Self.heldRedisOperationLeaseIDs
+        heldLeaseIDs.insert(redisOperationLeaseID)
+
+        do {
+            let output = try await Self.$heldRedisOperationLeaseIDs.withValue(heldLeaseIDs) {
+                try await operation()
+            }
+            releaseRedisOperationLease()
+            return .completed(output)
+        } catch {
+            releaseRedisOperationLease()
+            throw error
+        }
+    }
+
+    private func acquireRedisOperationLease() async -> Bool {
+        guard !Task.isCancelled else { return false }
+
+        guard redisOperationLeaseIsHeld else {
+            redisOperationLeaseIsHeld = true
+            return true
+        }
+
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                redisOperationLeaseWaiters.append(
+                    RedisOperationLeaseWaiter(
+                        id: waiterID,
+                        continuation: continuation
+                    )
+                )
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelRedisOperationLeaseWaiter(waiterID)
+            }
+        }
+    }
+
+    private func releaseRedisOperationLease() {
+        guard !redisOperationLeaseWaiters.isEmpty else {
+            redisOperationLeaseIsHeld = false
+            return
+        }
+
+        redisOperationLeaseWaiters.removeFirst().continuation.resume(returning: true)
+    }
+
+    private func cancelRedisOperationLeaseWaiter(_ waiterID: UUID) {
+        guard let index = redisOperationLeaseWaiters.firstIndex(where: { $0.id == waiterID }) else {
+            return
+        }
+        let waiter = redisOperationLeaseWaiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
+    }
+
+    private func rotateRedisSession(for adapter: (any DatabaseAdapter)?) {
+        redisDatabaseTransitionBatch = nil
+        redisDatabaseRevision = 0
+        redisSessionID = adapter is RedisAdapter ? UUID() : nil
+    }
+
+    private func beginRedisDatabaseTransition() -> RedisSessionRevisionToken? {
+        guard activeAdapter is RedisAdapter,
+              let connectionID = activeConnectionId,
+              let sessionID = redisSessionID else { return nil }
+
+        redisDatabaseRevision &+= 1
+        let revision = redisDatabaseRevision
+
+        if redisDatabaseTransitionBatch?.connectionID != connectionID
+            || redisDatabaseTransitionBatch?.sessionID != sessionID {
+            redisDatabaseTransitionBatch = RedisDatabaseTransitionBatch(
+                connectionID: connectionID,
+                sessionID: sessionID,
+                baseDatabaseName: currentDatabaseName,
+                latestRevision: revision,
+                pendingRevisions: [],
+                outcomes: [:]
+            )
+        }
+
+        guard var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == connectionID,
+              batch.sessionID == sessionID else { return nil }
+
+        batch.latestRevision = revision
+        batch.pendingRevisions.insert(revision)
+        redisDatabaseTransitionBatch = batch
+        currentDatabaseName = nil
+        redisDBSize = nil
+
+        return RedisSessionRevisionToken(
+            connectionID: connectionID,
+            sessionID: sessionID,
+            databaseRevision: revision
+        )
+    }
+
+    private func finishRedisDatabaseTransition(
+        _ token: RedisSessionRevisionToken,
+        outcome: RedisDatabaseTransitionOutcome
+    ) -> Bool {
+        guard isCurrentRedisSession(token),
+              var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID,
+              batch.pendingRevisions.remove(token.databaseRevision) != nil else { return false }
+
+        batch.outcomes[token.databaseRevision] = outcome
+        currentDatabaseName = batch.outcomes.keys.sorted().reduce(batch.baseDatabaseName) { databaseName, revision in
+            guard case .success(let nextDatabaseName) = batch.outcomes[revision] else {
+                return databaseName
+            }
+            return nextDatabaseName
+        }
+
+        let ownsPostTransitionPublication = token.databaseRevision == batch.latestRevision
+        redisDatabaseTransitionBatch = batch.pendingRevisions.isEmpty ? nil : batch
+        return ownsPostTransitionPublication
+    }
+
+    private func isPendingRedisDatabaseTransition(_ token: RedisSessionRevisionToken) -> Bool {
+        guard isCurrentRedisSession(token),
+              let batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID else { return false }
+        return batch.pendingRevisions.contains(token.databaseRevision)
+    }
+
+    private func discardRedisDatabaseTransition(_ token: RedisSessionRevisionToken) {
+        guard var batch = redisDatabaseTransitionBatch,
+              batch.connectionID == token.connectionID,
+              batch.sessionID == token.sessionID else { return }
+
+        batch.pendingRevisions.remove(token.databaseRevision)
+        redisDatabaseTransitionBatch = batch.pendingRevisions.isEmpty ? nil : batch
+    }
+
+    private func isCurrentRedisSession(_ token: RedisSessionRevisionToken) -> Bool {
+        activeAdapter is RedisAdapter
+            && activeConnectionId == token.connectionID
+            && redisSessionID == token.sessionID
+    }
+
+    var isRedisFlatKeyListOpen: Bool {
+        guard let context = currentRedisContext else { return false }
+        return tabs.contains {
+            $0.type == .dataGrid
+                && $0.tableName == "Keys"
+                && $0.schema == nil
+                && $0.databaseName == context.databaseName
+                && $0.redisContext == context
+        }
+    }
+
+    func openRedisFlatKeyList() {
+        guard let context = currentRedisContext else { return }
+        let tabID: UUID
+        if let existing = tabs.first(where: {
+            $0.type == .dataGrid
+                && $0.tableName == "Keys"
+                && $0.schema == nil
+                && $0.databaseName == context.databaseName
+                && $0.redisContext == context
+        }) {
+            tabID = existing.id
+        } else {
+            let tab = ContentTab(
+                id: UUID(),
+                type: .dataGrid,
+                title: "Keys",
+                tableName: "Keys",
+                schema: nil,
+                databaseName: context.databaseName,
+                redisContext: context
+            )
+            tabs.append(tab)
+            tabID = tab.id
+            ensureTabGroup(for: context.databaseName)
+        }
+        let gridState = cachedDataGridState(for: tabID)
+        gridState.appState = self
+        gridState.bindRedisContext(context)
+        gridState.showFilterBar = true
+        statusRowCount = nil
+        activeTabId = tabID
+    }
+
     func openRedisKeyDetail(key: String) {
-        if let existing = tabs.first(where: { $0.type == .redisKeyDetail && $0.tableName == key }) {
+        guard let context = currentRedisContext else { return }
+        if let existing = tabs.first(where: {
+            $0.type == .redisKeyDetail
+                && $0.tableName == key
+                && $0.databaseName == context.databaseName
+                && $0.redisContext == context
+        }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisKeyDetail, title: key, tableName: key, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisKeyDetail,
+            title: key,
+            tableName: key,
+            schema: nil,
+            databaseName: context.databaseName,
+            redisContext: context
+        )
         tabs.append(tab)
         activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+        ensureTabGroup(for: context.databaseName)
     }
 
     func openRedisServerInfo() {
-        if let existing = tabs.first(where: { $0.type == .redisServerInfo }) {
+        guard let context = currentRedisContext else { return }
+        if let existing = tabs.first(where: {
+            $0.type == .redisServerInfo && $0.redisContext == context
+        }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisServerInfo, title: "Server Info", tableName: nil, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisServerInfo,
+            title: "Server Info",
+            tableName: nil,
+            schema: nil,
+            databaseName: context.databaseName,
+            redisContext: context
+        )
         tabs.append(tab)
         activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+        ensureTabGroup(for: context.databaseName)
     }
 
     func openRedisSlowLog() {
-        if let existing = tabs.first(where: { $0.type == .redisSlowLog }) {
+        guard let context = currentRedisContext else { return }
+        if let existing = tabs.first(where: {
+            $0.type == .redisSlowLog && $0.redisContext == context
+        }) {
             activeTabId = existing.id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .redisSlowLog, title: "Slow Log", tableName: nil, schema: nil, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .redisSlowLog,
+            title: "Slow Log",
+            tableName: nil,
+            schema: nil,
+            databaseName: context.databaseName,
+            redisContext: context
+        )
+        tabs.append(tab)
+        activeTabId = tab.id
+        ensureTabGroup(for: context.databaseName)
+    }
+
+    func openNewQueryTab() {
+        if activeAdapter is RedisAdapter, currentRedisContext == nil { return }
+
+        let number = tabs.filter { $0.type == .queryEditor }.count + 1
+        let tab = ContentTab(
+            id: UUID(),
+            type: .queryEditor,
+            title: "Query \(number)",
+            tableName: nil,
+            schema: nil,
+            databaseName: currentDatabaseName,
+            redisContext: currentRedisContext
+        )
         tabs.append(tab)
         activeTabId = tab.id
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
     }
 
-    func openNewQueryTab() {
-        let number = tabs.filter { $0.type == .queryEditor }.count + 1
-        let tab = ContentTab(id: UUID(), type: .queryEditor, title: "Query \(number)", tableName: nil, schema: nil, databaseName: currentDatabaseName)
-        tabs.append(tab)
-        activeTabId = tab.id
-        if let db = currentDatabaseName { ensureTabGroup(for: db) }
+    func rebindRedisQueryTab(id: UUID, to context: RedisTabContext) {
+        guard let index = tabs.firstIndex(where: {
+            $0.id == id && $0.type == .queryEditor && $0.redisContext != nil
+        }) else { return }
+        tabs[index].databaseName = context.databaseName
+        tabs[index].redisContext = context
+        ensureTabGroup(for: context.databaseName)
     }
 
     func selectTab(id: UUID) {
@@ -848,6 +1656,7 @@ final class AppState: ObservableObject {
     /// PostgreSQL requires a full reconnect; MySQL/SQLite can use USE.
     func switchDatabase(_ databaseName: String) async {
         guard let adapter = activeAdapter, var config = activeConfig else { return }
+        var ownsPostSwitchPublication = true
 
         do {
             switch config.databaseType {
@@ -882,8 +1691,9 @@ final class AppState: ObservableObject {
             case .redis:
                 // Redis: SELECT <db_number>
                 let dbNum = databaseName.replacingOccurrences(of: "db", with: "")
-                _ = try await adapter.executeRaw(sql: "SELECT \(dbNum)")
-                currentDatabaseName = databaseName
+                ownsPostSwitchPublication = try await performRedisDatabaseTransitionWithOwnership(to: databaseName) {
+                    _ = try await adapter.executeRaw(sql: "SELECT \(dbNum)")
+                }
 
             case .mongodb:
                 // MongoDB: reconnect to the new database
@@ -902,6 +1712,7 @@ final class AppState: ObservableObject {
                 currentDatabaseName = databaseName
             }
 
+            guard ownsPostSwitchPublication else { return }
             ensureTabGroup(for: databaseName)
 
             // Reload sidebar for the new database
@@ -983,6 +1794,12 @@ final class AppState: ObservableObject {
 
     func refreshSidebar(preferredSchema: String? = nil) {
         guard let adapter = activeAdapter, let config = activeConfig else { return }
+        if config.databaseType == .redis {
+            if !refreshRedisSidebar(config: config, adapter: adapter) {
+                requestRedisKeyBrowserRefresh()
+            }
+            return
+        }
         Task {
             await reloadSidebar(
                 config: config,

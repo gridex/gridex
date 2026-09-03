@@ -23,7 +23,7 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
 
     private var connection: RedisConnection?
     private let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    private var currentDB: Int = 0
+    private var databaseSelection = RedisDatabaseSelectionState(initialDatabase: 0)
 
     // MARK: - Connection Lifecycle
 
@@ -68,7 +68,9 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
         ).get()
 
         self.connection = conn
-        self.currentDB = config.database.flatMap { Int($0) } ?? 0
+        self.databaseSelection = RedisDatabaseSelectionState(
+            initialDatabase: config.database.flatMap { Int($0) } ?? 0
+        )
         self.isConnected = true
     }
 
@@ -99,7 +101,7 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
     }
 
     /// Parse a space-separated Redis command string (respecting quoted strings).
-    private func parseCommand(_ raw: String) -> [String] {
+    static func tokenizeCommand(_ raw: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inQuote: Character?
@@ -127,12 +129,15 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
 
     func executeRaw(sql: String) async throws -> QueryResult {
         let start = CFAbsoluteTimeGetCurrent()
-        let tokens = parseCommand(sql.trimmingCharacters(in: .whitespacesAndNewlines))
+        let tokens = Self.tokenizeCommand(sql.trimmingCharacters(in: .whitespacesAndNewlines))
         guard let keyword = tokens.first?.uppercased() else {
             throw GridexError.queryExecutionFailed("Empty command")
         }
         let args = Array(tokens.dropFirst())
         let resp = try await sendCommand(keyword, args: args)
+        if keyword == "SELECT", resp.string == "OK" {
+            databaseSelection.recordSuccessfulSelect(arguments: args)
+        }
         let elapsed = CFAbsoluteTimeGetCurrent() - start
 
         let (columns, rows, affected) = formatRESP(resp, keyword: keyword)
@@ -368,6 +373,17 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
 
     // MARK: - Pagination (SCAN-based)
 
+    func scanKeyNames(
+        matching pattern: String = "*",
+        maximumCount: Int = 10_000
+    ) async throws -> RedisKeyScanResult {
+        try await scanKeys(
+            matching: pattern,
+            maximumCount: maximumCount,
+            pageBudget: 500
+        )
+    }
+
     func fetchRows(
         table: String,
         schema: String?,
@@ -381,25 +397,11 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
         let pattern = extractPattern(from: filter) ?? "*"
 
         // Collect keys using SCAN (capped at 100k keys for safety)
-        var cursor = 0
-        var allKeys: [String] = []
-        var scanIterations = 0
-        repeat {
-            guard connection?.isConnected == true else {
-                throw GridexError.queryExecutionFailed("Connection lost during SCAN")
-            }
-            let resp = try await sendCommand("SCAN", args: [String(cursor), "MATCH", pattern, "COUNT", "500"])
-            if case .array(let parts) = resp, parts.count == 2 {
-                cursor = Int(respToRowValue(parts[0]).stringValue ?? "0") ?? 0
-                if case .array(let keys) = parts[1] {
-                    allKeys.append(contentsOf: keys.compactMap { respToRowValue($0).stringValue })
-                }
-            } else { break }
-            scanIterations += 1
-            if allKeys.count >= 100_000 || scanIterations >= 500 { break }
-        } while cursor != 0
-
-        allKeys.sort()
+        let allKeys = try await scanKeys(
+            matching: pattern,
+            maximumCount: 100_000,
+            pageBudget: 500
+        ).keys
         let paged = Array(allKeys.dropFirst(offset).prefix(limit))
 
         // Fire TYPE and TTL for all keys concurrently via NIO futures (single round-trip batch)
@@ -510,10 +512,74 @@ final class RedisAdapter: DatabaseAdapter, @unchecked Sendable {
     }
 
     func currentDatabase() async throws -> String? {
-        "db\(currentDB)"
+        "db\(databaseSelection.currentDatabase)"
     }
 
     // MARK: - Helpers
+
+    private func scanKeys(
+        matching pattern: String,
+        maximumCount: Int,
+        pageBudget: Int
+    ) async throws -> RedisKeyScanResult {
+        try await RedisKeyScanLoop.run(
+            maximumCount: maximumCount,
+            pageBudget: pageBudget
+        ) { cursor in
+            try await self.fetchScanPage(cursor: cursor, matching: pattern)
+        }
+    }
+
+    private func fetchScanPage(
+        cursor: String,
+        matching pattern: String
+    ) async throws -> RedisKeyScanPage? {
+        guard connection?.isConnected == true else {
+            throw GridexError.queryExecutionFailed("Connection lost during SCAN")
+        }
+
+        let response: RESPValue
+        do {
+            response = try await sendCommand(
+                "SCAN",
+                args: [cursor, "MATCH", pattern, "COUNT", "500"]
+            )
+        } catch {
+            guard connection?.isConnected == true else {
+                throw GridexError.queryExecutionFailed("Connection lost during SCAN")
+            }
+            throw error
+        }
+
+        return decodeScanPage(response)
+    }
+
+    private func decodeScanPage(_ response: RESPValue) -> RedisKeyScanPage? {
+        guard case .array(let parts) = response, parts.count == 2 else {
+            return nil
+        }
+
+        let cursor = scanResponseString(parts[0])
+        guard case .array(let keyValues) = parts[1] else {
+            return RedisKeyScanPage(cursor: cursor, keys: nil)
+        }
+
+        var keys: [String] = []
+        keys.reserveCapacity(keyValues.count)
+        for value in keyValues {
+            guard let key = scanResponseString(value) else {
+                return RedisKeyScanPage(cursor: cursor, keys: nil)
+            }
+            keys.append(key)
+        }
+
+        return RedisKeyScanPage(cursor: cursor, keys: keys)
+    }
+
+    private func scanResponseString(_ value: RESPValue) -> String? {
+        guard let buffer = value.byteBuffer else { return nil }
+        return buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes)
+    }
 
     private func extractPattern(from filter: FilterExpression?) -> String? {
         guard let filter else { return nil }

@@ -5,12 +5,134 @@
 
 import SwiftUI
 
+@MainActor
+final class RedisKeyDetailViewLifecycle: ObservableObject {
+    private var generation: UInt64 = 0
+    private var isActive = false
+
+    func activate() {
+        generation &+= 1
+        isActive = true
+    }
+
+    func deactivate() {
+        generation &+= 1
+        isActive = false
+    }
+
+    @discardableResult
+    func task(
+        _ operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never>? {
+        guard isActive else { return nil }
+        let capturedGeneration = generation
+
+        return Task { @MainActor [weak self] in
+            guard let self,
+                  self.isActive,
+                  self.generation == capturedGeneration else { return }
+            await operation()
+        }
+    }
+}
+
+@MainActor
+final class RedisKeyDetailViewState: ObservableObject {
+    @Published private(set) var detail: RedisKeyDetail?
+    @Published private(set) var isLoading = false
+    @Published private(set) var isMutating = false
+    @Published private(set) var errorMessage: String?
+
+    private var activeContext: AppState.RedisTabContext?
+    private let loadCoordinator = RedisRequestCoordinator()
+    private let mutationCoordinator = RedisRequestCoordinator()
+
+    func load(
+        in context: AppState.RedisTabContext,
+        execute: () async -> Result<RedisKeyDetail, Error>?
+    ) async {
+        transitionIfNeeded(to: context)
+        isLoading = true
+        errorMessage = nil
+
+        let completion = await loadCoordinator.perform(
+            for: context,
+            execute: execute
+        )
+
+        switch completion {
+        case .current(.success(let detail)):
+            self.detail = detail
+            errorMessage = nil
+            isLoading = false
+        case .current(.failure(let error)):
+            errorMessage = error.localizedDescription
+            isLoading = false
+        case .stale:
+            isLoading = false
+        case .superseded:
+            break
+        }
+    }
+
+    @discardableResult
+    func mutate(
+        in context: AppState.RedisTabContext,
+        execute: () async -> Result<RedisKeyDetail?, Error>?,
+        onCurrentSuccess: () -> Void
+    ) async -> Bool {
+        transitionIfNeeded(to: context)
+        isMutating = true
+        errorMessage = nil
+
+        let completion = await mutationCoordinator.perform(
+            for: context,
+            execute: execute
+        )
+
+        switch completion {
+        case .current(.success(let detail)):
+            if let detail {
+                self.detail = detail
+            }
+            errorMessage = nil
+            isMutating = false
+            onCurrentSuccess()
+            return true
+        case .current(.failure(let error)):
+            errorMessage = error.localizedDescription
+            isMutating = false
+            return false
+        case .stale:
+            isMutating = false
+            return false
+        case .superseded:
+            return false
+        }
+    }
+
+    func deactivate() {
+        transitionIfNeeded(to: nil)
+    }
+
+    private func transitionIfNeeded(to context: AppState.RedisTabContext?) {
+        guard activeContext != context else { return }
+        activeContext = context
+        loadCoordinator.invalidate()
+        mutationCoordinator.invalidate()
+        detail = nil
+        errorMessage = nil
+        isLoading = false
+        isMutating = false
+    }
+}
+
 struct RedisKeyDetailView: View {
     let keyName: String
+    let redisContext: AppState.RedisTabContext?
     @EnvironmentObject private var appState: AppState
-    @State private var detail: RedisKeyDetail?
-    @State private var isLoading = true
-    @State private var errorMessage: String?
+    @StateObject private var viewState = RedisKeyDetailViewState()
+    @StateObject private var lifecycle = RedisKeyDetailViewLifecycle()
 
     // Editing
     @State private var showRename = false
@@ -20,21 +142,49 @@ struct RedisKeyDetailView: View {
     @State private var newFieldName = ""
     @State private var newFieldValue = ""
 
+    private struct LoadRequest: Hashable {
+        let keyName: String
+        let context: AppState.RedisTabContext?
+        let isActive: Bool
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
+        let loadRequest = LoadRequest(
+            keyName: keyName,
+            context: redisContext,
+            isActive: isCapturedContextActive
+        )
+
+        return VStack(spacing: 0) {
             // Header
             headerBar
             Divider()
 
-            if isLoading {
+            if !isCapturedContextActive {
+                contextMismatchView
+            } else if viewState.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let err = errorMessage {
+            } else if let err = viewState.errorMessage {
                 Text(err).foregroundStyle(.red).padding()
-            } else if let detail {
+            } else if let detail = viewState.detail {
                 detailContent(detail)
             }
         }
-        .task { await loadDetail() }
+        .task(id: loadRequest) {
+            guard !Task.isCancelled else { return }
+            guard loadRequest.isActive,
+                  let context = loadRequest.context else {
+                lifecycle.deactivate()
+                viewState.deactivate()
+                return
+            }
+            lifecycle.activate()
+            await loadDetail(in: context)
+        }
+        .onDisappear {
+            lifecycle.deactivate()
+            viewState.deactivate()
+        }
     }
 
     // MARK: - Header
@@ -46,7 +196,7 @@ struct RedisKeyDetailView: View {
             Text(keyName)
                 .font(.system(size: 13, weight: .semibold, design: .monospaced))
 
-            if let detail {
+            if let detail = viewState.detail {
                 Text(detail.type.rawValue.uppercased())
                     .font(.system(size: 10, weight: .bold))
                     .padding(.horizontal, 6)
@@ -71,25 +221,45 @@ struct RedisKeyDetailView: View {
 
             Button("Set TTL") { showTTLInput = true }
                 .font(.system(size: 11))
+                .disabled(!isCapturedContextActive)
             Button("Rename") {
                 newKeyName = keyName
                 showRename = true
-            }.font(.system(size: 11))
-            Button { Task { await loadDetail() } } label: {
+            }
+            .font(.system(size: 11))
+            .disabled(!isCapturedContextActive)
+            Button {
+                guard let context = redisContext else { return }
+                startPresentedTask { await loadDetail(in: context) }
+            } label: {
                 Image(systemName: "arrow.clockwise").font(.system(size: 11))
             }
+            .disabled(!isCapturedContextActive)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .alert("Rename Key", isPresented: $showRename) {
             TextField("New name", text: $newKeyName)
             Button("Cancel", role: .cancel) {}
-            Button("Rename") { Task { await renameKey() } }
+            Button("Rename") {
+                guard let context = redisContext, !newKeyName.isEmpty else { return }
+                let replacementName = newKeyName
+                startPresentedTask {
+                    await renameKey(
+                        to: replacementName,
+                        in: context
+                    )
+                }
+            }
         }
         .alert("Set TTL", isPresented: $showTTLInput) {
             TextField("Seconds (0 = remove)", text: $ttlInput)
             Button("Cancel", role: .cancel) {}
-            Button("Set") { Task { await setTTL() } }
+            Button("Set") {
+                guard let context = redisContext else { return }
+                let seconds = Int(ttlInput) ?? 0
+                startPresentedTask { await setTTL(seconds, in: context) }
+            }
         }
     }
 
@@ -134,12 +304,20 @@ struct RedisKeyDetailView: View {
                     TextField("field", text: $newFieldName).frame(width: 100).textFieldStyle(.roundedBorder).font(.system(size: 11))
                     TextField("value", text: $newFieldValue).frame(width: 120).textFieldStyle(.roundedBorder).font(.system(size: 11))
                     Button("Add") {
-                        guard !newFieldName.isEmpty else { return }
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.updateHashField(key: keyName, field: newFieldName, value: newFieldValue)
-                            newFieldName = ""; newFieldValue = ""
-                            await loadDetail()
+                        guard let context = redisContext, !newFieldName.isEmpty else { return }
+                        let field = newFieldName
+                        let value = newFieldValue
+                        startPresentedTask {
+                            await mutateAndReload(in: context, operation: { redis in
+                                try await redis.updateHashField(
+                                    key: keyName,
+                                    field: field,
+                                    value: value
+                                )
+                            }, onCurrentSuccess: {
+                                newFieldName = ""
+                                newFieldValue = ""
+                            })
                         }
                     }.font(.system(size: 11))
                 }
@@ -149,10 +327,14 @@ struct RedisKeyDetailView: View {
             tableGrid(headers: ["Field", "Value"], rows: fields.map { [$0.field, $0.value] }) { row in
                 if let field = row.first {
                     Button("Delete Field") {
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.deleteHashField(key: keyName, field: field)
-                            await loadDetail()
+                        guard let context = redisContext else { return }
+                        startPresentedTask {
+                            await mutateAndReload(in: context) { redis in
+                                try await redis.deleteHashField(
+                                    key: keyName,
+                                    field: field
+                                )
+                            }
                         }
                     }
                 }
@@ -179,12 +361,17 @@ struct RedisKeyDetailView: View {
                 HStack(spacing: 4) {
                     TextField("member", text: $newFieldName).frame(width: 140).textFieldStyle(.roundedBorder).font(.system(size: 11))
                     Button("Add") {
-                        guard !newFieldName.isEmpty else { return }
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.addSetMember(key: keyName, member: newFieldName)
-                            newFieldName = ""
-                            await loadDetail()
+                        guard let context = redisContext, !newFieldName.isEmpty else { return }
+                        let member = newFieldName
+                        startPresentedTask {
+                            await mutateAndReload(in: context, operation: { redis in
+                                try await redis.addSetMember(
+                                    key: keyName,
+                                    member: member
+                                )
+                            }, onCurrentSuccess: {
+                                newFieldName = ""
+                            })
                         }
                     }.font(.system(size: 11))
                 }
@@ -193,10 +380,14 @@ struct RedisKeyDetailView: View {
             tableGrid(headers: ["Member"], rows: members.map { [$0] }) { row in
                 if let member = row.first {
                     Button("Remove") {
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.removeSetMember(key: keyName, member: member)
-                            await loadDetail()
+                        guard let context = redisContext else { return }
+                        startPresentedTask {
+                            await mutateAndReload(in: context) { redis in
+                                try await redis.removeSetMember(
+                                    key: keyName,
+                                    member: member
+                                )
+                            }
                         }
                     }
                 }
@@ -213,12 +404,20 @@ struct RedisKeyDetailView: View {
                     TextField("member", text: $newFieldName).frame(width: 100).textFieldStyle(.roundedBorder).font(.system(size: 11))
                     TextField("score", text: $newFieldValue).frame(width: 60).textFieldStyle(.roundedBorder).font(.system(size: 11))
                     Button("Add") {
-                        guard !newFieldName.isEmpty else { return }
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.addZSetMember(key: keyName, member: newFieldName, score: Double(newFieldValue) ?? 0)
-                            newFieldName = ""; newFieldValue = ""
-                            await loadDetail()
+                        guard let context = redisContext, !newFieldName.isEmpty else { return }
+                        let member = newFieldName
+                        let score = Double(newFieldValue) ?? 0
+                        startPresentedTask {
+                            await mutateAndReload(in: context, operation: { redis in
+                                try await redis.addZSetMember(
+                                    key: keyName,
+                                    member: member,
+                                    score: score
+                                )
+                            }, onCurrentSuccess: {
+                                newFieldName = ""
+                                newFieldValue = ""
+                            })
                         }
                     }.font(.system(size: 11))
                 }
@@ -227,10 +426,14 @@ struct RedisKeyDetailView: View {
             tableGrid(headers: ["Member", "Score"], rows: members.map { [$0.member, String($0.score)] }) { row in
                 if let member = row.first {
                     Button("Remove") {
-                        Task {
-                            guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                            try? await redis.removeZSetMember(key: keyName, member: member)
-                            await loadDetail()
+                        guard let context = redisContext else { return }
+                        startPresentedTask {
+                            await mutateAndReload(in: context) { redis in
+                                try await redis.removeZSetMember(
+                                    key: keyName,
+                                    member: member
+                                )
+                            }
                         }
                     }
                 }
@@ -283,37 +486,90 @@ struct RedisKeyDetailView: View {
 
     // MARK: - Actions
 
-    private func loadDetail() async {
-        guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-        isLoading = true
-        do {
-            detail = try await redis.fetchKeyDetail(key: keyName)
-            isLoading = false
-        } catch {
-            errorMessage = error.localizedDescription
-            isLoading = false
+    private var isCapturedContextActive: Bool {
+        guard let redisContext else { return false }
+        return appState.activeRedisAdapter(for: redisContext) != nil
+    }
+
+    private var contextMismatchView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text("This key belongs to another Redis connection or database.")
+                .font(.system(size: 12, weight: .medium))
+            Text("Reopen it from the current Redis key browser to continue.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func startPresentedTask(
+        _ operation: @escaping @MainActor () async -> Void
+    ) {
+        lifecycle.task(operation)
+    }
+
+    private func loadDetail(in context: AppState.RedisTabContext) async {
+        await viewState.load(in: context) {
+            await appState.performRedisOperation(for: context) { redis in
+                try await redis.fetchKeyDetail(key: keyName)
+            }
         }
     }
 
-    private func renameKey() async {
-        guard let redis = appState.activeAdapter as? RedisAdapter, !newKeyName.isEmpty else { return }
-        do {
-            try await redis.renameKey(oldName: keyName, newName: newKeyName)
-            NotificationCenter.default.post(name: .reloadData, object: nil)
-        } catch { errorMessage = error.localizedDescription }
+    private func renameKey(
+        to replacementName: String,
+        in context: AppState.RedisTabContext
+    ) async {
+        await viewState.mutate(
+            in: context,
+            execute: {
+                await appState.performRedisOperation(for: context) { redis -> RedisKeyDetail? in
+                    try await redis.renameKey(
+                        oldName: keyName,
+                        newName: replacementName
+                    )
+                    return nil
+                }
+            },
+            onCurrentSuccess: {
+                newKeyName = ""
+                NotificationCenter.default.post(name: .reloadData, object: nil)
+            }
+        )
     }
 
-    private func setTTL() async {
-        guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-        let seconds = Int(ttlInput) ?? 0
-        do {
+    private func setTTL(
+        _ seconds: Int,
+        in context: AppState.RedisTabContext
+    ) async {
+        await mutateAndReload(in: context, operation: { redis in
             if seconds <= 0 {
                 try await redis.removeTTL(key: keyName)
             } else {
                 try await redis.setTTL(key: keyName, seconds: seconds)
             }
-            await loadDetail()
-        } catch { errorMessage = error.localizedDescription }
+        }, onCurrentSuccess: {
+            ttlInput = ""
+        })
+    }
+
+    private func mutateAndReload(
+        in context: AppState.RedisTabContext,
+        operation: (RedisAdapter) async throws -> Void,
+        onCurrentSuccess: () -> Void = {}
+    ) async {
+        await viewState.mutate(
+            in: context,
+            execute: {
+                await appState.performRedisOperation(for: context) { redis -> RedisKeyDetail? in
+                    try await operation(redis)
+                    return try await redis.fetchKeyDetail(key: keyName)
+                }
+            },
+            onCurrentSuccess: onCurrentSuccess
+        )
     }
 
     private func formatBytes(_ bytes: Int) -> String {

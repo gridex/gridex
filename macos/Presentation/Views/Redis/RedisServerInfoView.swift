@@ -7,7 +7,11 @@ import SwiftUI
 
 struct RedisServerInfoView: View {
     @EnvironmentObject private var appState: AppState
+
+    let redisContext: AppState.RedisTabContext
+
     @State private var sections: [RedisInfoSection] = []
+    @State private var databaseSize: Int?
     @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var autoRefresh = false
@@ -62,7 +66,7 @@ struct RedisServerInfoView: View {
                 }
             }
         }
-        .task { await load() }
+        .task(id: redisContext) { await load() }
         .onChange(of: autoRefresh) { _, on in
             refreshTask?.cancel()
             if on {
@@ -85,7 +89,7 @@ struct RedisServerInfoView: View {
             metricCard("Memory", value: findValue("used_memory_human") ?? "—")
             metricCard("Clients", value: findValue("connected_clients") ?? "—")
             metricCard("Uptime", value: uptimeString)
-            metricCard("Keys", value: appState.redisDBSize.map { "\($0)" } ?? "—")
+            metricCard("Keys", value: databaseSize.map { "\($0)" } ?? "—")
             metricCard("Ops/sec", value: findValue("instantaneous_ops_per_sec") ?? "—")
             metricCard("Hit Rate", value: hitRateString)
             Spacer()
@@ -148,18 +152,25 @@ struct RedisServerInfoView: View {
     }
 
     private func load() async {
-        guard let redis = appState.activeAdapter as? RedisAdapter else {
-            await MainActor.run { errorMessage = "Not connected to Redis"; isLoading = false }
-            return
+        isLoading = true
+        let result = await appState.performRedisOperation(for: redisContext) { redis in
+            let loadedSections = try await redis.serverInfoSections()
+            let loadedDatabaseSize = try await redis.dbSize()
+            return (sections: loadedSections, databaseSize: loadedDatabaseSize)
         }
-        do {
-            let s = try await redis.serverInfoSections()
-            await MainActor.run { sections = s; errorMessage = nil; isLoading = false }
-            if let size = try? await redis.dbSize() {
-                await MainActor.run { appState.redisDBSize = size }
-            }
-        } catch {
-            await MainActor.run { errorMessage = error.localizedDescription; isLoading = false }
+
+        switch result {
+        case .success(let snapshot)?:
+            sections = snapshot.sections
+            databaseSize = snapshot.databaseSize
+            appState.redisDBSize = snapshot.databaseSize
+            errorMessage = nil
+            isLoading = false
+        case .failure(let error)?:
+            errorMessage = error.localizedDescription
+            isLoading = false
+        case nil:
+            isLoading = false
         }
     }
 }

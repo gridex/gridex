@@ -86,19 +86,24 @@ struct SidebarView: View {
 
     // MARK: - Items tab
 
+    @ViewBuilder
     private var itemsTab: some View {
         VStack(spacing: 0) {
-            searchBar
-            Divider()
+            if appState.activeConfig?.databaseType == .redis {
+                RedisKeyBrowserView()
+            } else {
+                searchBar
+                Divider()
 
-            List {
-                ForEach(filteredItems, id: \.id) { item in
-                    SidebarItemRow(item: item, searchText: searchText)
+                List {
+                    ForEach(filteredItems, id: \.id) { item in
+                        SidebarItemRow(item: item, searchText: searchText)
+                    }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color(NSColor.windowBackgroundColor))
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Color(NSColor.windowBackgroundColor))
 
             Divider()
             bottomBar
@@ -549,13 +554,13 @@ struct SidebarItemRow: View {
                     appState.openTable(name: "Keys", schema: nil)
                 }
                 Button("Add Key…") {
-                    appState.showRedisAddKey = true
+                    appState.presentRedisAddKey()
                 }
                 Divider()
                 Button("Server Info") { appState.openRedisServerInfo() }
                 Button("Slow Log") { appState.openRedisSlowLog() }
                 Divider()
-                Button("Flush Database…") { appState.showFlushDBConfirm = true }
+                Button("Flush Database…") { appState.presentRedisFlushConfirmation() }
                 Divider()
                 Button("Refresh") { appState.refreshSidebar() }
             } else {

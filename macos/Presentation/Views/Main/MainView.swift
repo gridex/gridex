@@ -1049,6 +1049,13 @@ struct WorkspaceView: View {
         return screenWidth * 0.5
     }
 
+    private var activeGridAllowsMutations: Bool {
+        guard let activeTabId = appState.activeTabId,
+              let tab = appState.tabs.first(where: { $0.id == activeTabId }),
+              tab.type == .dataGrid else { return true }
+        return tab.redisContext == nil
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             // Sidebar — always in hierarchy; width animates between 0 and sidebarWidth
@@ -1142,6 +1149,7 @@ struct WorkspaceView: View {
                 } label: {
                     Image(systemName: "trash")
                 }
+                .disabled(!activeGridAllowsMutations)
                 .help("Delete Selected Rows")
 
                 Button {
@@ -1149,6 +1157,7 @@ struct WorkspaceView: View {
                 } label: {
                     Image(systemName: "text.insert")
                 }
+                .disabled(!activeGridAllowsMutations)
                 .help("Commit Changes")
 
                 // ER Diagram (SQL databases only)
@@ -1182,19 +1191,32 @@ struct WorkspaceView: View {
             }
         }
         .alert("Flush Database", isPresented: $appState.showFlushDBConfirm) {
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {
+                appState.dismissRedisFlushConfirmation()
+            }
             Button("Flush", role: .destructive) {
+                let context = appState.redisFlushContext
+                appState.dismissRedisFlushConfirmation()
                 Task {
-                    if let redis = appState.activeAdapter as? RedisAdapter {
-                        try? await redis.flushDB()
+                    guard let context else { return }
+                    let result = await appState.performRedisOperation(for: context) { redis in
+                        try await redis.flushDB()
+                    }
+                    if case .success? = result {
                         appState.redisDBSize = 0
+                        appState.requestRedisKeyBrowserRefresh()
                         NotificationCenter.default.post(name: .reloadData, object: nil)
                     }
                 }
             }
         } message: { Text("This will permanently delete ALL keys in the current database. This cannot be undone.") }
-        .sheet(isPresented: $appState.showRedisAddKey) {
-            RedisAddKeySheet()
+        .sheet(
+            isPresented: $appState.showRedisAddKey,
+            onDismiss: { appState.dismissRedisAddKey() }
+        ) {
+            if let context = appState.redisAddKeyContext {
+                RedisAddKeySheet(redisContext: context)
+            }
         }
     }
 
@@ -1202,11 +1224,28 @@ struct WorkspaceView: View {
     private func tabContent(for tab: AppState.ContentTab) -> some View {
         switch tab.type {
         case .dataGrid:
-            if let tableName = tab.tableName {
-                DataGridView(tableName: tableName, schema: tab.schema, tabId: tab.id, initialViewMode: tab.initialViewMode)
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) == nil {
+                redisContextMismatchView
+            } else if let tableName = tab.tableName {
+                DataGridView(
+                    tableName: tableName,
+                    schema: tab.schema,
+                    tabId: tab.id,
+                    redisContext: tab.redisContext,
+                    initialViewMode: tab.initialViewMode
+                )
             }
         case .queryEditor:
-            QueryEditorView(tabId: tab.id)
+            ZStack {
+                QueryEditorView(tabId: tab.id)
+                if let context = tab.redisContext,
+                   appState.activeRedisAdapter(for: context) == nil {
+                    redisContextMismatchView
+                        .background(Color(nsColor: .windowBackgroundColor))
+                        .contentShape(Rectangle())
+                }
+            }
         case .tableStructure:
             if let tableName = tab.tableName {
                 TableStructureView(tableName: tableName, schema: tab.schema)
@@ -1234,13 +1273,39 @@ struct WorkspaceView: View {
         // Redis-specific tabs
         case .redisKeyDetail:
             if let keyName = tab.tableName {
-                RedisKeyDetailView(keyName: keyName)
+                RedisKeyDetailView(
+                    keyName: keyName,
+                    redisContext: tab.redisContext
+                )
             }
         case .redisServerInfo:
-            RedisServerInfoView()
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) != nil {
+                RedisServerInfoView(redisContext: context)
+            } else {
+                redisContextMismatchView
+            }
         case .redisSlowLog:
-            RedisSlowLogView()
+            if let context = tab.redisContext,
+               appState.activeRedisAdapter(for: context) != nil {
+                RedisSlowLogView(redisContext: context)
+            } else {
+                redisContextMismatchView
+            }
         }
+    }
+
+    private var redisContextMismatchView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            Text("This Redis tab belongs to another connection or database.")
+                .font(.system(size: 12, weight: .medium))
+            Text("Reopen it from the current Redis key browser to continue.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

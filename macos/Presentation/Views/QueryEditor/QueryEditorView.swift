@@ -182,9 +182,11 @@ struct QueryEditorView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .executeQuery)) { _ in
+            guard appState.activeTabId == tabId else { return }
             executeQuery()
         }
         .onReceive(NotificationCenter.default.publisher(for: .explainQuery)) { _ in
+            guard appState.activeTabId == tabId else { return }
             explainQuery()
         }
         .onAppear {
@@ -232,7 +234,20 @@ struct QueryEditorView: View {
     }
 
     private func executeQuery() {
-        guard let adapter = appState.activeAdapter else { return }
+        guard appState.activeTabId == tabId,
+              !isExecuting,
+              let adapter = appState.activeAdapter,
+              let tab = appState.tabs.first(where: { $0.id == tabId }) else { return }
+        let redisContext = tab.redisContext
+        if redisContext == nil, adapter.databaseType == .redis {
+            errorMessage = "Open a Redis query from the current database before running commands."
+            return
+        }
+        if let redisContext, appState.activeRedisAdapter(for: redisContext) == nil {
+            errorMessage = "This Redis query belongs to another connection or database."
+            return
+        }
+        let databaseType: DatabaseType = redisContext == nil ? adapter.databaseType : .redis
 
         // A regular Run wipes any previous EXPLAIN output so the data grid
         // can take over the results pane again.
@@ -244,7 +259,7 @@ struct QueryEditorView: View {
         let fullText = sqlText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fullText.isEmpty else { return }
 
-        let batches = splitIntoBatches(fullText, databaseType: adapter.databaseType)
+        let batches = splitIntoBatches(fullText, databaseType: databaseType)
 
         // If only one statement, use the cursor-aware behavior (backwards compat)
         let toRun: [String]
@@ -259,6 +274,13 @@ struct QueryEditorView: View {
         isExecuting = true
         errorMessage = nil
         statusMessage = nil
+
+        if let redisContext {
+            Task {
+                await executeRedisStatements(toRun, from: redisContext)
+            }
+            return
+        }
 
         // For MSSQL multi-batch scripts, use a dedicated connection so that
         // USE statements persist across batches.
@@ -339,6 +361,70 @@ struct QueryEditorView: View {
         }
     }
 
+    private func executeRedisStatements(
+        _ statements: [String],
+        from context: AppState.RedisTabContext
+    ) async {
+        let overallStart = Date()
+        guard let executions = await appState.performRedisCLIStatements(
+            statements,
+            from: context
+        ) else {
+            isExecuting = false
+            return
+        }
+
+        let containsDatabaseSelection = statements.contains {
+            AppState.redisDatabaseNameSelected(by: $0) != nil
+        }
+        if containsDatabaseSelection, let currentContext = appState.currentRedisContext {
+            appState.rebindRedisQueryTab(id: tabId, to: currentContext)
+        }
+
+        var lastResult: QueryResult?
+        var totalRowsAffected = 0
+        for execution in executions {
+            switch execution.result {
+            case .success(let result):
+                appState.logQuery(sql: execution.statement, duration: execution.duration)
+                appState.recordQueryHistory(
+                    sql: execution.statement,
+                    duration: execution.duration,
+                    rowCount: result.rowCount,
+                    database: execution.databaseName
+                )
+                if !result.columns.isEmpty {
+                    lastResult = result
+                }
+                totalRowsAffected += result.rowsAffected
+            case .failure(let error):
+                appState.logQuery(sql: execution.statement, duration: execution.duration)
+                appState.recordQueryHistory(
+                    sql: execution.statement,
+                    duration: execution.duration,
+                    error: error.localizedDescription,
+                    database: execution.databaseName
+                )
+                errorMessage = error.localizedDescription
+                appState.refreshSidebar()
+                isExecuting = false
+                return
+            }
+        }
+
+        if let result = lastResult {
+            applyResult(result)
+            appState.statusRowCount = result.rowCount
+            appState.statusQueryTime = result.executionTime
+        } else if statements.count > 1 {
+            let totalDuration = Date().timeIntervalSince(overallStart)
+            statusMessage = "\(statements.count) statement(s) executed · \(totalRowsAffected) row(s) affected · \(String(format: "%.2fs", totalDuration))"
+        }
+
+        appState.refreshSidebar()
+        isExecuting = false
+    }
+
     /// Split a SQL script into individual statements/batches. SQL Server uses
     /// `GO` on its own line as a batch separator; other databases use `;`.
     private func splitIntoBatches(_ script: String, databaseType: DatabaseType) -> [String] {
@@ -412,7 +498,11 @@ struct QueryEditorView: View {
     }
 
     private func explainQuery() {
-        guard let adapter = appState.activeAdapter else { return }
+        guard appState.activeTabId == tabId,
+              !isExecuting,
+              let adapter = appState.activeAdapter,
+              appState.tabs.first(where: { $0.id == tabId })?.redisContext == nil,
+              adapter.databaseType != .redis else { return }
         let sql = statementToRun()
         guard !sql.isEmpty else { return }
 

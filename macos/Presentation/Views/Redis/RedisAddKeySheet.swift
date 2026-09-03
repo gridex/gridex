@@ -9,6 +9,8 @@ struct RedisAddKeySheet: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
+    let redisContext: AppState.RedisTabContext
+
     @State private var keyName = ""
     @State private var keyType: RedisKeyType = .string
     @State private var ttlString = ""
@@ -145,12 +147,13 @@ struct RedisAddKeySheet: View {
     // MARK: - Create
 
     private func createKey() {
-        guard let redis = appState.activeAdapter as? RedisAdapter else { return }
         isCreating = true
         errorMessage = nil
 
+        let capturedKeyName = keyName
+        let capturedKeyType = keyType
         let data: RedisKeyData
-        switch keyType {
+        switch capturedKeyType {
         case .string: data = .string(value: stringValue)
         case .hash: data = .hash(fields: hashFields.filter { !$0.field.isEmpty })
         case .list: data = .list(items: listItems.filter { !$0.isEmpty })
@@ -163,17 +166,25 @@ struct RedisAddKeySheet: View {
 
         let ttl = Int(ttlString)
         Task {
-            do {
-                try await redis.redisInsertTyped(key: keyName, type: keyType, data: data, ttl: ttl)
-                await MainActor.run {
-                    dismiss()
-                    NotificationCenter.default.post(name: .reloadData, object: nil)
-                }
-            } catch {
-                await MainActor.run {
-                    errorMessage = error.localizedDescription
-                    isCreating = false
-                }
+            let result = await appState.performRedisOperation(for: redisContext) { redis in
+                try await redis.redisInsertTyped(
+                    key: capturedKeyName,
+                    type: capturedKeyType,
+                    data: data,
+                    ttl: ttl
+                )
+            }
+            switch result {
+            case .success?:
+                appState.requestRedisKeyBrowserRefresh()
+                dismiss()
+                NotificationCenter.default.post(name: .reloadData, object: nil)
+            case .failure(let error)?:
+                errorMessage = error.localizedDescription
+                isCreating = false
+            case nil:
+                errorMessage = "The Redis connection or database changed. Reopen Add Key and try again."
+                isCreating = false
             }
         }
     }

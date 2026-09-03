@@ -7,9 +7,13 @@ import SwiftUI
 
 struct RedisSlowLogView: View {
     @EnvironmentObject private var appState: AppState
+
+    let redisContext: AppState.RedisTabContext
+
     @State private var entries: [RedisSlowLogEntry] = []
     @State private var isLoading = true
     @State private var showResetConfirm = false
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +34,18 @@ struct RedisSlowLogView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
 
-            if isLoading {
+            if let errorMessage {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.orange)
+                    Text(errorMessage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if entries.isEmpty {
                 VStack(spacing: 8) {
@@ -68,15 +83,11 @@ struct RedisSlowLogView: View {
                 }
             }
         }
-        .task { await load() }
+        .task(id: redisContext) { await load() }
         .alert("Reset Slow Log", isPresented: $showResetConfirm) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
-                Task {
-                    guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-                    try? await redis.executeRaw(sql: "SLOWLOG RESET")
-                    await load()
-                }
+                Task { await reset() }
             }
         } message: { Text("This will clear all slow log entries.") }
     }
@@ -130,10 +141,33 @@ struct RedisSlowLogView: View {
     }
 
     private func load() async {
-        guard let redis = appState.activeAdapter as? RedisAdapter else { return }
-        do {
-            entries = try await redis.slowLog()
+        isLoading = true
+        let result = await appState.performRedisOperation(for: redisContext) { redis in
+            try await redis.slowLog()
+        }
+        publish(result)
+    }
+
+    private func reset() async {
+        isLoading = true
+        let result = await appState.performRedisOperation(for: redisContext) { redis in
+            _ = try await redis.executeRaw(sql: "SLOWLOG RESET")
+            return try await redis.slowLog()
+        }
+        publish(result)
+    }
+
+    private func publish(_ result: Result<[RedisSlowLogEntry], Error>?) {
+        switch result {
+        case .success(let loadedEntries)?:
+            entries = loadedEntries
+            errorMessage = nil
             isLoading = false
-        } catch { isLoading = false }
+        case .failure(let error)?:
+            errorMessage = error.localizedDescription
+            isLoading = false
+        case nil:
+            isLoading = false
+        }
     }
 }
