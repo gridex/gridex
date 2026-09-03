@@ -109,6 +109,29 @@ final class RedisDataGridLifecycleTests: XCTestCase {
         XCTAssertFalse(state.isLoading)
     }
 
+    func test_reloadAfterStructureChangeForRedisReloadsOwnedPageZero() async throws {
+        DataGridViewState.clearMetadataCache()
+        let appState = AppState()
+        let adapter = establishRedisContext(on: appState, databaseName: "db0")
+        let context = try XCTUnwrap(appState.currentRedisContext)
+        var fetchedOffsets: [Int] = []
+        let state = DataGridViewState { receivedAdapter, request in
+            XCTAssertTrue(receivedAdapter === adapter)
+            fetchedOffsets.append(request.offset)
+            return self.queryResult(key: "publication-\(fetchedOffsets.count)")
+        }
+        state.appState = appState
+        state.bindRedisContext(context)
+
+        await state.load(tableName: "Keys", schema: nil, adapter: adapter)
+        await state.reloadAfterStructureChange()
+
+        XCTAssertEqual(fetchedOffsets, [0, 0])
+        XCTAssertEqual(state.currentPage, 0)
+        XCTAssertEqual(state.rows, [[.string("publication-2")]])
+        XCTAssertFalse(state.isLoading)
+    }
+
     func test_fullAndPageLoadsShareLatestOwnershipWhenOlderFailureCompletesFirst() async {
         let state = DataGridViewState()
         let context = redisContext(databaseName: "db0", revision: 1)

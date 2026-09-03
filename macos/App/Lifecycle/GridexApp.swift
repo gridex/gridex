@@ -44,6 +44,14 @@ struct GridexApp: App {
 
                 Divider()
 
+                Button("Next Tab") { currentAppState?.selectNextTab() }
+                    .keyboardShortcut(.tab, modifiers: .control)
+                    .disabled((currentAppState?.tabs.count ?? 0) < 2)
+
+                Button("Previous Tab") { currentAppState?.selectPreviousTab() }
+                    .keyboardShortcut(.tab, modifiers: [.control, .shift])
+                    .disabled((currentAppState?.tabs.count ?? 0) < 2)
+
                 Button("Close Tab") {
                     currentAppState?.closeActiveTab()
                 }

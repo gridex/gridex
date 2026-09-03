@@ -8,6 +8,7 @@ import PostgresNIO
 import NIOCore
 import NIOPosix
 import NIOSSL
+import Logging
 
 final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendable {
     let databaseType: DatabaseType = .postgresql
@@ -154,6 +155,26 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
 
     /// Extract a human-readable message from a PSQLError (which doesn't implement LocalizedError well).
     static func formatPostgresError(_ error: Error) -> String {
+        if let transactionError = error as? PostgresTransactionError {
+            let primaryError = transactionError.beginError
+                ?? transactionError.closureError
+                ?? transactionError.commitError
+
+            var message: String
+            if let primaryError {
+                message = formatPostgresError(primaryError)
+            } else if let rollbackError = transactionError.rollbackError {
+                return "Rollback failed: \(formatPostgresError(rollbackError))"
+            } else {
+                return error.localizedDescription
+            }
+
+            if let rollbackError = transactionError.rollbackError {
+                message += "\nRollback failed: \(formatPostgresError(rollbackError))"
+            }
+            return message
+        }
+
         if let pgError = error as? PSQLError {
             var parts: [String] = []
             if let msg = pgError.serverInfo?[.message] {
@@ -196,23 +217,37 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
             appendBinding(param, to: &bindings)
         }
 
-        let pgQuery = PostgresQuery(unsafeSQL: sql, binds: bindings)
-        let rows = try await client.query(pgQuery)
-        let columns = rows.columns.map { col in
-            ColumnHeader(name: col.name, dataType: col.dataType.description)
-        }
-
-        var resultRows: [[RowValue]] = []
-        for try await row in rows {
-            var rowValues: [RowValue] = []
-            for (cell, meta) in zip(row, rows.columns) {
-                rowValues.append(decodeCell(cell, dataType: meta.dataType))
+        return try await Self.withFormattedQueryErrors {
+            let pgQuery = PostgresQuery(unsafeSQL: sql, binds: bindings)
+            let rows = try await client.query(pgQuery)
+            let columns = rows.columns.map { col in
+                ColumnHeader(name: col.name, dataType: col.dataType.description)
             }
-            resultRows.append(rowValues)
-        }
 
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
-        return QueryResult(columns: columns, rows: resultRows, rowsAffected: resultRows.count, executionTime: duration, queryType: queryType)
+            var resultRows: [[RowValue]] = []
+            for try await row in rows {
+                var rowValues: [RowValue] = []
+                for (cell, meta) in zip(row, rows.columns) {
+                    rowValues.append(self.decodeCell(cell, dataType: meta.dataType))
+                }
+                resultRows.append(rowValues)
+            }
+
+            let duration = CFAbsoluteTimeGetCurrent() - startTime
+            return QueryResult(columns: columns, rows: resultRows, rowsAffected: resultRows.count, executionTime: duration, queryType: queryType)
+        }
+    }
+
+    static func withFormattedQueryErrors<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as GridexError {
+            throw error
+        } catch {
+            throw GridexError.queryExecutionFailed(formatPostgresError(error))
+        }
     }
 
     private func appendBinding(_ value: RowValue, to bindings: inout PostgresBindings) {
@@ -657,6 +692,34 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
     func beginTransaction() async throws { _ = try await executeRaw(sql: "BEGIN") }
     func commitTransaction() async throws { _ = try await executeRaw(sql: "COMMIT") }
     func rollbackTransaction() async throws { _ = try await executeRaw(sql: "ROLLBACK") }
+
+    func executeStatements(_ statements: [String], inSchemaTransaction schema: String) async throws {
+        try ensureConnected()
+        guard let client else { throw GridexError.queryExecutionFailed("No connection") }
+
+        let logger = Logger(label: "gridex.postgresql.sql-dump")
+        let quotedSchema = databaseType.sqlDialect.quoteIdentifier(schema)
+
+        do {
+            try await client.withTransaction(logger: logger) { connection in
+                let setupRows = try await connection.query(
+                    PostgresQuery(unsafeSQL: "SET LOCAL search_path TO \(quotedSchema)"),
+                    logger: logger
+                )
+                for try await _ in setupRows {}
+
+                for statement in statements {
+                    let rows = try await connection.query(
+                        PostgresQuery(unsafeSQL: statement),
+                        logger: logger
+                    )
+                    for try await _ in rows {}
+                }
+            }
+        } catch {
+            throw GridexError.queryExecutionFailed(Self.formatPostgresError(error))
+        }
+    }
 
     // MARK: - Pagination
 

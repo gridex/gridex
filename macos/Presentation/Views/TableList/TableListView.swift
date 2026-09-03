@@ -165,7 +165,10 @@ final class TableListViewModel: ObservableObject {
             let result: QueryResult
             switch adapter.databaseType {
             case .postgresql:
-                result = try await adapter.executeRaw(sql: tableStatsQueryPostgres(schema: schema ?? "public"))
+                result = try await adapter.executeWithRowValues(
+                    sql: tableStatsQueryPostgres(),
+                    parameters: [.string(schema ?? "public")]
+                )
             case .mysql:
                 result = try await adapter.executeRaw(sql: tableStatsQueryMySQL(schema: schema))
             case .sqlite:
@@ -248,7 +251,7 @@ final class TableListViewModel: ObservableObject {
         }
     }
 
-    private func tableStatsQueryPostgres(schema: String) -> String {
+    private func tableStatsQueryPostgres() -> String {
         """
         SELECT
             c.relname AS name,
@@ -283,7 +286,7 @@ final class TableListViewModel: ObservableObject {
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-        WHERE n.nspname = '\(schema)'
+        WHERE n.nspname = $1
           AND c.relkind IN ('r', 'f')
         ORDER BY c.relname
         """

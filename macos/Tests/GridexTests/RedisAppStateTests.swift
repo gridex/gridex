@@ -18,15 +18,51 @@ final class RedisAppStateTests: XCTestCase {
 
     func test_loadSidebar_forRedisClearsGenericItemsAndRequestsBrowserRefresh() async {
         let state = AppState()
+        let config = redisConfig()
+        let adapter = RedisAdapter()
+        state.activeConnectionId = config.id
+        state.activeConfig = config
+        state.activeAdapter = adapter
         state.sidebarItems = [
             SidebarItem(title: "Legacy", type: .group("legacy"))
         ]
+        state.selectedSidebarSchema = "legacy"
+        state.selectSidebarItem(.table("Legacy"), schema: "legacy")
+        let originalNonce = state.redisKeyBrowserRefreshNonce
+
+        await state.loadSidebar(config: config, adapter: adapter)
+
+        XCTAssertTrue(state.sidebarItems.isEmpty)
+        XCTAssertNil(state.selectedSidebarSchema)
+        XCTAssertNil(state.selectedSidebarItem)
+        XCTAssertNil(state.selectedSidebarItemSchema)
+        XCTAssertEqual(state.redisKeyBrowserRefreshNonce, originalNonce + 1)
+    }
+
+    func test_loadSidebar_forStaleRedisCannotClearActiveSQLSidebar() async {
+        let state = AppState()
+        let activeConfig = ConnectionConfig(
+            name: "SQLite",
+            databaseType: .sqlite,
+            filePath: ":memory:"
+        )
+        state.activeConnectionId = activeConfig.id
+        state.activeConfig = activeConfig
+        state.activeAdapter = SQLiteAdapter()
+        state.sidebarItems = [
+            SidebarItem(title: "Current", type: .table("Current"), schema: "main")
+        ]
+        state.selectedSidebarSchema = "main"
+        state.selectSidebarItem(.table("Current"), schema: "main")
         let originalNonce = state.redisKeyBrowserRefreshNonce
 
         await state.loadSidebar(config: redisConfig(), adapter: RedisAdapter())
 
-        XCTAssertTrue(state.sidebarItems.isEmpty)
-        XCTAssertEqual(state.redisKeyBrowserRefreshNonce, originalNonce + 1)
+        XCTAssertEqual(state.sidebarItems.map(\.title), ["Current"])
+        XCTAssertEqual(state.selectedSidebarSchema, "main")
+        XCTAssertEqual(state.selectedSidebarItem, .table("Current"))
+        XCTAssertEqual(state.selectedSidebarItemSchema, "main")
+        XCTAssertEqual(state.redisKeyBrowserRefreshNonce, originalNonce)
     }
 
     func test_refreshSidebar_forRedisRequestsBrowserRefreshImmediately() {

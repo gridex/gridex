@@ -7,6 +7,7 @@ class SidebarItem: Identifiable {
     let id: UUID
     let title: String
     let type: SidebarItemType
+    let schema: String?
     let iconName: String
     var children: [SidebarItem]
     var badge: String?
@@ -16,6 +17,7 @@ class SidebarItem: Identifiable {
         id: UUID = UUID(),
         title: String,
         type: SidebarItemType,
+        schema: String? = nil,
         iconName: String = "",
         children: [SidebarItem] = [],
         badge: String? = nil,
@@ -24,6 +26,7 @@ class SidebarItem: Identifiable {
         self.id = id
         self.title = title
         self.type = type
+        self.schema = schema
         self.iconName = iconName
         self.children = children
         self.badge = badge

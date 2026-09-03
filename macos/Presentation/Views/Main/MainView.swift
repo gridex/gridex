@@ -84,7 +84,7 @@ struct MainView: View {
             DatabaseSwitcherDialog()
         }
         .sheet(isPresented: $appState.showNewTableSheet) {
-            NewTableSheet(schema: "public")
+            NewTableSheet(schema: appState.selectedSidebarSchema)
         }
         .onChange(of: appState.showConnectionForm) { _, show in
             if show {
@@ -1162,7 +1162,7 @@ struct WorkspaceView: View {
 
                 // ER Diagram (SQL databases only)
                 if appState.activeConfig?.databaseType.isSQL == true {
-                    Button { appState.openERDiagram(schema: nil) } label: {
+                    Button { appState.openERDiagram(schema: appState.selectedSidebarSchema) } label: {
                         Image(systemName: "point.3.connected.trianglepath.dotted")
                     }.help("ER Diagram")
                 }
