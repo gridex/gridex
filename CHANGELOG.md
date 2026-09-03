@@ -5,9 +5,9 @@ All notable changes to Gridex are documented in this file. Gridex ships native a
 ## [Unreleased]
 
 ### Fixed
+- **macOS data grids** — Reloading data with Command-R retains the selected column and ascending/descending server-side sort.
 - **macOS tabs** — Clicking a tab reliably activates it; Control-Tab and Control-Shift-Tab cycle forward/backward; tab close controls retain their expected left/middle-click behavior.
 - **macOS MySQL passwordless accounts** — Blank passwords now authenticate correctly for non-TLS caching_sha2_password accounts.
-
 ## [0.23.0] - 2026-04-12
 
 ### Added
