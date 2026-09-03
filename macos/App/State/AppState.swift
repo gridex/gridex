@@ -27,12 +27,16 @@ final class AppState: ObservableObject {
 
     /// Tables the user has marked for deletion in the sidebar.
     /// They are NOT dropped until the user clicks the commit button in the sidebar header.
-    /// Key is the table name (per active connection / schema).
-    @Published var pendingTableDeletions: [String: PendingTableDeletion] = [:]
-    @Published var pendingTableTruncations: Set<String> = []
+    @Published var pendingTableDeletions: [TableReference: PendingTableDeletion] = [:]
+    @Published var pendingTableTruncations: Set<TableReference> = []
+
+    struct TableReference: Hashable {
+        let name: String
+        let schema: String?
+    }
 
     struct PendingTableDeletion {
-        var tableName: String
+        let reference: TableReference
         var cascade: Bool
         var ignoreForeignKeys: Bool
     }
@@ -45,6 +49,7 @@ final class AppState: ObservableObject {
     @Published var showNewTableSheet = false
     @Published var selectedDBType: DatabaseType?
     @Published var selectedSidebarItem: SidebarItemType?
+    @Published private(set) var selectedSidebarItemSchema: String?
 
     // MARK: - Home State
 
@@ -62,11 +67,45 @@ final class AppState: ObservableObject {
     @Published var activeAdapter: (any DatabaseAdapter)?
     @Published var activeConfig: ConnectionConfig?
     @Published var sidebarItems: [SidebarItem] = []
+    @Published private(set) var sidebarSchemas: [String] = []
+    @Published var selectedSidebarSchema: String?
     @Published var connectionTitle: String = "Gridex"
     @Published var isConnecting: Bool = false
     @Published var connectionError: String?
     @Published var serverVersion: String?
     @Published var sslInfo: String?
+    // A single token covers schema discovery and item loading. The published
+    // snapshot stays coherent until the complete replacement is ready.
+    private var sidebarLoadGeneration = 0
+    private var pendingSidebarReload: SidebarReload?
+    private var publishedSidebarContext: SidebarConnectionContext?
+    private var publishedSidebarSnapshot: SidebarSnapshot?
+
+    private struct SidebarConnectionContext: Equatable {
+        let config: ConnectionConfig
+        let adapterID: ObjectIdentifier
+    }
+
+    private struct SidebarSnapshot {
+        let schemas: [String]
+        let selectedSchema: String?
+        let items: [SidebarItem]
+
+        static let empty = SidebarSnapshot(schemas: [], selectedSchema: nil, items: [])
+    }
+
+    private struct SidebarReload {
+        let generation: Int
+        let connection: SidebarConnectionContext
+        let requestedSchema: String?
+        let previous: SidebarSnapshot
+        var schemas: [String]
+        var schema: String?
+    }
+
+    struct SidebarReloadHandle: Hashable, Sendable {
+        fileprivate let generation: Int
+    }
 
     // MARK: - Tab State
 
@@ -161,6 +200,7 @@ final class AppState: ObservableObject {
         let schema: String?
         var databaseName: String?
         var initialViewMode: String? // "data" or "structure"
+        var sidebarItemType: SidebarItemType? = nil
     }
 
     struct TabGroup: Identifiable {
@@ -270,7 +310,7 @@ final class AppState: ObservableObject {
             isConnecting = false
 
             // Load sidebar immediately (most important for user)
-            await loadSidebar(config: config, adapter: connection.adapter)
+            await reloadSidebar(config: config, adapter: connection.adapter)
 
             // Fetch metadata in background — all parallel
             Task { [weak self] in
@@ -333,78 +373,272 @@ final class AppState: ObservableObject {
         }
     }
 
-    func loadSidebar(config: ConnectionConfig, adapter: any DatabaseAdapter) async {
+    func loadSidebarSchemas(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        preferredSchema: String? = nil
+    ) async -> SidebarReloadHandle? {
+        guard let reload = await prepareSidebarReload(
+            config: config,
+            adapter: adapter,
+            preferredSchema: preferredSchema
+        ) else { return nil }
+        pendingSidebarReload = reload
+        return SidebarReloadHandle(generation: reload.generation)
+    }
+
+    func loadSidebar(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        schema: String? = nil,
+        using handle: SidebarReloadHandle?
+    ) async {
+        let connection = sidebarConnectionContext(config: config, adapter: adapter)
+        guard let handle,
+              var reload = pendingSidebarReload,
+              reload.generation == handle.generation,
+              reload.connection == connection,
+              isCurrentSidebarReload(reload) else { return }
+
+        // Consume the exact prepared operation before any item query suspends.
+        // A duplicate or superseded caller can no longer reuse this token.
+        pendingSidebarReload = nil
+        if let schema,
+           config.databaseType == .postgresql,
+           reload.schemas.contains(schema) {
+            reload.schema = schema
+        }
+        await loadSidebarItems(using: reload, adapter: adapter)
+    }
+
+    private func reloadSidebar(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        preferredSchema: String? = nil
+    ) async {
+        guard let reload = await prepareSidebarReload(
+            config: config,
+            adapter: adapter,
+            preferredSchema: preferredSchema
+        ) else { return }
+        await loadSidebarItems(using: reload, adapter: adapter)
+    }
+
+    private func prepareSidebarReload(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        preferredSchema: String?
+    ) async -> SidebarReload? {
+        guard var reload = beginSidebarReload(
+            config: config,
+            adapter: adapter,
+            preferredSchema: preferredSchema
+        ) else { return nil }
+
         do {
-            // Run all queries in parallel instead of sequential
-            async let tablesTask = adapter.listTables(schema: nil)
-            async let viewsTask = adapter.listViews(schema: nil)
-            async let functionsTask = adapter.listFunctions(schema: nil)
-            async let proceduresTask = adapter.listProcedures(schema: nil)
+            let schemas: [String]
+            if config.databaseType == .postgresql {
+                schemas = Array(Set(try await adapter.listSchemas(database: config.database))).sorted()
+            } else {
+                schemas = []
+            }
+
+            guard isCurrentSidebarReload(reload) else { return nil }
+            reload.schemas = schemas
+            reload.schema = SidebarSchemaSelection.resolve(
+                previous: reload.requestedSchema,
+                for: config.databaseType,
+                schemas: schemas
+            )
+            return reload
+        } catch {
+            guard isCurrentSidebarReload(reload) else { return nil }
+            publishSidebarSnapshot(reload.previous, using: reload)
+            print("Sidebar schema load error: \(error)")
+            return nil
+        }
+    }
+
+    private func beginSidebarReload(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter,
+        preferredSchema: String?
+    ) -> SidebarReload? {
+        let connection = sidebarConnectionContext(config: config, adapter: adapter)
+        guard isActiveSidebarConnection(connection) else { return nil }
+
+        let requestedSchema = preferredSchema ?? selectedSidebarSchema
+        let previous: SidebarSnapshot
+        if publishedSidebarContext == connection, let publishedSidebarSnapshot {
+            previous = publishedSidebarSnapshot
+        } else {
+            previous = .empty
+        }
+
+        let connectionChanged = publishedSidebarContext != connection
+        sidebarLoadGeneration &+= 1
+        pendingSidebarReload = nil
+        let reload = SidebarReload(
+            generation: sidebarLoadGeneration,
+            connection: connection,
+            requestedSchema: requestedSchema,
+            previous: previous,
+            schemas: [],
+            schema: nil
+        )
+        guard isCurrentSidebarReload(reload) else { return nil }
+        if connectionChanged {
+            selectedSidebarItem = nil
+            selectedSidebarItemSchema = nil
+        }
+        guard publishSidebarSnapshot(previous, using: reload) else { return nil }
+        return reload
+    }
+
+    private func loadSidebarItems(
+        using reload: SidebarReload,
+        adapter: any DatabaseAdapter
+    ) async {
+        guard isCurrentSidebarReload(reload) else { return }
+        let schema = reload.schema
+
+        do {
+            async let tablesTask = adapter.listTables(schema: schema)
+            async let viewsTask = adapter.listViews(schema: schema)
+            async let functionsTask = adapter.listFunctions(schema: schema)
+            async let proceduresTask = adapter.listProcedures(schema: schema)
 
             let tables = try await tablesTask
             let views = try await viewsTask
             let functions = try await functionsTask
             let procedures = (try? await proceduresTask) ?? []
 
-            let tableItems = tables.map { t in
-                SidebarItem(title: t.name, type: .table(t.name), iconName: "")
+            let tableItems = tables.map { table in
+                SidebarItem(title: table.name, type: .table(table.name), schema: schema, iconName: "")
             }
-            let viewItems = views.map { v in
-                SidebarItem(title: v.name, type: .view(v.name), iconName: "")
+            let viewItems = views.map { view in
+                SidebarItem(title: view.name, type: .view(view.name), schema: schema, iconName: "")
             }
-            let functionItems = functions.map { f in
-                SidebarItem(title: f, type: .function(f), iconName: "")
+            let functionItems = functions.map { function in
+                SidebarItem(title: function, type: .function(function), schema: schema, iconName: "")
             }
-            let procedureItems = procedures.map { p in
-                SidebarItem(title: p, type: .procedure(p), iconName: "")
+            let procedureItems = procedures.map { procedure in
+                SidebarItem(title: procedure, type: .procedure(procedure), schema: schema, iconName: "")
             }
 
             var items: [SidebarItem] = []
-
             if !functionItems.isEmpty {
-                items.append(SidebarItem(title: "Functions", type: .group("functions"), iconName: "", children: functionItems))
+                items.append(SidebarItem(title: "Functions", type: .group("functions"), schema: schema, iconName: "", children: functionItems))
             }
-
             if !procedureItems.isEmpty {
-                items.append(SidebarItem(title: "Procedures", type: .group("procedures"), iconName: "", children: procedureItems))
+                items.append(SidebarItem(title: "Procedures", type: .group("procedures"), schema: schema, iconName: "", children: procedureItems))
             }
-
-            items.append(SidebarItem(title: "Tables", type: .group("tables"), iconName: "", children: tableItems))
-
+            items.append(SidebarItem(title: "Tables", type: .group("tables"), schema: schema, iconName: "", children: tableItems))
             if !viewItems.isEmpty {
-                items.append(SidebarItem(title: "Views", type: .group("views"), iconName: "", children: viewItems))
+                items.append(SidebarItem(title: "Views", type: .group("views"), schema: schema, iconName: "", children: viewItems))
             }
 
-            sidebarItems = items
+            guard isCurrentSidebarReload(reload) else { return }
+            publishSidebarSnapshot(
+                SidebarSnapshot(
+                    schemas: reload.schemas,
+                    selectedSchema: schema,
+                    items: items
+                ),
+                using: reload
+            )
         } catch {
+            guard isCurrentSidebarReload(reload) else { return }
+            publishSidebarSnapshot(reload.previous, using: reload)
             print("Sidebar load error: \(error)")
         }
     }
 
+    private func sidebarConnectionContext(
+        config: ConnectionConfig,
+        adapter: any DatabaseAdapter
+    ) -> SidebarConnectionContext {
+        SidebarConnectionContext(config: config, adapterID: ObjectIdentifier(adapter))
+    }
+
+    private func isActiveSidebarConnection(_ connection: SidebarConnectionContext) -> Bool {
+        guard activeConnectionId == connection.config.id,
+              activeConfig == connection.config,
+              let activeAdapter else { return false }
+        return ObjectIdentifier(activeAdapter) == connection.adapterID
+    }
+
+    private func isCurrentSidebarReload(_ reload: SidebarReload) -> Bool {
+        reload.generation == sidebarLoadGeneration
+            && isActiveSidebarConnection(reload.connection)
+    }
+
+    @discardableResult
+    private func publishSidebarSnapshot(
+        _ snapshot: SidebarSnapshot,
+        using reload: SidebarReload
+    ) -> Bool {
+        guard isCurrentSidebarReload(reload) else { return false }
+        sidebarSchemas = snapshot.schemas
+        selectedSidebarSchema = snapshot.selectedSchema
+        sidebarItems = snapshot.items
+        publishedSidebarContext = reload.connection
+        publishedSidebarSnapshot = snapshot
+        return true
+    }
+
     // MARK: - Tab Management
+
+    func selectSidebarItem(_ type: SidebarItemType, schema: String?) {
+        selectedSidebarItem = type
+        selectedSidebarItemSchema = schema
+    }
+
+    func clearSidebarSelection() {
+        selectedSidebarItem = nil
+        selectedSidebarItemSchema = nil
+    }
+
+    func isSidebarItemActive(_ item: SidebarItem) -> Bool {
+        selectedSidebarItem == item.type && selectedSidebarItemSchema == item.schema
+    }
 
     private func syncSidebarFromActiveTab() {
         guard let activeId = activeTabId,
               let tab = tabs.first(where: { $0.id == activeId }),
               let name = tab.tableName else { return }
-        switch tab.type {
-        case .functionDetail:
-            if tab.initialViewMode == "procedure" {
-                selectedSidebarItem = .procedure(name)
-            } else {
-                selectedSidebarItem = .function(name)
-            }
-        default:
-            selectedSidebarItem = .table(name)
+        let type: SidebarItemType
+        if let sidebarItemType = tab.sidebarItemType {
+            type = sidebarItemType
+        } else if tab.type == .functionDetail {
+            type = tab.initialViewMode == "procedure" ? .procedure(name) : .function(name)
+        } else {
+            type = .table(name)
         }
+        selectSidebarItem(type, schema: tab.schema)
     }
 
-    func openTable(name: String, schema: String?) {
-        if let existing = tabs.first(where: { $0.type == .dataGrid && $0.tableName == name && $0.schema == schema }) {
-            activeTabId = existing.id
+    func openTable(
+        name: String,
+        schema: String?,
+        sidebarItemType: SidebarItemType? = nil
+    ) {
+        if let index = tabs.firstIndex(where: { $0.type == .dataGrid && $0.tableName == name && $0.schema == schema }) {
+            if let sidebarItemType {
+                tabs[index].sidebarItemType = sidebarItemType
+            }
+            activeTabId = tabs[index].id
             return
         }
-        let tab = ContentTab(id: UUID(), type: .dataGrid, title: name, tableName: name, schema: schema, databaseName: currentDatabaseName)
+        let tab = ContentTab(
+            id: UUID(),
+            type: .dataGrid,
+            title: name,
+            tableName: name,
+            schema: schema,
+            databaseName: currentDatabaseName,
+            sidebarItemType: sidebarItemType ?? .table(name)
+        )
         tabs.append(tab)
         activeTabId = tab.id
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
@@ -539,6 +773,25 @@ final class AppState: ObservableObject {
         if let db = currentDatabaseName { ensureTabGroup(for: db) }
     }
 
+    func selectTab(id: UUID) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        activeTabId = id
+    }
+
+    func selectNextTab() {
+        guard let activeTabId,
+              let index = tabs.firstIndex(where: { $0.id == activeTabId }),
+              tabs.count > 1 else { return }
+        self.activeTabId = tabs[(index + 1) % tabs.count].id
+    }
+
+    func selectPreviousTab() {
+        guard let activeTabId,
+              let index = tabs.firstIndex(where: { $0.id == activeTabId }),
+              tabs.count > 1 else { return }
+        self.activeTabId = tabs[(index - 1 + tabs.count) % tabs.count].id
+    }
+
     func closeTab(id: UUID) {
         tabs.removeAll { $0.id == id }
         if let state = dataGridCache.removeValue(forKey: id) {
@@ -653,7 +906,7 @@ final class AppState: ObservableObject {
 
             // Reload sidebar for the new database
             if let cfg = activeConfig, let adp = activeAdapter {
-                await loadSidebar(config: cfg, adapter: adp)
+                await reloadSidebar(config: cfg, adapter: adp)
             }
         } catch {
             print("Switch database failed: \(error)")
@@ -693,6 +946,10 @@ final class AppState: ObservableObject {
     }
 
     func disconnect() {
+        sidebarLoadGeneration &+= 1
+        pendingSidebarReload = nil
+        publishedSidebarContext = nil
+        publishedSidebarSnapshot = nil
         if let adapter = activeAdapter {
             Task { try? await adapter.disconnect() }
         }
@@ -708,7 +965,10 @@ final class AppState: ObservableObject {
         currentDatabaseName = nil
         availableDatabases.removeAll()
         sidebarItems.removeAll()
+        sidebarSchemas.removeAll()
+        selectedSidebarSchema = nil
         selectedSidebarItem = nil
+        selectedSidebarItemSchema = nil
         selectedRowDetails = nil
         onDetailFieldEdit = nil
         serverVersion = nil
@@ -721,9 +981,15 @@ final class AppState: ObservableObject {
         redisDBSize = nil
     }
 
-    func refreshSidebar() {
+    func refreshSidebar(preferredSchema: String? = nil) {
         guard let adapter = activeAdapter, let config = activeConfig else { return }
-        Task { await loadSidebar(config: config, adapter: adapter) }
+        Task {
+            await reloadSidebar(
+                config: config,
+                adapter: adapter,
+                preferredSchema: preferredSchema
+            )
+        }
     }
 
     /// Re-fetch the database list from the active adapter and publish it.

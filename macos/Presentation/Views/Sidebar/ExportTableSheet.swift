@@ -13,6 +13,7 @@ enum ExportFormat: String, CaseIterable {
 
 struct ExportTableSheet: View {
     let tableName: String
+    let schema: String?
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
@@ -327,7 +328,7 @@ struct ExportTableSheet: View {
 
     private func exportTable(_ table: String, to url: URL, adapter: any DatabaseAdapter) async throws {
         let d = adapter.databaseType.sqlDialect
-        let sql = "SELECT * FROM \(d.quoteIdentifier(table))"
+        let sql = "SELECT * FROM \(d.qualifiedIdentifier(table, schema: schema))"
         var result = try await adapter.executeRaw(sql: sql)
 
         if convertNullToEmpty {
@@ -342,7 +343,7 @@ struct ExportTableSheet: View {
         case .sql:
             // Full-fidelity SQL export — fetch structure first so we can emit
             // DROP/CREATE/sequences/indices alongside the INSERT rows.
-            let description = try await adapter.describeTable(name: table, schema: nil)
+            let description = try await adapter.describeTable(name: table, schema: schema)
             try await ExportService().exportTableSQL(
                 description: description,
                 rows: result.rows,
