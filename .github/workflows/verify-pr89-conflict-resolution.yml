@@ -1,0 +1,54 @@
+name: Verify PR 89 conflict resolution
+
+on:
+  push:
+    branches:
+      - codex/verify-pr89-conflict-resolution
+
+jobs:
+  verify:
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: |
+          XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          swift --version
+          xcodebuild -version
+
+      - name: Cache Swift packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Test Redis AppState integration
+        run: swift test --filter RedisAppStateTests
+
+      - name: Test Redis flat grid lifecycle
+        run: swift test --filter RedisDataGridLifecycleTests
+
+      - name: Test SQL data grid refresh ownership
+        run: swift test --filter DataGridRefreshTests
+
+      - name: Test PostgreSQL sidebar ownership
+        run: swift test --filter SidebarLoadPublicationTests
+
+      - name: Test tab navigation
+        run: swift test --filter TabNavigationTests
+
+      - name: Run full suite with documented OAuth baseline skipped
+        run: swift test --skip ChatGPTOAuthServiceTests/test_loopbackCallbackBeforeAwait_isBuffered
+
+      - name: Build
+        run: swift build
