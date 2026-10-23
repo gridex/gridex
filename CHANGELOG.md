@@ -5,6 +5,7 @@ All notable changes to Gridex are documented in this file. Gridex ships native a
 ## [Unreleased]
 
 ### Added
+- **Cheaper Inference AI provider**: Cheaper Inference (`https://api.cheaperinference.com/v1`) is available as an OpenAI-compatible AI provider on macOS and Windows, next to OpenRouter, Requesty and Opper.
 - **Opper AI provider**: Opper (`https://api.opper.ai/v3/compat`) is available as an OpenAI-compatible AI provider on macOS and Windows, next to OpenRouter and Requesty.
 - **Redis namespace key tree (macOS)** — Redis keys can be browsed as a collapsible sidebar tree using a local configurable delimiter (default `:`). Leaf keys open the existing detail view; the flat SCAN-filtered key list remains available.
 

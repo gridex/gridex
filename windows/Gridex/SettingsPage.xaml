@@ -91,6 +91,7 @@
                                 <ComboBoxItem Content="OpenAI (Sign in)" />
                                 <ComboBoxItem Content="Requesty" />
                                 <ComboBoxItem Content="Opper" />
+                                <ComboBoxItem Content="Cheaper Inference" />
                             </ComboBox>
                         </StackPanel>
 

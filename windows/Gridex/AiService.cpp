@@ -139,6 +139,7 @@ namespace DBModels
         case AiProvider::ChatGPT:    return CallChatGPT(messages, systemPrompt);
         case AiProvider::Requesty:   return CallRequesty(messages, systemPrompt);
         case AiProvider::Opper:      return CallOpper(messages, systemPrompt);
+        case AiProvider::CheaperInference: return CallCheaperInference(messages, systemPrompt);
         default: return L"Unsupported AI provider";
         }
     }
@@ -627,6 +628,73 @@ namespace DBModels
         return L"No response content";
     }
 
+    // Cheaper Inference chat completions
+    //
+    // Cheaper Inference is OpenAI-protocol-compatible (base
+    // https://api.cheaperinference.com/v1), so the request/response shapes are
+    // the same as CallRequesty; only the host and path differ. Model ids are
+    // bare pool names such as "gpt-5.4-mini". Auth is a standard
+    // Authorization: Bearer key.
+    std::wstring AiService::CallCheaperInference(
+        const std::vector<ChatMessage>& messages,
+        const std::wstring& systemPrompt)
+    {
+        httplib::Client cli("https://api.cheaperinference.com");
+        cli.set_connection_timeout(30);
+        cli.set_read_timeout(60);
+
+        auto apiKey = trimWs(config_.apiKey);
+        if (apiKey.empty())
+            return L"Error: Cheaper Inference API key is missing. Set it in Settings.";
+
+        nlohmann::json body;
+        auto model = trimWs(config_.model);
+        body["model"] = toUtf8(model.empty() ? L"gpt-5.4-mini" : model);
+        body["max_tokens"] = 2048;
+
+        nlohmann::json msgs = nlohmann::json::array();
+        if (!systemPrompt.empty())
+        {
+            nlohmann::json sysMsg;
+            sysMsg["role"] = "system";
+            sysMsg["content"] = toUtf8(systemPrompt);
+            msgs.push_back(sysMsg);
+        }
+        for (auto& m : messages)
+        {
+            nlohmann::json msg;
+            msg["role"] = toUtf8(m.role);
+            msg["content"] = toUtf8(m.content);
+            msgs.push_back(msg);
+        }
+        body["messages"] = msgs;
+
+        httplib::Headers headers = {
+            {"Authorization", "Bearer " + toUtf8(apiKey)}
+        };
+
+        auto res = cli.Post("/v1/chat/completions", headers,
+                            body.dump(), "application/json");
+        if (!res)
+            return L"Error: Failed to connect to Cheaper Inference API";
+
+        if (res->status != 200)
+            return fromUtf8("Error " + std::to_string(res->status) +
+                            " (model=" + toUtf8(model) + "): " + res->body);
+
+        try
+        {
+            auto json = nlohmann::json::parse(res->body);
+            if (json.contains("choices") && !json["choices"].empty())
+                return fromUtf8(json["choices"][0]["message"]["content"].get<std::string>());
+        }
+        catch (const std::exception& e)
+        {
+            return fromUtf8(std::string("Parse error: ") + e.what());
+        }
+        return L"No response content";
+    }
+
     // ── ChatGPT Subscription (Codex Responses API) ─────
     //
     // Uses OAuth bearer token from ChatGPT::OAuthService.
@@ -1011,6 +1079,43 @@ namespace DBModels
                     for (auto& m : json["data"])
                         if (m.contains("id"))
                             r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                }
+                break;
+            }
+
+            case AiProvider::CheaperInference:
+            {
+                // Cheaper Inference's /v1/models listing has the OpenAI shape
+                // ({"data":[{"id":...,"type":...}]}) and needs the API key.
+                // Rows carry a "type"; the picker is for chat, so keep "text".
+                httplib::Client cli("https://api.cheaperinference.com");
+                cli.set_connection_timeout(15);
+                cli.set_read_timeout(30);
+                httplib::Headers headers;
+                if (!apiKey.empty())
+                    headers.emplace("Authorization", "Bearer " + toUtf8(apiKey));
+                auto res = cli.Get("/v1/models", headers);
+                if (!res)
+                {
+                    r.errorMessage = L"Cheaper Inference models request failed (no response).";
+                    return r;
+                }
+                if (res->status != 200)
+                {
+                    r.errorMessage = fromUtf8("HTTP " + std::to_string(res->status) + ": " + res->body);
+                    return r;
+                }
+                auto json = nlohmann::json::parse(res->body);
+                if (json.contains("data") && json["data"].is_array())
+                {
+                    for (auto& m : json["data"])
+                    {
+                        if (!m.contains("id"))
+                            continue;
+                        if (m.contains("type") && m["type"].get<std::string>() != "text")
+                            continue;
+                        r.models.push_back(fromUtf8(m["id"].get<std::string>()));
+                    }
                 }
                 break;
             }

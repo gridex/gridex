@@ -19,6 +19,7 @@ namespace DBModels
         ChatGPT    = 5,  // Subscription-based via OAuth (no API key)
         Requesty   = 6,  // OpenAI-compatible router (https://router.requesty.ai/v1)
         Opper      = 7,  // OpenAI-compatible gateway (https://api.opper.ai/v3/compat)
+        CheaperInference = 8,  // OpenAI-compatible gateway (https://api.cheaperinference.com/v1)
     };
 
     struct AiConfig
@@ -95,6 +96,9 @@ namespace DBModels
             const std::vector<ChatMessage>& messages,
             const std::wstring& systemPrompt);
         std::wstring CallOpper(
+            const std::vector<ChatMessage>& messages,
+            const std::wstring& systemPrompt);
+        std::wstring CallCheaperInference(
             const std::vector<ChatMessage>& messages,
             const std::wstring& systemPrompt);
         std::wstring CallChatGPT(
