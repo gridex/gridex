@@ -88,6 +88,19 @@ final class ProviderFactoryTests: XCTestCase {
         XCTAssertTrue(service is OpenAIProvider)
     }
 
+    func test_make_runcrate_returnsOpenAIProvider() {
+        let config = ProviderConfig(name: "Runcrate", type: .runcrate)
+        let service = ProviderFactory.make(config: config, apiKey: "rc-test")
+        XCTAssertTrue(service is OpenAIProvider)
+    }
+
+    func test_runcrate_defaults() {
+        XCTAssertEqual(ProviderType.runcrate.family, .openAICompat)
+        XCTAssertEqual(ProviderType.runcrate.defaultBaseURL, "https://api.runcrate.ai/v1")
+        XCTAssertEqual(ProviderType.runcrate.fallbackModelIDs.first, ProviderType.runcrate.defaultModel)
+        XCTAssertTrue(ProviderType.runcrate.requiresAPIKey)
+    }
+
     // MARK: - Default model for .chatGPT
 
     func test_defaultModel_chatGPT_isNonEmpty() {
