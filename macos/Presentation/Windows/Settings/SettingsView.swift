@@ -34,6 +34,7 @@ struct GeneralSettingsView: View {
     @AppStorage("general.refreshInterval") private var refreshInterval = 300 // seconds
     @AppStorage("general.showQueryLog") private var showQueryLog = false
     @AppStorage("mcp.hideStatusBarIcon") private var hideStatusBarIcon = false
+    @AppStorage("general.closeToMenuBar") private var closeToMenuBar = false
     @AppStorage("redis.keyBrowser.delimiter") private var redisKeyBrowserDelimiter = ":"
 
     var body: some View {
@@ -74,6 +75,7 @@ struct GeneralSettingsView: View {
 
             Section("Status Bar") {
                 Toggle("Hide status bar icon", isOn: $hideStatusBarIcon)
+                Toggle("Keep running in menu bar when closing the window", isOn: $closeToMenuBar)
             }
         }
         .formStyle(.grouped)

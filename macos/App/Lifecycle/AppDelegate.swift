@@ -112,6 +112,10 @@ final class WindowCloseInterceptor: NSObject, NSWindowDelegate {
         }
 
         if otherMainWindows.isEmpty {
+            if UserDefaults.standard.bool(forKey: "general.closeToMenuBar") {
+                sender.orderOut(nil)
+                return false
+            }
             // Last window — keep it open, just disconnect
             NotificationCenter.default.post(name: .windowCloseRequested, object: sender)
             return false
