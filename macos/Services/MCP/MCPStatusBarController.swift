@@ -93,6 +93,11 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
 
+        let showAppItem = NSMenuItem(title: "Open Gridex", action: #selector(showApp), keyEquivalent: "")
+        showAppItem.target = self
+        menu.addItem(showAppItem)
+        menu.addItem(NSMenuItem.separator())
+
         // Status header
         let headerItem = NSMenuItem(title: "MCP Server", action: nil, keyEquivalent: "")
         headerItem.isEnabled = false
@@ -156,6 +161,12 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
                 await DependencyContainer.shared.mcpServer.stop()
             }
         }
+    }
+
+    @objc private func showApp() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows.first { $0.canBecomeMain && !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func openMCPWindow() {

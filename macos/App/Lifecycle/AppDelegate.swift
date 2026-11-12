@@ -83,11 +83,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        !UserDefaults.standard.bool(forKey: "general.closeToMenuBar")
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
+            sender.setActivationPolicy(.regular)
             for window in sender.windows {
                 window.makeKeyAndOrderFront(nil)
             }
@@ -112,6 +113,14 @@ final class WindowCloseInterceptor: NSObject, NSWindowDelegate {
         }
 
         if otherMainWindows.isEmpty {
+            if UserDefaults.standard.bool(forKey: "general.closeToMenuBar") {
+                sender.orderOut(nil)
+                // Without the status icon there'd be no way back, so keep the Dock icon then
+                if !UserDefaults.standard.bool(forKey: "mcp.hideStatusBarIcon") {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+                return false
+            }
             // Last window — keep it open, just disconnect
             NotificationCenter.default.post(name: .windowCloseRequested, object: sender)
             return false
