@@ -164,6 +164,7 @@ class MCPStatusBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showApp() {
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         NSApp.windows.first { $0.canBecomeMain && !($0 is NSPanel) }?.makeKeyAndOrderFront(nil)
     }
