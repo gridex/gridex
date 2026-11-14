@@ -78,6 +78,10 @@ final class MySQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendabl
         }
 
         let tlsConfig = try Self.makeTLSConfig(for: config.effectiveSSLMode, config: config)
+        // SNI must be a DNS name (RFC 6066) and NIOSSL rejects IP literals outright, which
+        // broke TLS for hosts like 127.0.0.1. Without a hostname, NIOSSL still verifies
+        // identity (Verify Identity mode) against the connected IP via the cert's IP SANs.
+        let isIPAddress = (try? SocketAddress(ipAddress: host, port: 0)) != nil
 
         do {
             let conn = try await MySQLConnection.connect(
@@ -86,7 +90,7 @@ final class MySQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendabl
                 database: database,
                 password: password,
                 tlsConfiguration: tlsConfig,
-                serverHostname: host,
+                serverHostname: isIPAddress ? nil : host,
                 logger: logger,
                 on: eventLoopGroup.next()
             ).get()
