@@ -77,6 +77,9 @@ struct MainView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $appState.showUsersSheet) {
+            DatabaseUsersSheet()
+        }
         .sheet(isPresented: $appState.showDBTypePicker) {
             DatabaseTypePickerView()
         }

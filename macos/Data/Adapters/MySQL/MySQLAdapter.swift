@@ -692,3 +692,95 @@ final class MySQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Sendabl
         "`\(name.replacingOccurrences(of: "`", with: "``"))`"
     }
 }
+
+// MARK: - User Management
+
+extension MySQLAdapter: UserManageable {
+    func listUsers() async throws -> [DatabaseUser] {
+        // Rows with an empty Host are MariaDB roles, not login accounts.
+        let result = try await executeRaw(sql: """
+            SELECT User, Host, Super_priv FROM mysql.user
+            WHERE Host <> ''
+            ORDER BY User, Host
+            """)
+        return result.rows.compactMap { row in
+            guard let name = row[0].stringValue, let host = row[1].stringValue else { return nil }
+            return DatabaseUser(name: name, host: host, canLogin: true, isSuperuser: row[2].stringValue == "Y")
+        }
+    }
+
+    func createUser(name: String, host: String?, password: String) async throws {
+        let flags = try await serverFlags()
+        let account = accountName(name, host: host ?? "%", flags: flags)
+        _ = try await executeRaw(sql: "CREATE USER \(account) IDENTIFIED BY \(stringLiteral(password, flags: flags))")
+    }
+
+    func changePassword(for user: DatabaseUser, to password: String) async throws {
+        let flags = try await serverFlags()
+        let account = accountName(user.name, host: user.host ?? "%", flags: flags)
+        _ = try await executeRaw(sql: "ALTER USER \(account) IDENTIFIED BY \(stringLiteral(password, flags: flags))")
+    }
+
+    func dropUser(_ user: DatabaseUser) async throws {
+        let flags = try await serverFlags()
+        _ = try await executeRaw(sql: "DROP USER \(accountName(user.name, host: user.host ?? "%", flags: flags))")
+    }
+
+    func setAccess(_ level: DatabaseAccessLevel, for user: DatabaseUser, database: String) async throws {
+        let flags = try await serverFlags()
+        let account = accountName(user.name, host: user.host ?? "%", flags: flags)
+        // `_` and `%` are wildcards in database-level GRANTs unless partial_revokes is on,
+        // so escape them; otherwise `my_db` would also match e.g. `myXdb`.
+        let dbPattern = flags.partialRevokes
+            ? database
+            : database.replacingOccurrences(of: "_", with: "\\_").replacingOccurrences(of: "%", with: "\\%")
+        let target = "\(quoteIdentifier(dbPattern)).*"
+
+        // GRANT/REVOKE commit implicitly in MySQL, so there's no transaction to wrap these in.
+        do {
+            _ = try await executeRaw(sql: "REVOKE ALL PRIVILEGES ON \(target) FROM \(account)")
+        } catch MySQLError.server(let packet) where packet.errorCode == .NONEXISTING_GRANT {
+            // The user had no privileges on this database; nothing to revoke.
+        }
+
+        let privileges: String
+        switch level {
+        case .none: return
+        case .readOnly: privileges = "SELECT, SHOW VIEW"
+        case .readWrite: privileges = "SELECT, INSERT, UPDATE, DELETE, EXECUTE, SHOW VIEW, CREATE TEMPORARY TABLES, LOCK TABLES"
+        case .full: privileges = "ALL PRIVILEGES"
+        }
+        _ = try await executeRaw(sql: "GRANT \(privileges) ON \(target) TO \(account)")
+    }
+
+    private struct ServerFlags {
+        var noBackslashEscapes = false
+        var partialRevokes = false
+    }
+
+    /// Session settings that change how literals and GRANT targets must be written.
+    private func serverFlags() async throws -> ServerFlags {
+        let result = try await executeRaw(sql: "SHOW VARIABLES WHERE Variable_name IN ('sql_mode', 'partial_revokes')")
+        var flags = ServerFlags()
+        for row in result.rows {
+            let value = (row.count > 1 ? row[1].stringValue : nil) ?? ""
+            switch row.first?.stringValue {
+            case "sql_mode": flags.noBackslashEscapes = value.contains("NO_BACKSLASH_ESCAPES")
+            case "partial_revokes": flags.partialRevokes = value == "ON"
+            default: break
+            }
+        }
+        return flags
+    }
+
+    private func stringLiteral(_ value: String, flags: ServerFlags) -> String {
+        // With NO_BACKSLASH_ESCAPES a backslash is literal, so only quotes may be doubled.
+        flags.noBackslashEscapes
+            ? "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+            : "'\(escapeSQL(value))'"
+    }
+
+    private func accountName(_ name: String, host: String, flags: ServerFlags) -> String {
+        "\(stringLiteral(name, flags: flags))@\(stringLiteral(host, flags: flags))"
+    }
+}

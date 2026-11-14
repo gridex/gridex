@@ -94,6 +94,13 @@ struct GridexApp: App {
                     currentAppState?.showNewTableSheet = true
                 }
                 .disabled(currentAppState?.activeAdapter == nil)
+
+                Divider()
+
+                Button("Manage Users...") {
+                    currentAppState?.showUsersSheet = true
+                }
+                .disabled(!(currentAppState?.activeAdapter is UserManageable))
             }
 
             CommandMenu("Data") {
