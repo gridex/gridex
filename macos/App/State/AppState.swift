@@ -44,6 +44,7 @@ final class AppState: ObservableObject {
     var aiChatMessages: [UUID: [ChatDisplayMessage]] = [:]
     @Published var aiPanelVisible = false
     @Published var showDBTypePicker = false
+    @Published var showUsersSheet = false
     @Published var showConnectionForm = false
     @Published var showDatabaseSwitcher = false
     @Published var showNewTableSheet = false

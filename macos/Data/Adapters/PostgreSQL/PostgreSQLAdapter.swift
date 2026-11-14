@@ -4,6 +4,8 @@
 // PostgreSQL database adapter using PostgresNIO.
 
 import Foundation
+import CommonCrypto
+import CryptoKit
 import PostgresNIO
 import NIOCore
 import NIOPosix
@@ -986,5 +988,223 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
             result = result.replacingOccurrences(of: "$\(i + 1)", with: inlineValue("", value))
         }
         return result
+    }
+}
+
+// MARK: - User Management
+
+extension PostgreSQLAdapter: UserManageable {
+    func listUsers() async throws -> [DatabaseUser] {
+        // pg_roles (not information_schema) so every role is visible to every user.
+        let result = try await executeRaw(sql: """
+            SELECT rolname, rolcanlogin, rolsuper FROM pg_roles
+            WHERE rolname !~ '^pg_'
+            ORDER BY rolname
+            """)
+        return result.rows.compactMap { row in
+            guard let name = row.first?.stringValue else { return nil }
+            return DatabaseUser(
+                name: name, host: nil,
+                canLogin: row[1] == .boolean(true),
+                isSuperuser: row[2] == .boolean(true)
+            )
+        }
+    }
+
+    func createUser(name: String, host: String?, password: String) async throws {
+        let role = SQLDialect.postgresql.quoteIdentifier(name)
+        let verifier = try Self.scramSHA256Verifier(password: password)
+        _ = try await executeRaw(sql: "CREATE ROLE \(role) WITH LOGIN PASSWORD '\(verifier)'")
+    }
+
+    func changePassword(for user: DatabaseUser, to password: String) async throws {
+        let role = SQLDialect.postgresql.quoteIdentifier(user.name)
+        let verifier = try Self.scramSHA256Verifier(password: password)
+        _ = try await executeRaw(sql: "ALTER ROLE \(role) WITH PASSWORD '\(verifier)'")
+    }
+
+    func dropUser(_ user: DatabaseUser) async throws {
+        // Privileges held in this database would block DROP ROLE, so revoke them in the same
+        // transaction. Owned objects or privileges in other databases still block it, and
+        // PostgreSQL's error lists them.
+        let database = try await currentDatabase() ?? ""
+        var statements = try await accessStatements(.none, role: user.name, database: database)
+        statements.append("DROP ROLE \(SQLDialect.postgresql.quoteIdentifier(user.name))")
+        try await executeInTransaction(statements)
+    }
+
+    func setAccess(_ level: DatabaseAccessLevel, for user: DatabaseUser, database: String) async throws {
+        try await executeInTransaction(try await accessStatements(level, role: user.name, database: database))
+    }
+
+    /// Revoke-everything-then-grant statements for `level` on the connected `database`.
+    private func accessStatements(_ level: DatabaseAccessLevel, role: String, database: String) async throws -> [String] {
+        let d = SQLDialect.postgresql
+        let r = d.quoteIdentifier(role)
+        let db = d.quoteIdentifier(database)
+        // Only schemas the current user owns (directly or via membership): granting on
+        // anyone else's schema fails outright (e.g. Supabase's auth/storage for `postgres`).
+        let schemas = try await executeRaw(sql: """
+            SELECT nspname FROM pg_namespace
+            WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+              AND nspname !~ '^pg_(temp|toast_temp)_'
+              AND pg_has_role(nspowner, 'USAGE')
+            ORDER BY nspname
+            """).rows.compactMap { $0.first?.stringValue }.map(d.quoteIdentifier)
+
+        var sql = ["REVOKE ALL ON DATABASE \(db) FROM \(r)"]
+        for s in schemas {
+            sql += [
+                "REVOKE ALL ON ALL TABLES IN SCHEMA \(s) FROM \(r)",
+                "REVOKE ALL ON ALL SEQUENCES IN SCHEMA \(s) FROM \(r)",
+                "REVOKE ALL ON ALL FUNCTIONS IN SCHEMA \(s) FROM \(r)",
+                "REVOKE ALL ON SCHEMA \(s) FROM \(r)",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) REVOKE ALL ON TABLES FROM \(r)",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) REVOKE ALL ON SEQUENCES FROM \(r)",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) REVOKE ALL ON FUNCTIONS FROM \(r)",
+            ]
+        }
+
+        let privileges: (database: String, schema: String, tables: String, sequences: String, functions: String?)
+        switch level {
+        case .none:
+            return sql
+        case .readOnly:
+            privileges = ("CONNECT", "USAGE", "SELECT", "SELECT", nil)
+        case .readWrite:
+            privileges = ("CONNECT, TEMPORARY", "USAGE", "SELECT, INSERT, UPDATE, DELETE", "USAGE, SELECT, UPDATE", "EXECUTE")
+        case .full:
+            privileges = ("ALL", "ALL", "ALL", "ALL", "ALL")
+        }
+
+        sql.append("GRANT \(privileges.database) ON DATABASE \(db) TO \(r)")
+        for s in schemas {
+            sql += [
+                "GRANT \(privileges.schema) ON SCHEMA \(s) TO \(r)",
+                "GRANT \(privileges.tables) ON ALL TABLES IN SCHEMA \(s) TO \(r)",
+                "GRANT \(privileges.sequences) ON ALL SEQUENCES IN SCHEMA \(s) TO \(r)",
+                // Tables/sequences created later by the current user get the same access.
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) GRANT \(privileges.tables) ON TABLES TO \(r)",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) GRANT \(privileges.sequences) ON SEQUENCES TO \(r)",
+            ]
+            if let functions = privileges.functions {
+                sql += [
+                    "GRANT \(functions) ON ALL FUNCTIONS IN SCHEMA \(s) TO \(r)",
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA \(s) GRANT \(functions) ON FUNCTIONS TO \(r)",
+                ]
+            }
+        }
+        return sql
+    }
+
+    /// SCRAM-SHA-256 verifier computed on the client, as psql's `\password` (libpq's
+    /// PQencryptPasswordConn) does, so the plaintext password never reaches the server,
+    /// its statement log or pg_stat_statements. The server stores a pre-hashed verifier
+    /// as-is. Output is base64 plus `$`, `:` and digits, so it is safe inside '...'.
+    /// Requires PostgreSQL 10+.
+    static func scramSHA256Verifier(password: String, iterations: Int = 4096) throws -> String {
+        // Hash what libpq (and the server, for plaintext) would: SASLprep'd, or raw if prohibited.
+        let prepared = Array((saslPrep(password) ?? password).utf8)
+
+        var rng = SystemRandomNumberGenerator()  // CSPRNG on Apple platforms
+        let salt = (0..<16).map { _ in UInt8.random(in: .min ... .max, using: &rng) }
+        var salted = [UInt8](repeating: 0, count: 32)
+        let status = prepared.withUnsafeBufferPointer { pw in
+            pw.withMemoryRebound(to: CChar.self) { pwChars in
+                CCKeyDerivationPBKDF(
+                    CCPBKDFAlgorithm(kCCPBKDF2), pwChars.baseAddress, pwChars.count,
+                    salt, salt.count, CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
+                    UInt32(iterations), &salted, salted.count
+                )
+            }
+        }
+        guard status == kCCSuccess else {
+            throw GridexError.internalError("PBKDF2 failed (\(status))")
+        }
+
+        let key = SymmetricKey(data: salted)
+        let clientKey = Data(HMAC<SHA256>.authenticationCode(for: Data("Client Key".utf8), using: key))
+        let storedKey = Data(SHA256.hash(data: clientKey))
+        let serverKey = Data(HMAC<SHA256>.authenticationCode(for: Data("Server Key".utf8), using: key))
+        return "SCRAM-SHA-256$\(iterations):\(Data(salt).base64EncodedString())"
+            + "$\(storedKey.base64EncodedString()):\(serverKey.base64EncodedString())"
+    }
+
+    /// RFC 4013 SASLprep as PostgreSQL implements it (src/common/saslprep.c), which libpq
+    /// and the server apply before SCRAM hashing. Returns nil when the result contains
+    /// prohibited characters; PostgreSQL then uses the raw password bytes instead.
+    private static func saslPrep(_ password: String) -> String? {
+        if password.unicodeScalars.allSatisfy(\.isASCII) { return password }
+
+        func isNonASCIISpace(_ v: UInt32) -> Bool {  // C.1.2
+            v == 0x00A0 || v == 0x1680 || (0x2000...0x200B).contains(v) || v == 0x202F || v == 0x205F || v == 0x3000
+        }
+        func isMappedToNothing(_ v: UInt32) -> Bool {  // B.1
+            [0x00AD, 0x034F, 0x1806, 0x180B, 0x180C, 0x180D, 0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF].contains(v)
+                || (0xFE00...0xFE0F).contains(v)
+        }
+        func isProhibited(_ s: Unicode.Scalar) -> Bool {
+            let v = s.value
+            // A.1: unassigned as of Unicode 3.2, the version stringprep is defined against.
+            guard let age = s.properties.age, age.major < 3 || (age.major == 3 && age.minor <= 2) else { return true }
+            return isNonASCIISpace(v)
+                || v < 0x20 || v == 0x7F || (0x80...0x9F).contains(v)                       // C.2.1, C.2.2
+                || [0x06DD, 0x070F, 0x180E, 0x200C, 0x200D, 0x2028, 0x2029, 0xFEFF].contains(v)
+                || (0x2060...0x2063).contains(v) || (0x206A...0x206F).contains(v)
+                || (0xFFF9...0xFFFD).contains(v) || (0x1D173...0x1D17A).contains(v)        // C.2.2, C.6
+                || (0xE000...0xF8FF).contains(v) || v >= 0xF0000                           // C.3 (planes 15–16 are private use)
+                || (0xFDD0...0xFDEF).contains(v) || (v & 0xFFFE) == 0xFFFE                 // C.4
+                || (0x2FF0...0x2FFB).contains(v)                                           // C.7
+                || [0x0340, 0x0341, 0x200E, 0x200F].contains(v) || (0x202A...0x202E).contains(v) // C.8
+                || v == 0xE0001 || (0xE0020...0xE007F).contains(v)                         // C.9
+        }
+        // D.1 / D.2 (bidi R/AL vs L), approximated from right-to-left script blocks and letter categories.
+        func isRandAL(_ s: Unicode.Scalar) -> Bool {
+            let v = s.value
+            let rtlBlock = (0x0590...0x08FF).contains(v) || (0xFB1D...0xFDFF).contains(v)
+                || (0xFE70...0xFEFF).contains(v) || (0x10800...0x10FFF).contains(v) || (0x1E800...0x1EFFF).contains(v)
+            switch s.properties.generalCategory {
+            case .nonspacingMark, .spacingMark, .enclosingMark, .decimalNumber: return false
+            default: return rtlBlock
+            }
+        }
+        func isLCat(_ s: Unicode.Scalar) -> Bool {
+            switch s.properties.generalCategory {
+            case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter:
+                return !isRandAL(s)
+            default: return false
+            }
+        }
+
+        var mapped = String.UnicodeScalarView()
+        for s in password.unicodeScalars {
+            if isNonASCIISpace(s.value) { mapped.append(" ") }
+            else if !isMappedToNothing(s.value) { mapped.append(s) }
+        }
+        let normalized = String(mapped).precomposedStringWithCompatibilityMapping
+        let out = Array(normalized.unicodeScalars)
+        if out.contains(where: isProhibited) { return nil }
+        if out.contains(where: isRandAL) {
+            guard let first = out.first, let last = out.last, isRandAL(first), isRandAL(last),
+                  !out.contains(where: isLCat) else { return nil }
+        }
+        return normalized
+    }
+
+    /// Runs all statements on one pooled connection inside a single transaction.
+    private func executeInTransaction(_ statements: [String]) async throws {
+        try ensureConnected()
+        guard let client else { throw GridexError.queryExecutionFailed("No connection") }
+        let logger = Logger(label: "gridex.postgresql.users")
+        do {
+            try await client.withTransaction(logger: logger) { connection in
+                for statement in statements {
+                    let rows = try await connection.query(PostgresQuery(unsafeSQL: statement), logger: logger)
+                    for try await _ in rows {}
+                }
+            }
+        } catch {
+            throw GridexError.queryExecutionFailed(Self.formatPostgresError(error))
+        }
     }
 }
