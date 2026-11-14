@@ -114,7 +114,8 @@ struct MainView: View {
 struct HomeView: View {
     @EnvironmentObject private var appState: AppState
     @State private var selectedConnectionId: UUID?
-    @State private var collapsedGroups: Set<String> = []
+    private static let collapsedGroupsKey = "collapsedConnectionGroups"
+    @State private var collapsedGroups = Set(UserDefaults.standard.stringArray(forKey: collapsedGroupsKey) ?? [])
     @State private var showNewGroupAlert = false
     @State private var newGroupName = ""
     @State private var renamingGroup: String?
@@ -164,6 +165,9 @@ struct HomeView: View {
             if newValue != nil {
                 showConnectionError = true
             }
+        }
+        .onChange(of: collapsedGroups) { _, newValue in
+            UserDefaults.standard.set(Array(newValue), forKey: Self.collapsedGroupsKey)
         }
         .task {
             await appState.loadSavedConnections()
@@ -496,6 +500,9 @@ struct HomeView: View {
             }
             appState.connectionGroups.remove(oldName)
             appState.connectionGroups.insert(newName)
+            if collapsedGroups.remove(oldName) != nil {
+                collapsedGroups.insert(newName)
+            }
             await appState.loadSavedConnections()
         }
     }
@@ -508,6 +515,7 @@ struct HomeView: View {
                 try? await appState.container.connectionRepository.update(conn)
             }
             appState.connectionGroups.remove(name)
+            collapsedGroups.remove(name)
             await appState.loadSavedConnections()
         }
     }
