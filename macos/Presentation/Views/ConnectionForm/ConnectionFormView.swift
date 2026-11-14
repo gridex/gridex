@@ -50,9 +50,11 @@ struct ConnectionFormView: View {
     // Test
     @State private var isTesting: Bool = false
     @State private var testResult: ConnectionTestResult?
+    @State private var sshTestResult: ConnectionTestResult?
 
     var onConnect: ((ConnectionConfig, String, String) -> Void)?
-    var onTest: ((ConnectionConfig, String, String) async -> ConnectionTestResult)?
+    /// Last argument reports the SSH tunnel stage as soon as it finishes (only called when SSH is used).
+    var onTest: ((ConnectionConfig, String, String, @escaping @MainActor (ConnectionTestResult) -> Void) async -> ConnectionTestResult)?
     var onSave: ((ConnectionConfig, String, String) -> Void)?
     var onCancel: (() -> Void)?
 
@@ -299,17 +301,22 @@ struct ConnectionFormView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
 
-            // Test result
-            if let result = testResult {
-                HStack(spacing: 6) {
-                    Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    Text(result.success
-                         ? "Connected! \(result.serverVersion ?? "") (\(Int(result.latency * 1000))ms)"
-                         : result.errorMessage ?? "Connection failed")
-                        .font(.system(size: 12))
-                    Spacer()
+            // Test result — with SSH, two stages: tunnel first, then the database through it
+            let showSSHStage = sshTestResult != nil || (isTesting && sshEnabled)
+            let showDBStage = testResult != nil || (isTesting && sshTestResult?.success == true)
+            if showSSHStage || showDBStage {
+                VStack(alignment: .leading, spacing: 4) {
+                    if showSSHStage {
+                        testStageRow(sshTestResult, pending: "SSH: connecting to \(sshHost)…") {
+                            "SSH: tunnel established (\(Int($0.latency * 1000))ms)"
+                        }
+                    }
+                    if showDBStage {
+                        testStageRow(testResult, pending: "Database: connecting…") {
+                            "\(sshTestResult != nil ? "Database: " : "")Connected! \($0.serverVersion ?? "") (\(Int($0.latency * 1000))ms)"
+                        }
+                    }
                 }
-                .foregroundColor(result.success ? .green : .red)
                 .padding(.horizontal, 24)
                 .padding(.bottom, 10)
             }
@@ -473,10 +480,39 @@ struct ConnectionFormView: View {
     private func testConnection() async {
         isTesting = true
         testResult = nil
+        sshTestResult = nil
         defer { isTesting = false }
-        testResult = await onTest?(buildConfig(), password, sshPassword) ?? ConnectionTestResult(
+        let result = await onTest?(buildConfig(), password, sshPassword) { sshTestResult = $0 } ?? ConnectionTestResult(
             success: false, serverVersion: nil, latency: 0, errorMessage: "No handler"
         )
+        // A failed tunnel is reported on the SSH row; the database stage never ran.
+        if sshTestResult?.success != false {
+            testResult = result
+        }
+    }
+
+    /// One line of the test status: spinner while pending, then green ✓ / red ✗.
+    private func testStageRow(
+        _ result: ConnectionTestResult?,
+        pending: String,
+        success: (ConnectionTestResult) -> String
+    ) -> some View {
+        HStack(spacing: 6) {
+            if let result {
+                Image(systemName: result.success ? "checkmark.circle.fill" : "xmark.circle.fill")
+                Text(result.success ? success(result) : result.errorMessage ?? "Connection failed")
+                    .font(.system(size: 12))
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 14, height: 14)
+                Text(pending)
+                    .font(.system(size: 12))
+            }
+            Spacer()
+        }
+        .foregroundColor(result.map { $0.success ? .green : .red } ?? .secondary)
     }
 
     /// Parse a MongoDB connection string and populate the form fields.
