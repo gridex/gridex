@@ -86,6 +86,11 @@ struct MainView: View {
         .sheet(isPresented: $appState.showNewTableSheet) {
             NewTableSheet(schema: appState.selectedSidebarSchema)
         }
+        .sheet(isPresented: $appState.showNewDatabaseSheet) {
+            NewDatabaseSheet(onCreated: { dbName in
+                Task { await appState.switchDatabase(dbName) }
+            })
+        }
         .onChange(of: appState.showConnectionForm) { _, show in
             if show {
                 appState.showConnectionForm = false
@@ -1498,6 +1503,27 @@ struct DatabasePickerPopover: View {
                     }
                 }
                 .frame(maxHeight: 320)
+            }
+
+            if appState.canCreateDatabase {
+                Divider()
+                Button {
+                    isPresented = false
+                    appState.showNewDatabaseSheet = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11))
+                            .frame(width: 16)
+                        Text("New Database...")
+                            .font(.system(size: 12))
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
             }
         }
         .frame(width: 240)

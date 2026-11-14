@@ -90,6 +90,11 @@ struct GridexApp: App {
                 .keyboardShortcut("k", modifiers: .command)
                 .disabled(currentAppState?.activeAdapter == nil)
 
+                Button("New Database...") {
+                    currentAppState?.showNewDatabaseSheet = true
+                }
+                .disabled(currentAppState?.canCreateDatabase != true)
+
                 Button("New Table...") {
                     currentAppState?.showNewTableSheet = true
                 }

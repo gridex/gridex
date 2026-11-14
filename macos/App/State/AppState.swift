@@ -47,6 +47,13 @@ final class AppState: ObservableObject {
     @Published var showConnectionForm = false
     @Published var showDatabaseSwitcher = false
     @Published var showNewTableSheet = false
+    @Published var showNewDatabaseSheet = false
+
+    /// SQLite and Redis have no CREATE DATABASE.
+    var canCreateDatabase: Bool {
+        guard let type = activeAdapter?.databaseType else { return false }
+        return type != .sqlite && type != .redis
+    }
     @Published var selectedDBType: DatabaseType?
     @Published var selectedSidebarItem: SidebarItemType?
     @Published private(set) var selectedSidebarItemSchema: String?
