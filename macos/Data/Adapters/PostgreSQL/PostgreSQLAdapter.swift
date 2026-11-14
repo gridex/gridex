@@ -29,7 +29,33 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         let username = config.username ?? "postgres"
         let database = config.database ?? username
 
-        let tlsConfig = try Self.makeTLSConfig(for: config.effectiveSSLMode, config: config)
+        let mode = config.effectiveSSLMode
+        let tls = try Self.makeTLSConfiguration(for: mode, config: config)
+
+        // Authenticate once on a plain connection before starting the pool. On a failed
+        // login (wrong password, unknown database, TLS refused) the pool retries with
+        // backoff for ~70s and then reports only "ConnectionPoolError error 1"; a single
+        // connection fails immediately with the server's own message.
+        let connectionTLS: PostgresConnection.Configuration.TLS = try tls.map {
+            let context = try NIOSSLContext(configuration: $0)
+            return mode == .preferred ? .prefer(context) : .require(context)
+        } ?? .disable
+        do {
+            let probe = try await PostgresConnection.connect(
+                on: eventLoopGroup.next(),
+                configuration: PostgresConnection.Configuration(
+                    host: host, port: port, username: username,
+                    password: password, database: database, tls: connectionTLS
+                ),
+                id: 0,
+                logger: Logger(label: "gridex.postgresql.connect")
+            ).get()
+            try? await probe.close()
+        } catch {
+            throw GridexError.connectionFailed(underlying: ConnectError(
+                message: Self.connectFailureMessage(error, host: host, port: port)
+            ))
+        }
 
         let pgConfig = PostgresClient.Configuration(
             host: host,
@@ -37,7 +63,7 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
             username: username,
             password: password,
             database: database,
-            tls: tlsConfig
+            tls: tls.map { mode == .preferred ? .prefer($0) : .require($0) } ?? .disable
         )
 
         let newClient = PostgresClient(configuration: pgConfig)
@@ -60,11 +86,35 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
         isConnected = true
     }
 
-    private static func makeTLSConfig(
+    private struct ConnectError: LocalizedError, Sendable {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// Connect failures without a server message (refused, unreachable, TLS refused) otherwise
+    /// print PSQLError's deliberately generic description.
+    private static func connectFailureMessage(_ error: Error, host: String, port: Int) -> String {
+        guard let pgError = error as? PSQLError, pgError.serverInfo == nil else {
+            return formatPostgresError(error)
+        }
+        switch pgError.code {
+        case .sslUnsupported:
+            return "The server does not support SSL. Set SSL mode to Preferred or Disabled."
+        case .connectionError:
+            let reason = pgError.underlying.map { String(describing: $0) } ?? "unknown error"
+            return "Cannot reach \(host):\(port) (\(reason))"
+        default:
+            return formatPostgresError(error)
+        }
+    }
+
+    /// nil when TLS is disabled. `.preferred` maps to prefer (plaintext fallback when the
+    /// server refuses TLS); every stricter mode requires a successful TLS handshake.
+    private static func makeTLSConfiguration(
         for mode: SSLMode,
         config: ConnectionConfig
-    ) throws -> PostgresClient.Configuration.TLS {
-        if mode == .disabled { return .disable }
+    ) throws -> TLSConfiguration? {
+        if mode == .disabled { return nil }
 
         var tls = TLSConfiguration.makeClientConfiguration()
 
@@ -89,9 +139,7 @@ final class PostgreSQLAdapter: DatabaseAdapter, SchemaInspectable, @unchecked Se
             tls.certificateVerification = .none
         }
 
-        // .prefer falls back to plaintext when the server refuses TLS;
-        // every stricter mode requires a successful TLS handshake.
-        return (mode == .preferred) ? .prefer(tls) : .require(tls)
+        return tls
     }
 
     func disconnect() async throws {
