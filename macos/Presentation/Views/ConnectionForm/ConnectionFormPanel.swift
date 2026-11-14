@@ -44,8 +44,9 @@ final class ConnectionFormPanel {
                     await appState.connect(config: config, password: pw, sshPassword: sshPw)
                 }
             },
-            onTest: { config, pw, sshPw in
-                await runTest(config: config, dbPassword: pw, sshPassword: sshPw, appState: appState)
+            onTest: { config, pw, sshPw, onSSHStage in
+                await runTest(config: config, dbPassword: pw, sshPassword: sshPw,
+                              appState: appState, onSSHStage: onSSHStage)
             },
             onSave: { config, pw, sshPw in
                 Task { @MainActor in
@@ -140,7 +141,8 @@ final class ConnectionFormPanel {
         config: ConnectionConfig,
         dbPassword: String,
         sshPassword: String,
-        appState: AppState
+        appState: AppState,
+        onSSHStage: @MainActor (ConnectionTestResult) -> Void
     ) async -> ConnectionTestResult {
         let adapter: any DatabaseAdapter = switch config.databaseType {
         case .sqlite: SQLiteAdapter()
@@ -155,7 +157,7 @@ final class ConnectionFormPanel {
         let sshService = appState.container.sshTunnelService
         let testConnectionId = UUID()
 
-        let start = CFAbsoluteTimeGetCurrent()
+        var start = CFAbsoluteTimeGetCurrent()
         var effectiveConfig = config
 
         // Establish SSH tunnel for the duration of the test so the adapter connects
@@ -173,12 +175,19 @@ final class ConnectionFormPanel {
                 )
                 effectiveConfig.host = "127.0.0.1"
                 effectiveConfig.port = Int(localPort)
+                onSSHStage(ConnectionTestResult(
+                    success: true, serverVersion: nil,
+                    latency: CFAbsoluteTimeGetCurrent() - start, errorMessage: nil
+                ))
+                start = CFAbsoluteTimeGetCurrent()  // database stage is timed on its own
             } catch {
-                return ConnectionTestResult(
+                let result = ConnectionTestResult(
                     success: false, serverVersion: nil,
                     latency: CFAbsoluteTimeGetCurrent() - start,
-                    errorMessage: "SSH tunnel failed: \(friendlyError(error))"
+                    errorMessage: friendlyError(error)
                 )
+                onSSHStage(result)
+                return result
             }
         }
 
@@ -196,17 +205,19 @@ final class ConnectionFormPanel {
             return ConnectionTestResult(
                 success: false, serverVersion: nil,
                 latency: CFAbsoluteTimeGetCurrent() - start,
-                errorMessage: friendlyError(error)
+                errorMessage: friendlyError(error, viaSSH: config.sshConfig != nil)
             )
         }
     }
 
     /// Maps low-level NIO/network errors to readable messages.
-    private static func friendlyError(_ error: Error) -> String {
+    private static func friendlyError(_ error: Error, viaSSH: Bool = false) -> String {
         let ns = error as NSError
         let desc = error.localizedDescription
         if desc.contains("NIOCore.IOError") || ns.domain.contains("NIO") {
-            return "Cannot reach host — check hostname, port, and firewall."
+            return viaSSH
+                ? "SSH server cannot reach the database — check host and port as seen from the SSH server."
+                : "Cannot reach host — check hostname, port, and firewall."
         }
         return desc
     }
