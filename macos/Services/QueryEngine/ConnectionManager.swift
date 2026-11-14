@@ -29,7 +29,14 @@ actor ConnectionManager {
             effectiveConfig.port = Int(localPort)
         }
 
-        try await adapter.connect(config: effectiveConfig, password: password)
+        do {
+            try await adapter.connect(config: effectiveConfig, password: password)
+        } catch {
+            if config.sshConfig != nil {
+                await sshService.disconnect(connectionId: config.id)
+            }
+            throw error
+        }
 
         let connection = ActiveConnection(
             id: config.id,

@@ -2,32 +2,26 @@
 // Gridex
 //
 // SSH tunnel management for secure database connections.
-// Uses NIOSSH for local port forwarding: localhost:localPort → remoteHost:remotePort via SSH.
+// Spawns the system OpenSSH client (`/usr/bin/ssh -N -L`) for local port forwarding:
+// 127.0.0.1:localPort → remoteHost:remotePort via the SSH host.
+//
+// Using the system client (instead of an in-process SSH stack) means every key type
+// (RSA, Ed25519, ECDSA, encrypted keys), ssh-agent (incl. 1Password / Secretive),
+// ~/.ssh/config host aliases, ProxyJump and known_hosts work exactly as in Terminal.
 
 import Foundation
-import NIOCore
-import NIOPosix
-import NIOSSH
+import os
 
 actor SSHTunnelService {
-    private var activeTunnels: [UUID: SSHTunnel] = [:]
+    private var activeTunnels: [UUID: Process] = [:]
 
-    struct SSHTunnel: Sendable {
-        let connectionId: UUID
-        let localPort: UInt16
-        let remoteHost: String
-        let remotePort: Int
-        let status: TunnelStatus
-        let serverChannel: Channel?
-        let sshChannel: Channel?
-    }
+    /// PIDs of every running ssh child, across all service instances, so the app can
+    /// kill them synchronously on quit (actor calls can't complete in applicationWillTerminate).
+    private static let livePIDs = OSAllocatedUnfairLock(initialState: Set<Int32>())
 
-    enum TunnelStatus: Sendable {
-        case connecting
-        case connected
-        case disconnected
-        case error(String)
-    }
+    /// How long to wait for auth + forward setup. Generous because agents like
+    /// 1Password may be waiting on a Touch ID prompt.
+    private static let establishTimeout: TimeInterval = 30
 
     func establish(
         connectionId: UUID,
@@ -36,201 +30,203 @@ actor SSHTunnelService {
         remotePort: Int,
         password: String?
     ) async throws -> UInt16 {
-        let localPort = try await findFreePort()
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        await disconnect(connectionId: connectionId)
 
-        let authDelegate: NIOSSHClientUserAuthenticationDelegate
+        let localPort = try Self.findFreePort()
+        let forwardHost = remoteHost.contains(":") ? "[\(remoteHost)]" : remoteHost  // IPv6 literal
+
+        var args = [
+            "-N", "-T",
+            "-o", "ExitOnForwardFailure=yes",
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "LogLevel=ERROR",
+            "-L", "127.0.0.1:\(localPort):\(forwardHost):\(remotePort)",
+            "-p", String(config.port),
+        ]
+
+        let secret = password ?? ""
         switch config.authMethod {
         case .password:
-            authDelegate = PasswordAuthDelegate(username: config.username, password: password ?? "")
+            // Without this, ssh offers every agent/default key first and can hit the
+            // server's MaxAuthTries before it ever gets to the password.
+            if !secret.isEmpty {
+                args += ["-o", "PubkeyAuthentication=no",
+                         "-o", "PreferredAuthentications=keyboard-interactive,password"]
+            }
         case .privateKey, .keyWithPassphrase:
-            authDelegate = PasswordAuthDelegate(username: config.username, password: password ?? "")
-            // TODO: Implement private key auth with PEM parsing
+            // Key auth only: the secret here is a key passphrase and must never be
+            // offered to the server as a password if it falls back to password auth.
+            args += ["-o", "PreferredAuthentications=publickey",
+                     "-o", "PasswordAuthentication=no",
+                     "-o", "KbdInteractiveAuthentication=no"]
+            // Empty key path → fall back to ssh's own defaults (agent, ~/.ssh/config).
+            if let keyPath = config.keyPath, !keyPath.isEmpty {
+                args += ["-i", (keyPath as NSString).expandingTildeInPath, "-o", "IdentitiesOnly=yes"]
+            }
         }
 
-        // Connect to SSH server
-        let sshChannel = try await ClientBootstrap(group: group)
-            .channelInitializer { channel in
-                channel.pipeline.addHandlers([
-                    NIOSSHHandler(
-                        role: .client(.init(
-                            userAuthDelegate: authDelegate,
-                            serverAuthDelegate: AcceptAllHostKeysDelegate()
-                        )),
-                        allocator: channel.allocator,
-                        inboundChildChannelInitializer: nil
-                    )
-                ])
-            }
-            .channelOption(.socketOption(.so_reuseaddr), value: 1)
-            .connectTimeout(.seconds(10))
-            .connect(host: config.host, port: config.port)
-            .get()
+        var env = ProcessInfo.processInfo.environment
+        if secret.isEmpty {
+            args += ["-o", "BatchMode=yes"]  // never block on a prompt nobody can answer
+        } else {
+            // Answer the password / key-passphrase prompt via SSH_ASKPASS. The secret is
+            // passed in the child's environment, never written to disk.
+            env["SSH_ASKPASS"] = try Self.askpassScript().path
+            env["SSH_ASKPASS_REQUIRE"] = "force"
+            env["GRIDEX_SSH_SECRET"] = secret
+        }
 
-        // Start local TCP server that forwards connections through SSH
-        let serverChannel = try await ServerBootstrap(group: group)
-            .childChannelInitializer { childChannel in
-                let promise = childChannel.eventLoop.makePromise(of: Channel.self)
+        if !config.username.isEmpty {
+            args += ["-l", config.username]
+        }
+        args += ["--", config.host]
 
-                sshChannel.pipeline.handler(type: NIOSSHHandler.self).whenSuccess { handler in
-                    do {
-                        let origin = try SocketAddress(ipAddress: "127.0.0.1", port: Int(localPort))
-                        let channelType = SSHChannelType.directTCPIP(.init(
-                            targetHost: remoteHost,
-                            targetPort: remotePort,
-                            originatorAddress: origin
-                        ))
-                        handler.createChannel(promise, channelType: channelType) { sshChildChannel, _ in
-                            sshChildChannel.pipeline.addHandler(SSHToTCPHandler(tcpChannel: childChannel))
-                        }
-                    } catch {
-                        promise.fail(error)
-                    }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = args
+        process.environment = env
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        let stderr = Pipe()
+        process.standardError = stderr
+        process.terminationHandler = { p in
+            _ = Self.livePIDs.withLock { $0.remove(p.processIdentifier) }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            throw GridexError.sshConnectionFailed(underlying: SSHError(message: error.localizedDescription))
+        }
+        let pid = process.processIdentifier
+        Self.livePIDs.withLock { _ = $0.insert(pid) }
+
+        // ssh only opens the local listener after authentication succeeds, so ssh
+        // listening on the port means the tunnel is ready.
+        do {
+            let deadline = Date().addingTimeInterval(Self.establishTimeout)
+            while !Self.isListening(pid: pid, port: localPort) {
+                if !process.isRunning {
+                    process.waitUntilExit()
+                    let output = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    throw GridexError.sshConnectionFailed(underlying: SSHError(
+                        message: output.isEmpty ? "ssh exited with status \(process.terminationStatus)" : output
+                    ))
                 }
-
-                return promise.futureResult.flatMap { sshChildChannel in
-                    childChannel.pipeline.addHandler(TCPToSSHHandler(sshChannel: sshChildChannel))
+                if Date() > deadline {
+                    throw GridexError.sshConnectionFailed(underlying: SSHError(
+                        message: "Timed out after \(Int(Self.establishTimeout))s waiting for the tunnel"
+                    ))
                 }
+                try await Task.sleep(for: .milliseconds(100))
             }
-            .bind(host: "127.0.0.1", port: Int(localPort))
-            .get()
+        } catch {
+            Self.terminate(process)
+            throw error
+        }
 
-        activeTunnels[connectionId] = SSHTunnel(
-            connectionId: connectionId,
-            localPort: localPort,
-            remoteHost: remoteHost,
-            remotePort: remotePort,
-            status: .connected,
-            serverChannel: serverChannel,
-            sshChannel: sshChannel
-        )
-
+        activeTunnels[connectionId] = process
         return localPort
     }
 
     func disconnect(connectionId: UUID) async {
-        if let tunnel = activeTunnels[connectionId] {
-            try? await tunnel.serverChannel?.close()
-            try? await tunnel.sshChannel?.close()
+        if let process = activeTunnels.removeValue(forKey: connectionId) {
+            Self.terminate(process)
         }
-        activeTunnels[connectionId] = nil
-    }
-
-    func status(connectionId: UUID) -> TunnelStatus {
-        activeTunnels[connectionId]?.status ?? .disconnected
     }
 
     func disconnectAll() async {
-        for tunnel in activeTunnels.values {
-            try? await tunnel.serverChannel?.close()
-            try? await tunnel.sshChannel?.close()
+        for process in activeTunnels.values {
+            Self.terminate(process)
         }
         activeTunnels.removeAll()
     }
 
+    /// Synchronously kills every ssh child process. Call from applicationWillTerminate.
+    nonisolated static func terminateAllProcesses() {
+        livePIDs.withLock { pids in
+            for pid in pids { kill(pid, SIGTERM) }
+            pids.removeAll()
+        }
+    }
+
     // MARK: - Private
 
-    private func findFreePort() async throws -> UInt16 {
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
-        let ch = try await ServerBootstrap(group: group)
-            .bind(host: "127.0.0.1", port: 0)
-            .get()
-        guard let port = ch.localAddress?.port else {
-            try await ch.close()
-            throw GridexError.sshTunnelFailed
+    private struct SSHError: LocalizedError, Sendable {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private static func terminate(_ process: Process) {
+        let pid = process.processIdentifier
+        if process.isRunning { process.terminate() }
+        _ = livePIDs.withLock { $0.remove(pid) }
+    }
+
+    /// Tiny SSH_ASKPASS helper that echoes the secret from its environment.
+    private static func askpassScript() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("gridex-ssh-askpass.sh")
+        try "#!/bin/sh\nprintf '%s\\n' \"$GRIDEX_SSH_SECRET\"\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return url
+    }
+
+    private static func loopbackAddress(port: UInt16) -> sockaddr_in {
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        return addr
+    }
+
+    /// True once `pid` itself owns a TCP socket listening on `port`. Checking ownership,
+    /// rather than just that the port accepts connections, means a local process that
+    /// grabbed the port between findFreePort() and ssh's bind can never be handed the
+    /// database credentials (ssh then fails the forward and exits instead).
+    private static func isListening(pid: Int32, port: UInt16) -> Bool {
+        let bufferSize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard bufferSize > 0 else { return false }
+        let stride = MemoryLayout<proc_fdinfo>.stride
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bufferSize) / stride)
+        let filled = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, bufferSize)
+        guard filled > 0 else { return false }
+
+        for fd in fds.prefix(Int(filled) / stride) where fd.proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+            var info = socket_fdinfo()
+            let size = Int32(MemoryLayout<socket_fdinfo>.size)
+            guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDSOCKETINFO, &info, size) == size,
+                  info.psi.soi_kind == Int32(SOCKINFO_TCP) else { continue }
+            let tcp = info.psi.soi_proto.pri_tcp
+            let localPort = UInt16(bigEndian: UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_lport))
+            if tcp.tcpsi_state == TSI_S_LISTEN && localPort == port {
+                return true
+            }
         }
-        let p = UInt16(port)
-        try await ch.close()
-        return p
-    }
-}
-
-// MARK: - Auth Delegates
-
-private final class PasswordAuthDelegate: NIOSSHClientUserAuthenticationDelegate {
-    let username: String
-    let password: String
-    private var offered = false
-
-    init(username: String, password: String) {
-        self.username = username
-        self.password = password
+        return false
     }
 
-    func nextAuthenticationType(
-        availableMethods: NIOSSHAvailableUserAuthenticationMethods,
-        nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>
-    ) {
-        if !offered && availableMethods.contains(.password) {
-            offered = true
-            nextChallengePromise.succeed(.init(
-                username: username,
-                serviceName: "",
-                offer: .password(.init(password: password))
-            ))
-        } else {
-            nextChallengePromise.succeed(nil)
+    private static func findFreePort() throws -> UInt16 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw GridexError.sshTunnelFailed }
+        defer { close(fd) }
+        var addr = loopbackAddress(port: 0)
+        let bound = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
         }
-    }
-}
-
-private final class AcceptAllHostKeysDelegate: NIOSSHClientServerAuthenticationDelegate {
-    func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
-        validationCompletePromise.succeed(())
-    }
-}
-
-// MARK: - Port Forward Handlers
-
-/// Forwards data from SSH channel → local TCP client
-private final class SSHToTCPHandler: ChannelDuplexHandler {
-    typealias InboundIn = SSHChannelData
-    typealias OutboundIn = ByteBuffer
-    typealias OutboundOut = SSHChannelData
-
-    private let tcpChannel: Channel
-
-    init(tcpChannel: Channel) {
-        self.tcpChannel = tcpChannel
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let channelData = unwrapInboundIn(data)
-        guard case .byteBuffer(let buf) = channelData.data else { return }
-        tcpChannel.writeAndFlush(buf, promise: nil)
-    }
-
-    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-        let buf = unwrapOutboundIn(data)
-        context.write(wrapOutboundOut(.init(type: .channel, data: .byteBuffer(buf))), promise: promise)
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        tcpChannel.close(promise: nil)
-        context.fireChannelInactive()
-    }
-}
-
-/// Forwards data from local TCP client → SSH channel
-private final class TCPToSSHHandler: ChannelDuplexHandler {
-    typealias InboundIn = ByteBuffer
-    typealias OutboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
-
-    private let sshChannel: Channel
-
-    init(sshChannel: Channel) {
-        self.sshChannel = sshChannel
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let buf = unwrapInboundIn(data)
-        sshChannel.writeAndFlush(buf, promise: nil)
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        sshChannel.close(promise: nil)
-        context.fireChannelInactive()
+        guard bound == 0 else { throw GridexError.sshTunnelFailed }
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard named == 0 else { throw GridexError.sshTunnelFailed }
+        return UInt16(bigEndian: addr.sin_port)
     }
 }

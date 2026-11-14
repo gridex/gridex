@@ -20,8 +20,6 @@ let package = Package(
         ),
         // TLS for Redis and other NIO connections
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
-        // SSH tunneling
-        .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.8.0"),
         // Redis driver
         .package(url: "https://github.com/swift-server/RediStack.git", from: "1.6.0"),
         // MongoDB driver (pure Swift, NIO-based)
@@ -42,7 +40,6 @@ let package = Package(
                 .product(name: "MongoClient", package: "MongoKitten"),
                 .product(name: "CosmoMSSQL", package: "CosmoSQLClient-Swift"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
-                .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "macos",
