@@ -13,6 +13,7 @@ add_library(gridex-services STATIC
     AI/Providers/OllamaProvider.cpp
     AI/Providers/GeminiProvider.cpp
     AI/Providers/ChatGPTProvider.cpp
+    AI/Providers/ProviderHttp.cpp
     AI/Auth/PKCE.cpp
     AI/Auth/JwtDecoder.cpp
     AI/Auth/OAuthLoopbackServer.cpp
@@ -57,4 +58,5 @@ target_link_libraries(gridex-services
             Qt6::Network
             nlohmann_json::nlohmann_json
     PRIVATE PkgConfig::LIBSSH
+            llm::retry
 )

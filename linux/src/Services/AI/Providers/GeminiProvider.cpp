@@ -8,40 +8,11 @@
 #include <nlohmann/json.hpp>
 
 #include "Core/Errors/GridexError.h"
+#include "Services/AI/Providers/ProviderHttp.h"
 
 namespace gridex {
 
 namespace {
-
-QByteArray qtPost(const QString&                     url,
-                  const QList<QPair<QString,QString>>& headers,
-                  const QByteArray&                   body) {
-    QNetworkAccessManager nam;
-    QNetworkRequest       req{QUrl{url}};
-    for (const auto& [k, v] : headers) req.setRawHeader(k.toUtf8(), v.toUtf8());
-
-    QNetworkReply* reply = nam.post(req, body);
-    QEventLoop loop;
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
-
-    if (reply->error() != QNetworkReply::NoError) {
-        const std::string msg = reply->errorString().toStdString();
-        reply->deleteLater();
-        throw NetworkError("Network error: " + msg);
-    }
-    const int statusCode =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    if (statusCode < 200 || statusCode >= 300) {
-        throw GridexError(ErrorCategory::Network,
-            "Gemini HTTP " + std::to_string(statusCode) + ": "
-            + data.left(200).toStdString());
-    }
-    return data;
-}
 
 QByteArray qtGet(const QString& url) {
     QNetworkAccessManager nam;
@@ -112,10 +83,11 @@ std::string GeminiProvider::sendMessage(
         + ":generateContent?key="
         + QString::fromStdString(apiKey_);
 
-    const QByteArray raw = qtPost(
+    const QByteArray raw = postWithRetry(
         url,
         {{"Content-Type", "application/json"}},
-        QByteArray::fromStdString(body.dump()));
+        QByteArray::fromStdString(body.dump()),
+        "Gemini");
 
     // {"candidates":[{"content":{"parts":[{"text":"..."}]}}]}
     const auto resp = json::parse(raw.toStdString());

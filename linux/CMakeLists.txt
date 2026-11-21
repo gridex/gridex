@@ -34,6 +34,13 @@ FetchContent_Declare(json
 )
 FetchContent_MakeAvailable(json)
 
+# llm-cpp: header-only; only llm::retry is linked (AI provider HTTP retries).
+FetchContent_Declare(llm-cpp
+    URL      https://github.com/Mattbusel/llm-cpp/archive/refs/tags/v1.4.0.tar.gz
+    URL_HASH SHA256=dfd699cf303fffc9b3372c47651c8dd7b32275a61162ff17c4bbb8546f3abcdf
+)
+FetchContent_MakeAvailable(llm-cpp)
+
 option(GRIDEX_BUILD_TESTS "Build smoke tests" ON)
 
 add_subdirectory(src/Core)
